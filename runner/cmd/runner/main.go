@@ -70,13 +70,11 @@ func runCmd(args []string, log *slog.Logger) {
 	if *lanes != "" {
 		cfg.Lanes = splitComma(*lanes)
 	}
-	if cfg.RunnerID == "" || len(cfg.Lanes) == 0 {
-		fmt.Fprintln(os.Stderr, "runner run: -id and -lanes are required")
-		os.Exit(2)
-	}
 
 	// PEP mode when a credential is provided (Biscuit + PoP signer + frame
-	// wrapper); otherwise direct/trusted mode.
+	// wrapper); otherwise direct/trusted mode. Load it BEFORE the required-arg
+	// check: in PEP mode the credential is the source of the runner id, so the
+	// check must see the id it supplies (an explicit -id/RUNNER_ID still wins).
 	var signer runner.Signer
 	var wrapper runner.FrameWrapper
 	if *credPath != "" {
@@ -94,6 +92,11 @@ func runCmd(args []string, log *slog.Logger) {
 		if cfg.RunnerID == "" {
 			cfg.RunnerID = cred.PubkeyHex
 		}
+	}
+
+	if cfg.RunnerID == "" || len(cfg.Lanes) == 0 {
+		fmt.Fprintln(os.Stderr, "runner run: -id (or -credential) and -lanes are required")
+		os.Exit(2)
 	}
 	rn := runner.New(cfg, signer, wrapper, log)
 

@@ -13,14 +13,19 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
   closes. Version negotiation is exact-major, highest-common-minor. After `hello`, frames
   with an unknown `type` or schema-invalid `body` → `error{invalid}` (fail-closed; unknown
   fields are rejected, additive evolution bumps the minor version).
-- **Surfaces.** *Runner surface*: tailnet TCP; every request frame is PoP-wrapped (below).
-  *App/admin surface*: Unix domain socket (filesystem permissions are the access control;
-  loopback TCP fallback where AF_UNIX is absent); no PoP.
-- **Auth binding (runner surface).** Each request rides trust-core PoP: the canonical
-  request string is `dispatch/v0 <type> <sha256(body-bytes)> <nonce> <ts>`, signed by the
-  runner keypair; the Biscuit MUST carry `right("<type>")` and, where the verb names a
-  lane, `lane("<lane>")`. Nonces are single-use against the dispatcher's **durable** nonce
-  store. Denials are logged as first-class outcomes.
+- **Surfaces.** *Runner surface*: tailnet TCP, **terminated by the in-path Rust PEP/PDP**
+  (the single verify engine — it also fronts the CAS); the PEP forwards pre-authenticated
+  frames to the dispatcher over loopback. The dispatcher parses **no credential** and holds
+  no auth crypto — it trusts the PEP-attached verified identity and applies only live-state
+  authz (lease fencing). *App/admin surface*: Unix domain socket (filesystem permissions are
+  the access control; loopback TCP fallback where AF_UNIX is absent); no PoP, no PEP.
+- **Auth binding (PEP, runner + CAS surfaces).** Each request rides Biscuit + PoP: the
+  canonical request string is `dispatch/v0 <type> <sha256(body-bytes)> <nonce> <ts>`, signed
+  by the runner keypair; the Biscuit MUST carry `right("<type>")` and, where the verb names
+  a lane, `lane("<lane>")`. The PEP verifies signature + PoP + freshness + revocation +
+  static right/lane policy, and owns the **durable** single-use nonce store. Denials are
+  logged as first-class outcomes. There is exactly one verify implementation (Rust), in one
+  place; the dispatcher never re-verifies.
 
 ## Identifiers and scalars
 

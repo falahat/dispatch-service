@@ -13,7 +13,7 @@ pure policy math is [dispatch-kit](../dispatch-kit).
 | `contracts/` | **The frozen v0 contracts** — normative specs + JSON Schemas + the state machine as data. Everything below implements these; nothing implements prose. | data |
 | `dispatcher/` | the work service: durable queue (SQLite WAL), leases, retries, cost admission, fleet | Python → Go |
 | `runner/` | the shared worker client image; drives compute containers over the invoke protocol | Python → Go |
-| `pep/` | the auth enforcement proxy fronting the CAS | **Rust (born)** |
+| `pep/` | the auth enforcement proxy + PDP — the **single verify engine**, in-path on both the CAS and the dispatcher's runner surface (backends get pre-authed requests over loopback) | **Rust (born)** |
 | `client/` | the app-side UDS client (enqueue · completions subscription · ack · views) | Python |
 | `dispatchctl/` | the human console over the admin surface | Go (with the dispatcher) |
 | `tests/conformance/` | golden wire transcripts + crash-injection property tests — **defines** conformant | **protected path** |

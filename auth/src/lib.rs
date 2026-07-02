@@ -8,6 +8,7 @@ pub mod cas_proxy;
 pub mod cred;
 pub mod error;
 pub mod frame_proxy;
+pub mod http_proxy;
 pub mod nonce;
 pub mod pop;
 pub mod quota;

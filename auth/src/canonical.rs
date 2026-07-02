@@ -17,6 +17,17 @@ pub enum Op {
         verb: String,
         frame_sha256_hex: String,
     },
+    /// A generic HTTP request fronted by the PEP's HTTP mode. Canonical:
+    /// `http/v0 <METHOD> <path> <nonce> <ts>`. The required capability is carried
+    /// on the op (resolved from the app's route table) rather than derived from
+    /// the method, because an app maps arbitrary (method, path) pairs to its own
+    /// rights. The path is bound but the query string is not — signed-URL auth
+    /// fields travel in the query and must not sign themselves.
+    Http {
+        method: String,
+        path: String,
+        right: String,
+    },
 }
 
 impl Op {
@@ -35,6 +46,9 @@ impl Op {
                     verb, frame_sha256_hex, nonce_b64, ts_ms
                 )
             }
+            Op::Http { method, path, .. } => {
+                format!("http/v0 {} {} {} {}", method, path, nonce_b64, ts_ms)
+            }
         }
     }
 
@@ -47,6 +61,7 @@ impl Op {
                 _ => "cas_deny",
             },
             Op::Dispatch { verb, .. } => verb.as_str(),
+            Op::Http { right, .. } => right.as_str(),
         }
     }
 }

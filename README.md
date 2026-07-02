@@ -10,6 +10,7 @@ pure policy math is [dispatch-kit](../dispatch-kit).
 
 | Path | What | Language |
 |---|---|---|
+| [`PLAN.md`](PLAN.md) | the implementation plan: parallel tracks, dependencies, per-task definition-of-done | — |
 | `contracts/` | **The frozen v0 contracts** — normative specs + JSON Schemas + the state machine as data. Everything below implements these; nothing implements prose. | data |
 | `dispatcher/` | the work service: durable queue (SQLite WAL), leases, retries, cost admission, fleet; the pure decision rules as an internal package | **Go** (born) |
 | `runner/` | the shared worker client image; drives compute containers over the invoke protocol | **Go** (born) |
@@ -25,8 +26,11 @@ their last consumer.
 
 ## Stack (decided)
 
-- **Monorepo.** All new components live here, one `compose.yml`, one CI. Co-deployment +
-  fatal version-mismatch make a single repo the only sane unit.
+- **Monorepo — chosen, not forced.** Versioning could support polyrepo; we choose against
+  the compat matrix it implies (this plane deploys as one unit, for one operator). What the
+  monorepo buys: a contract change is ONE atomic PR proving every component together; one
+  compose/E2E harness; no N×M version states. It stays reversible: components share **no
+  code, only the contracts**, so splitting one out later is cutting a directory.
 - **Go** components: stdlib `net/http`, `modernc.org/sqlite` (pure-Go, cgo-free → static
   scratch image). **Rust** components: tokio + hyper/axum + `biscuit-auth`.
 - **CAS = bazel-remote** (verifies digests on write natively; the PEP inherits integrity).

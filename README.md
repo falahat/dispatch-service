@@ -24,7 +24,7 @@ scoped file-by-file in [`docs/CUTOVER.md`](docs/CUTOVER.md).
 | `contracts/` | **The frozen v0 contracts** — normative specs + JSON Schemas + the state machine as data. Everything below implements these; nothing implements prose. | data |
 | `dispatcher/` | the work service: durable queue (SQLite WAL), leases, retries, cost admission, fleet; the pure decision rules as an internal package | **Go** (born) |
 | `runner/` | the shared worker client image; drives compute containers over the invoke protocol | **Go** (born) |
-| `pep/` | the auth enforcement proxy + PDP — the **single verify engine**, in-path on both the CAS and the dispatcher's runner surface (backends get pre-authed requests over loopback) + the **signer** (mint), one crate | **Rust** (born) |
+| `pep/` | the auth enforcement proxy + PDP — the **single verify engine**, in-path on the dispatcher's runner surface, the CAS, and an app's generic HTTP surface ([`docs/PEP_HTTP.md`](docs/PEP_HTTP.md); backends get pre-authed requests over loopback) + the **signer** (mint), one crate | **Rust** (born) |
 | `client/` | the app-side UDS client (enqueue · completions subscription · ack · views) | Python (for the Python apps) |
 | `dispatchctl/` | the human console over the admin surface | **Go** (with the dispatcher) |
 | `tests/` | unit (per package) · integration (compose) · E2E (full job flow + crash injection) · adversarial (hand-written attacks per boundary) | protected |

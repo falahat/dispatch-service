@@ -63,7 +63,10 @@ impl Signer {
     /// existing issuer key is PRESERVED so no device re-pairs) or this signer's
     /// own `{"issuer_private_key_b64": ...}`; a missing key file mints a fresh
     /// key in the latter format. Pairings always live in `pairings_path`.
-    pub fn open_with<P: AsRef<Path>, Q: AsRef<Path>>(key_path: P, pairings_path: Q) -> Result<Self> {
+    pub fn open_with<P: AsRef<Path>, Q: AsRef<Path>>(
+        key_path: P,
+        pairings_path: Q,
+    ) -> Result<Self> {
         let key_path = key_path.as_ref().to_path_buf();
         let pairings_path = pairings_path.as_ref().to_path_buf();
         let keypair = if key_path.exists() {
@@ -109,8 +112,8 @@ impl Signer {
         // The deployed SecretStore shape first (the live format on the host).
         if let Ok(store) = serde_json::from_slice::<SecretStoreFile>(data) {
             if let Some(hex_sk) = store.secrets.get(ISSUER_KEY_NAME) {
-                let priv_bytes =
-                    hex::decode(hex_sk).map_err(|_| AuthError::Malformed("issuer key hex".into()))?;
+                let priv_bytes = hex::decode(hex_sk)
+                    .map_err(|_| AuthError::Malformed("issuer key hex".into()))?;
                 let private = PrivateKey::from_bytes(&priv_bytes)
                     .map_err(|e| AuthError::Malformed(e.to_string()))?;
                 return Ok(KeyPair::from(&private));

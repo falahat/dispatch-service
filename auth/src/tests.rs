@@ -423,9 +423,8 @@ fn signer_loads_the_deployed_secretstore_format_readonly() {
 
     let mut s = Signer::open(&key_path).unwrap();
     // The loaded key derives the exact public key of that seed.
-    let expected = biscuit_auth::KeyPair::from(
-        &biscuit_auth::PrivateKey::from_bytes(&seed).unwrap(),
-    );
+    let expected =
+        biscuit_auth::KeyPair::from(&biscuit_auth::PrivateKey::from_bytes(&seed).unwrap());
     assert_eq!(s.public_key_b64(), {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         STANDARD.encode(expected.public().to_bytes())
@@ -440,7 +439,11 @@ fn signer_loads_the_deployed_secretstore_format_readonly() {
         note: Some("gpu runner".into()),
     })
     .unwrap();
-    assert_eq!(std::fs::read(&key_path).unwrap(), original, "key file must be untouched");
+    assert_eq!(
+        std::fs::read(&key_path).unwrap(),
+        original,
+        "key file must be untouched"
+    );
     let pairings_path = dir.path().join("plane-pairings.json");
     assert!(pairings_path.exists(), "pairings live in their own file");
 

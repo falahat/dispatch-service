@@ -1,21 +1,34 @@
-# Egress allowlist for ingest-lane compute (feed/download). Default deny;
-# add the podcast feed + media hosts your corpus actually fetches. Enforced
-# in "enforce" mode — a request to any other host is refused.
+# Egress allowlist for ingest-lane compute (feed/download) + GPU model pulls.
+# Smokescreen v1 ACL. Our compute clients present no identity cert, so per-role
+# `services` matching can't key on them; we use `global_allow_list` — a flat
+# allowlist enforced for EVERY client. Anything not listed is denied (a `default`
+# service in `enforce` with no allowed_domains = deny-all fallthrough).
 ---
 version: v1
+
+# No per-identity roles (compute is unroled); everything falls through to default.
+services: []
+
+# Deny-all for any client (no identity, no matching service).
 default:
   name: default
+  project: easypod
   action: enforce
-  allowed_domains:
-    # Model pulls (GPU compute preload): whisperx/pyannote fetch from the HF
-    # hub into the persistent cache volume on a cache miss — through the guard,
-    # never raw egress. Steady state hits the cache and makes no request.
-    - "huggingface.co"
-    - "*.huggingface.co"
-    - "*.hf.co"
-    # Feed/CDN hosts for the ingest lane (feed/download compute).
-    - "*.libsyn.com"
-    - "*.megaphone.fm"
-    - "*.simplecast.com"
-    - "*.acast.com"
-    - "feeds.buzzsprout.com"
+  allowed_domains: []
+
+# The one allowlist that applies to every client, roled or not.
+global_allow_list:
+  # Model pulls (GPU compute preload): whisperx / pyannote / sentence-transformers
+  # fetch from the HF hub into the persistent cache on a miss — through the guard,
+  # never raw egress. Steady state hits the cache and makes no request.
+  - "huggingface.co"
+  - "cdn-lfs.huggingface.co"
+  - "cdn-lfs-us-1.huggingface.co"
+  - "cas-bridge.xethub.hf.co"
+  # Feed / CDN hosts for the ingest lane (feed / download compute).
+  - "feeds.libsyn.com"
+  - "traffic.libsyn.com"
+  - "*.megaphone.fm"
+  - "*.simplecast.com"
+  - "*.acast.com"
+  - "feeds.buzzsprout.com"

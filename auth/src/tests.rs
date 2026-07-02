@@ -45,9 +45,18 @@ fn store(name: &str) -> (tempfile::TempDir, NonceStore) {
 }
 
 // Build a CAS GET request signed by `sk`, presenting `pubkey_hex` and `cred`.
-fn cas_get_req(sk: &SigningKey, pubkey_hex: &str, cred: &str, hexaddr: &str, ts: i64) -> AuthedRequest {
+fn cas_get_req(
+    sk: &SigningKey,
+    pubkey_hex: &str,
+    cred: &str,
+    hexaddr: &str,
+    ts: i64,
+) -> AuthedRequest {
     let path = format!("/blobs/sha256/{hexaddr}");
-    let op = Op::Cas { method: "GET".into(), path };
+    let op = Op::Cas {
+        method: "GET".into(),
+        path,
+    };
     let nonce = nonce_b64();
     let canonical = op.canonical(&nonce, ts);
     let sig = sign_pop(sk, &canonical);
@@ -70,7 +79,15 @@ const ADDR_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 fn happy_path_cas_get() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     let id = verify(&root.public(), &ns, NOW, &req).expect("valid request");
@@ -82,7 +99,15 @@ fn pop_with_wrong_key_is_rejected() {
     let root = KeyPair::new();
     let (_sk, pk_hex) = holder();
     let (attacker, _) = holder(); // a different private key
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     // Present the victim's pubkey but sign with the attacker's key.
     let req = cas_get_req(&attacker, &pk_hex, &cred, ADDR_A, NOW);
@@ -97,7 +122,15 @@ fn forged_biscuit_from_other_root_is_rejected() {
     let root = KeyPair::new();
     let evil_root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&evil_root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &evil_root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     match verify(&root.public(), &ns, NOW, &req) {
@@ -110,7 +143,15 @@ fn forged_biscuit_from_other_root_is_rejected() {
 fn replay_same_nonce_is_rejected() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     verify(&root.public(), &ns, NOW, &req).expect("first ok");
@@ -125,7 +166,15 @@ fn replay_same_nonce_is_rejected() {
 fn replay_across_restart_is_rejected() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("durable.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
@@ -144,7 +193,15 @@ fn replay_across_restart_is_rejected() {
 fn stale_timestamp_is_rejected() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, stale);
@@ -159,7 +216,15 @@ fn missing_right_is_denied() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
     // Credential grants cas_put but NOT cas_get.
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_put".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_put".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     match verify(&root.public(), &ns, NOW, &req) {
@@ -176,7 +241,15 @@ fn presented_pubkey_must_match_credential() {
     // Credential binds `other_pk_hex`, but the request presents pk_hex (and signs
     // with sk matching pk_hex). PoP passes for pk_hex, but the biscuit binds a
     // different key -> the pubkey-match check denies.
-    let cred = mint(&root, &MintParams { pubkey_hex: other_pk_hex, rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: other_pk_hex,
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     match verify(&root.public(), &ns, NOW, &req) {
@@ -189,11 +262,22 @@ fn presented_pubkey_must_match_credential() {
 fn lane_scope_enforced_on_lease() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let cred = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["lease".into()], lanes: vec!["embed".into()] }).unwrap();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["lease".into()],
+            lanes: vec!["embed".into()],
+        },
+    )
+    .unwrap();
     let (_d, ns) = store("n.redb");
 
     let mk = |lane: &str, ts: i64| {
-        let op = Op::Dispatch { verb: "lease".into(), frame_sha256_hex: "00".repeat(32) };
+        let op = Op::Dispatch {
+            verb: "lease".into(),
+            frame_sha256_hex: "00".repeat(32),
+        };
         let nonce = nonce_b64();
         let canonical = op.canonical(&nonce, ts);
         let sig = sign_pop(&sk, &canonical);
@@ -222,15 +306,35 @@ fn lane_scope_enforced_on_lease() {
 fn attenuated_token_scopes_get_to_closure() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let base = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
+    let base = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
     // Scope to ADDR_A only, expiring in the future.
-    let scoped = attenuate_for_lease(&base, &root.public(), &[ADDR_A.to_string()], NOW + 60_000).unwrap();
+    let scoped =
+        attenuate_for_lease(&base, &root.public(), &[ADDR_A.to_string()], NOW + 60_000).unwrap();
 
     let (_d, ns) = store("n.redb");
     // GET of the in-closure address: allowed.
-    verify(&root.public(), &ns, NOW, &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW)).expect("in-closure ok");
+    verify(
+        &root.public(),
+        &ns,
+        NOW,
+        &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
+    )
+    .expect("in-closure ok");
     // GET of another job's address: denied.
-    match verify(&root.public(), &ns, NOW + 1, &cas_get_req(&sk, &pk_hex, &scoped, ADDR_B, NOW + 1)) {
+    match verify(
+        &root.public(),
+        &ns,
+        NOW + 1,
+        &cas_get_req(&sk, &pk_hex, &scoped, ADDR_B, NOW + 1),
+    ) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied for out-of-closure address, got {other:?}"),
     }
@@ -240,11 +344,25 @@ fn attenuated_token_scopes_get_to_closure() {
 fn attenuated_token_expires() {
     let root = KeyPair::new();
     let (sk, pk_hex) = holder();
-    let base = mint(&root, &MintParams { pubkey_hex: pk_hex.clone(), rights: vec!["cas_get".into()], lanes: vec![] }).unwrap();
-    let scoped = attenuate_for_lease(&base, &root.public(), &[ADDR_A.to_string()], NOW - 1).unwrap(); // already expired
+    let base = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let scoped =
+        attenuate_for_lease(&base, &root.public(), &[ADDR_A.to_string()], NOW - 1).unwrap(); // already expired
 
     let (_d, ns) = store("n.redb");
-    match verify(&root.public(), &ns, NOW, &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW)) {
+    match verify(
+        &root.public(),
+        &ns,
+        NOW,
+        &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
+    ) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied (expired), got {other:?}"),
     }
@@ -261,7 +379,14 @@ fn signer_roundtrip_and_key_preserved() {
         let mut s = Signer::open(&path).unwrap();
         let (_sk, pkh) = holder();
         pk_hex = pkh.clone();
-        cred = s.enroll(Pairing { pubkey_hex: pkh, rights: vec!["cas_get".into()], lanes: vec![], note: None }).unwrap();
+        cred = s
+            .enroll(Pairing {
+                pubkey_hex: pkh,
+                rights: vec!["cas_get".into()],
+                lanes: vec![],
+                note: None,
+            })
+            .unwrap();
     }
     // Reopen: the issuer key is preserved, so a credential minted before still
     // verifies against the reopened signer's public key (no re-keying).

@@ -40,8 +40,12 @@ pub fn mint(root: &KeyPair, p: &MintParams) -> Result<String> {
         b.add_fact(fact!("lane({l})", l = l.clone()))
             .map_err(|e| AuthError::Malformed(e.to_string()))?;
     }
-    let biscuit = b.build(root).map_err(|e| AuthError::Malformed(e.to_string()))?;
-    biscuit.to_base64().map_err(|e| AuthError::Malformed(e.to_string()))
+    let biscuit = b
+        .build(root)
+        .map_err(|e| AuthError::Malformed(e.to_string()))?;
+    biscuit
+        .to_base64()
+        .map_err(|e| AuthError::Malformed(e.to_string()))
 }
 
 /// Attenuate a credential for one lease: scope `cas_get` to a closure of
@@ -69,8 +73,12 @@ pub fn attenuate_for_lease(
     // The lease token expires with the lease.
     bb.add_check(check!("check if now($t), $t <= {exp}", exp = expire_ts_ms))
         .map_err(|e| AuthError::Malformed(e.to_string()))?;
-    let attenuated = biscuit.append(bb).map_err(|e| AuthError::Malformed(e.to_string()))?;
-    attenuated.to_base64().map_err(|e| AuthError::Malformed(e.to_string()))
+    let attenuated = biscuit
+        .append(bb)
+        .map_err(|e| AuthError::Malformed(e.to_string()))?;
+    attenuated
+        .to_base64()
+        .map_err(|e| AuthError::Malformed(e.to_string()))
 }
 
 /// A verified identity: the holder's pubkey (hex), which doubles as the runner
@@ -105,7 +113,8 @@ pub fn verify(
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     // 1. Proof of possession over the rebuilt canonical string.
-    let pubkey = hex::decode(&req.pubkey_hex).map_err(|_| AuthError::Malformed("pubkey hex".into()))?;
+    let pubkey =
+        hex::decode(&req.pubkey_hex).map_err(|_| AuthError::Malformed("pubkey hex".into()))?;
     let sig = STANDARD
         .decode(&req.pop_sig_b64)
         .map_err(|_| AuthError::Malformed("pop sig b64".into()))?;
@@ -158,5 +167,7 @@ pub fn verify(
     //    unauthenticated traffic can never pollute the nonce store.
     nonces.check_and_store(&req.nonce_b64, req.ts_ms, now_ms)?;
 
-    Ok(Identity { id: req.pubkey_hex.clone() })
+    Ok(Identity {
+        id: req.pubkey_hex.clone(),
+    })
 }

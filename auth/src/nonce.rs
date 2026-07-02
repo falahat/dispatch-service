@@ -25,12 +25,18 @@ impl NonceStore {
     pub fn open<P: AsRef<Path>>(path: P, window_ms: i64) -> Result<Self> {
         let db = Database::create(path).map_err(|e| AuthError::Store(e.to_string()))?;
         // Ensure the table exists.
-        let wtx = db.begin_write().map_err(|e| AuthError::Store(e.to_string()))?;
+        let wtx = db
+            .begin_write()
+            .map_err(|e| AuthError::Store(e.to_string()))?;
         {
-            wtx.open_table(NONCES).map_err(|e| AuthError::Store(e.to_string()))?;
+            wtx.open_table(NONCES)
+                .map_err(|e| AuthError::Store(e.to_string()))?;
         }
         wtx.commit().map_err(|e| AuthError::Store(e.to_string()))?;
-        Ok(Self { db: Arc::new(db), window_ms })
+        Ok(Self {
+            db: Arc::new(db),
+            window_ms,
+        })
     }
 
     /// Check freshness and single-use in one write transaction. A stale/future
@@ -40,12 +46,20 @@ impl NonceStore {
         if (now_ms - ts_ms).abs() > self.window_ms {
             return Err(AuthError::Freshness);
         }
-        let wtx = self.db.begin_write().map_err(|e| AuthError::Store(e.to_string()))?;
+        let wtx = self
+            .db
+            .begin_write()
+            .map_err(|e| AuthError::Store(e.to_string()))?;
         let replay;
         {
-            let mut table = wtx.open_table(NONCES).map_err(|e| AuthError::Store(e.to_string()))?;
+            let mut table = wtx
+                .open_table(NONCES)
+                .map_err(|e| AuthError::Store(e.to_string()))?;
             // Scope the read guard so it drops before the mutable insert.
-            replay = table.get(nonce_b64).map_err(|e| AuthError::Store(e.to_string()))?.is_some();
+            replay = table
+                .get(nonce_b64)
+                .map_err(|e| AuthError::Store(e.to_string()))?
+                .is_some();
             if !replay {
                 table
                     .insert(nonce_b64, ts_ms)
@@ -63,10 +77,15 @@ impl NonceStore {
     /// successfully again (freshness would reject them), so they are dead weight.
     pub fn prune(&self, now_ms: i64) -> Result<usize> {
         let cutoff = now_ms - self.window_ms;
-        let wtx = self.db.begin_write().map_err(|e| AuthError::Store(e.to_string()))?;
+        let wtx = self
+            .db
+            .begin_write()
+            .map_err(|e| AuthError::Store(e.to_string()))?;
         let mut removed = 0usize;
         {
-            let mut table = wtx.open_table(NONCES).map_err(|e| AuthError::Store(e.to_string()))?;
+            let mut table = wtx
+                .open_table(NONCES)
+                .map_err(|e| AuthError::Store(e.to_string()))?;
             let mut stale: Vec<String> = Vec::new();
             {
                 let iter = table.iter().map_err(|e| AuthError::Store(e.to_string()))?;
@@ -78,7 +97,9 @@ impl NonceStore {
                 }
             }
             for k in stale {
-                table.remove(k.as_str()).map_err(|e| AuthError::Store(e.to_string()))?;
+                table
+                    .remove(k.as_str())
+                    .map_err(|e| AuthError::Store(e.to_string()))?;
                 removed += 1;
             }
         }

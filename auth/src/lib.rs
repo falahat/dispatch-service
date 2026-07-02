@@ -4,10 +4,13 @@
 //! crypto. See docs/TRUST_PLANE.md.
 
 pub mod canonical;
+pub mod cas_proxy;
 pub mod cred;
 pub mod error;
+pub mod frame_proxy;
 pub mod nonce;
 pub mod pop;
+pub mod quota;
 pub mod signer;
 
 pub use canonical::Op;

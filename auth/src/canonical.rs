@@ -13,7 +13,10 @@ pub enum Op {
     Cas { method: String, path: String },
     /// A dispatcher runner-surface request. Canonical:
     /// `dispatch/v0 <verb> <sha256hex(inner_frame_bytes)> <nonce> <ts>`.
-    Dispatch { verb: String, frame_sha256_hex: String },
+    Dispatch {
+        verb: String,
+        frame_sha256_hex: String,
+    },
 }
 
 impl Op {
@@ -23,8 +26,14 @@ impl Op {
             Op::Cas { method, path } => {
                 format!("cas/v0 {} {} {} {}", method, path, nonce_b64, ts_ms)
             }
-            Op::Dispatch { verb, frame_sha256_hex } => {
-                format!("dispatch/v0 {} {} {} {}", verb, frame_sha256_hex, nonce_b64, ts_ms)
+            Op::Dispatch {
+                verb,
+                frame_sha256_hex,
+            } => {
+                format!(
+                    "dispatch/v0 {} {} {} {}",
+                    verb, frame_sha256_hex, nonce_b64, ts_ms
+                )
             }
         }
     }

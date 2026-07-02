@@ -13,7 +13,8 @@ pub fn verify_pop(pubkey: &[u8], canonical: &str, sig: &[u8]) -> Result<()> {
         .map_err(|_| AuthError::Malformed("pubkey length".into()))?;
     let vk = VerifyingKey::from_bytes(&key_bytes)
         .map_err(|_| AuthError::Malformed("bad pubkey".into()))?;
-    let sig = Signature::from_slice(sig).map_err(|_| AuthError::Malformed("bad signature".into()))?;
+    let sig =
+        Signature::from_slice(sig).map_err(|_| AuthError::Malformed("bad signature".into()))?;
     vk.verify_strict(canonical.as_bytes(), &sig)
         .map_err(|_| AuthError::PopFailed)
 }

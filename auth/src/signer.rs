@@ -56,12 +56,23 @@ impl Signer {
             let private = PrivateKey::from_bytes(&priv_bytes)
                 .map_err(|e| AuthError::Malformed(e.to_string()))?;
             let keypair = KeyPair::from(&private);
-            Ok(Self { keypair, secrets, path })
+            Ok(Self {
+                keypair,
+                secrets,
+                path,
+            })
         } else {
             let keypair = KeyPair::new();
             let priv_b64 = STANDARD.encode(keypair.private().to_bytes());
-            let secrets = Secrets { issuer_private_key_b64: priv_b64, pairings: BTreeMap::new() };
-            let s = Self { keypair, secrets, path };
+            let secrets = Secrets {
+                issuer_private_key_b64: priv_b64,
+                pairings: BTreeMap::new(),
+            };
+            let s = Self {
+                keypair,
+                secrets,
+                path,
+            };
             s.save()?;
             Ok(s)
         }

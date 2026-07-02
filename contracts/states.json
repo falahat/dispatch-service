@@ -1,0 +1,36 @@
+{
+  "$comment": "The job state machine as data. Any transition not listed is illegal; the conformance suite derives legality checks from this file. Guards reference WIRE.md.",
+  "version": "0.1",
+  "states": {
+    "AWAITING_APPROVAL": { "terminal": false },
+    "QUEUED":            { "terminal": false },
+    "RUNNING":           { "terminal": false },
+    "PERSISTING":        { "terminal": false, "$comment": "the durable inbox; pins CAS blobs" },
+    "SUCCEEDED":         { "terminal": true },
+    "FAILED":            { "terminal": true },
+    "REJECTED":          { "terminal": true },
+    "CANCELLED":         { "terminal": true },
+    "BLOCKED":           { "terminal": false, "reserved": "DAG extension" },
+    "SKIPPED":           { "terminal": true,  "reserved": "DAG extension" }
+  },
+  "transitions": [
+    { "from": null,                "event": "enqueue",       "to": "QUEUED",            "guard": "cost_estimate_usd is absent or 0" },
+    { "from": null,                "event": "enqueue",       "to": "AWAITING_APPROVAL", "guard": "cost_estimate_usd > 0 and budget reservation succeeds" },
+    { "from": "AWAITING_APPROVAL", "event": "approve",       "to": "QUEUED" },
+    { "from": "AWAITING_APPROVAL", "event": "reject",        "to": "REJECTED",          "effect": "release reservation" },
+    { "from": "QUEUED",            "event": "claim",         "to": "RUNNING",           "guard": "next_attempt_at <= now AND lane cap ok AND runner not quarantined AND runner rate cap ok AND lane not in backpressure", "effect": "create lease (fencing token), stamp in same txn" },
+    { "from": "RUNNING",           "event": "complete",      "to": "PERSISTING",        "guard": "lease_id is the live lease",            "effect": "store action_result; push to subscription; pin outputs" },
+    { "from": "RUNNING",           "event": "fail",          "to": "QUEUED",            "guard": "class maps retriable AND attempt < max_attempts", "effect": "attempt+1; next_attempt_at = backoff(class, attempt)" },
+    { "from": "RUNNING",           "event": "fail",          "to": "FAILED",            "guard": "class maps terminal OR attempt >= max_attempts",  "effect": "dead-letter with attempt timeline" },
+    { "from": "RUNNING",           "event": "release",       "to": "QUEUED",            "guard": "release_count < release_cap",            "effect": "attempt unchanged; release_count+1" },
+    { "from": "RUNNING",           "event": "release",       "to": "FAILED",            "guard": "release_count >= release_cap",           "effect": "reason=unstartable; dead-letter" },
+    { "from": "RUNNING",           "event": "lease_expired", "to": "QUEUED",            "guard": "attempt < max_attempts",                 "effect": "attempt+1 (silent death presumed crash); backoff" },
+    { "from": "RUNNING",           "event": "lease_expired", "to": "FAILED",            "guard": "attempt >= max_attempts" },
+    { "from": "PERSISTING",        "event": "ack",           "to": "SUCCEEDED",         "guard": "disposition = persisted",                "effect": "unpin CAS blobs" },
+    { "from": "PERSISTING",        "event": "ack",           "to": "FAILED",            "guard": "disposition = rejected",                 "effect": "reason=bad_output; dead-letter; unpin" },
+    { "from": "AWAITING_APPROVAL", "event": "cancel",        "to": "CANCELLED",         "effect": "release reservation" },
+    { "from": "QUEUED",            "event": "cancel",        "to": "CANCELLED" },
+    { "from": "RUNNING",           "event": "cancel",        "to": "CANCELLED",         "effect": "abandon directive on next heartbeat; lease voided" },
+    { "from": "PERSISTING",        "event": "cancel",        "to": "CANCELLED",         "effect": "remove from inbox; unpin CAS blobs" }
+  ]
+}

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://falahat.dev/dispatch/v0/artifacts.schema.json",
+  "title": "Dispatch plane v0 — CAS-borne artifacts",
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,64}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\\\u0000-\\u001f]+$",
+      "$comment": "relative; no leading /, no .. segment, no backslash, no control chars (incl. NUL) — consumers MUST re-check"
+    },
+    "canonical_value": {
+      "$comment": "params values: integers only among numbers (RFC 8785 determinism rule); decimals go as strings",
+      "oneOf": [
+        { "type": "string", "maxLength": 65536 },
+        { "type": "boolean" },
+        { "type": "null" },
+        { "type": "integer" },
+        { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/canonical_value" } },
+        {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": { "pattern": "^[a-zA-Z0-9_.-]{1,128}$" },
+          "additionalProperties": { "$ref": "#/$defs/canonical_value" }
+        }
+      ]
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "kind"],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "kind": { "enum": ["blob", "manifest"] }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "size"],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "op", "op_version", "params", "inputs"],
+      "properties": {
+        "kind": { "const": "invocation/v0" },
+        "op": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
+        "op_version": { "type": "integer", "minimum": 1 },
+        "params": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-zA-Z0-9_.-]{1,128}$" },
+          "additionalProperties": { "$ref": "#/$defs/canonical_value" }
+        },
+        "inputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/input" }
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "entries"],
+      "properties": {
+        "kind": { "const": "manifest/v0" },
+        "entries": {
+          "type": "array",
+          "maxItems": 65536,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "address", "size"],
+            "properties": {
+              "path": { "$ref": "#/$defs/relative_path" },
+              "address": { "$ref": "#/$defs/address" },
+              "size": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "action_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "invocation_digest", "outputs", "metrics", "runner"],
+      "properties": {
+        "kind": { "const": "action_result/v0" },
+        "invocation_digest": { "$ref": "#/$defs/address" },
+        "outputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/output" }
+        },
+        "metrics": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "pattern": "^[a-z0-9_]{1,64}$" },
+          "additionalProperties": { "type": "integer" }
+        },
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node", "version"],
+          "properties": {
+            "node": { "type": "string", "maxLength": 128 },
+            "version": { "type": "string", "maxLength": 64 }
+          }
+        }
+      }
+    }
+  }
+}

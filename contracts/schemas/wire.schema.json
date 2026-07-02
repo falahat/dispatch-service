@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://falahat.dev/dispatch/v0/wire.schema.json",
+  "title": "Dispatch plane v0 — wire messages (frame bodies by type)",
+  "$comment": "Envelope: {v, type, id, body}. This schema binds each body by message type. Strict everywhere: unknown fields are rejected.",
+  "$defs": {
+    "job_id":   { "type": "string", "pattern": "^j_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "lease_id": { "type": "string", "pattern": "^l_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "job_key":  { "type": "string", "minLength": 1, "maxLength": 256 },
+    "lane":     { "type": "string", "pattern": "^[a-z0-9-]{1,32}$" },
+    "address":  { "$ref": "artifacts.schema.json#/$defs/address" },
+    "ts":       { "type": "integer", "minimum": 0, "$comment": "ms epoch, server-stamped" },
+    "attempt":  { "type": "integer", "minimum": 1 },
+    "error_class": { "enum": ["oom", "timeout", "rate_limit", "network", "bad_input", "integrity", "fatal", "unknown"] },
+    "release_reason": { "enum": ["cas_unreachable", "cas_miss", "integrity", "wrong_hardware", "shipping"] },
+    "error_code": { "enum": ["unauthenticated", "forbidden", "version_mismatch", "invalid", "not_leaseholder", "gone", "conflict", "budget", "backpressure", "rate_limited", "internal"] },
+
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "type", "id", "body"],
+      "properties": {
+        "v": { "const": "0.1" },
+        "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "body": { "type": "object" }
+      }
+    },
+
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+        "backoff_class": { "enum": ["quick", "standard", "long"], "default": "standard" },
+        "error_class_overrides": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/error_class" },
+          "additionalProperties": { "enum": ["terminal", "retriable"] }
+        },
+        "expected_wall_s": { "type": "integer", "minimum": 1 },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 9, "default": 5 },
+        "release_cap": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
+      }
+    },
+
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "runner"],
+      "properties": {
+        "contract": { "const": "0.1" },
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "node", "lanes", "capacity"],
+          "properties": {
+            "id": { "type": "string", "maxLength": 128, "$comment": "public-key fingerprint" },
+            "version": { "type": "string", "maxLength": 64 },
+            "node": { "type": "string", "maxLength": 128 },
+            "lanes": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/lane" } },
+            "capacity": { "type": "integer", "minimum": 1, "maximum": 64 }
+          }
+        }
+      }
+    },
+    "hello_ok": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_ts", "heartbeat_interval_s", "min_wait_s", "max_wait_s"],
+      "properties": {
+        "server_ts": { "$ref": "#/$defs/ts" },
+        "heartbeat_interval_s": { "type": "integer", "minimum": 1 },
+        "min_wait_s": { "type": "integer", "minimum": 0 },
+        "max_wait_s": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lanes", "wait_s"],
+      "properties": {
+        "lanes": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/lane" } },
+        "wait_s": { "type": "integer", "minimum": 0, "maximum": 600 }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job", "lease"],
+      "properties": {
+        "job": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["job_id", "job_key", "lane", "invocation_address", "attempt"],
+          "properties": {
+            "job_id": { "$ref": "#/$defs/job_id" },
+            "job_key": { "$ref": "#/$defs/job_key" },
+            "lane": { "$ref": "#/$defs/lane" },
+            "invocation_address": { "$ref": "#/$defs/address" },
+            "attempt": { "$ref": "#/$defs/attempt" },
+            "hints": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "batch_scale": { "type": "string", "pattern": "^0\\.[0-9]{1,4}$|^1(\\.0{1,4})?$", "$comment": "decimal-as-string per the integer rule" } }
+            }
+          }
+        },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lease_id", "ttl_s", "deadline_ts"],
+          "properties": {
+            "lease_id": { "$ref": "#/$defs/lease_id" },
+            "ttl_s": { "type": "integer", "minimum": 1 },
+            "deadline_ts": { "$ref": "#/$defs/ts" }
+          }
+        }
+      }
+    },
+    "empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "enum": ["backpressure", "drained"] },
+        "retry_after_s": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node", "lanes", "capacity"],
+          "properties": {
+            "node": { "type": "string", "maxLength": 128 },
+            "lanes": { "type": "array", "items": { "$ref": "#/$defs/lane" } },
+            "capacity": { "type": "integer", "minimum": 0 },
+            "gpu": { "type": "string", "maxLength": 128 },
+            "vram_free_mb": { "type": "integer", "minimum": 0 },
+            "current_job_id": { "$ref": "#/$defs/job_id" }
+          }
+        },
+        "lease_id": { "$ref": "#/$defs/lease_id" }
+      }
+    },
+    "beat_ok": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directives"],
+      "properties": {
+        "directives": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "oneOf": [
+              { "type": "object", "additionalProperties": false, "required": ["kind", "job_id"], "properties": { "kind": { "const": "abandon" }, "job_id": { "$ref": "#/$defs/job_id" } } },
+              { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "drain" } } },
+              { "type": "object", "additionalProperties": false, "required": ["kind", "lease_after_ts"], "properties": { "kind": { "const": "throttle" }, "lease_after_ts": { "$ref": "#/$defs/ts" } } }
+            ]
+          }
+        }
+      }
+    },
+
+    "complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "job_id", "attempt", "action_result"],
+      "properties": {
+        "lease_id": { "$ref": "#/$defs/lease_id" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "attempt": { "$ref": "#/$defs/attempt" },
+        "action_result": { "$ref": "artifacts.schema.json#/$defs/action_result" }
+      }
+    },
+    "fail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "job_id", "attempt", "error_class", "message"],
+      "properties": {
+        "lease_id": { "$ref": "#/$defs/lease_id" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "attempt": { "$ref": "#/$defs/attempt" },
+        "error_class": { "$ref": "#/$defs/error_class" },
+        "message": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "job_id", "reason"],
+      "properties": {
+        "lease_id": { "$ref": "#/$defs/lease_id" },
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "reason": { "$ref": "#/$defs/release_reason" }
+      }
+    },
+
+    "enqueue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobs"],
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["job_key", "lane", "invocation_address"],
+            "properties": {
+              "job_key": { "$ref": "#/$defs/job_key" },
+              "lane": { "$ref": "#/$defs/lane" },
+              "invocation_address": { "$ref": "#/$defs/address" },
+              "policy": { "$ref": "#/$defs/policy" },
+              "cost_estimate_usd": { "type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{2}$", "$comment": "decimal-as-string; absent or 0.00 = free lane" }
+            }
+          }
+        }
+      }
+    },
+    "enqueue_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["results"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["job_key", "job_id", "created"],
+            "properties": {
+              "job_key": { "$ref": "#/$defs/job_key" },
+              "job_id": { "$ref": "#/$defs/job_id" },
+              "created": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+
+    "subscribe": { "type": "object", "additionalProperties": false },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "job_key", "lane", "attempt", "action_result", "completed_ts"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "job_key": { "$ref": "#/$defs/job_key" },
+        "lane": { "$ref": "#/$defs/lane" },
+        "attempt": { "$ref": "#/$defs/attempt" },
+        "action_result": { "$ref": "artifacts.schema.json#/$defs/action_result" },
+        "completed_ts": { "$ref": "#/$defs/ts" }
+      }
+    },
+    "takeover": { "type": "object", "additionalProperties": false },
+
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "disposition"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "disposition": { "enum": ["persisted", "rejected"] },
+        "reason": { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "author", "reason"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "author": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "reason"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "reason": { "type": "string", "maxLength": 1024 }
+      }
+    },
+
+    "ok": { "type": "object", "additionalProperties": false },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "$ref": "#/$defs/error_code" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

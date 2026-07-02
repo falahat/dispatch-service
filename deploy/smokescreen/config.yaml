@@ -1,5 +1,8 @@
-# Smokescreen (EgressGuard) config. Ingest-lane compute reaches the internet
-# ONLY through this proxy, and only to allowlisted hosts. Deny is the default.
+# Smokescreen (EgressGuard) config. When the ingest lane lands, its compute reaches the
+# internet ONLY through this proxy, identified by an mTLS client cert (CN = role) and
+# held to its role's allowlist. Deny is the default; roleless clients are hard-denied.
+# NOT deployed until then — a resident proxy with no guarded lane is only an extra
+# reachable neighbor.
 ---
 # listen-ip / listen-port / egress-acl-file are passed as CLI flags in the deploy
 # compose command (this smokescreen version rejects them as config-file keys).

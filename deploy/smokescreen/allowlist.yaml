@@ -1,37 +1,33 @@
-# Egress allowlist for ingest-lane compute (feed/download) + GPU model pulls.
-# Smokescreen v1 ACL. Our compute clients present no identity cert (no mTLS on
-# the internal worker network — that network's isolation is itself the boundary:
-# only runner+compute+smokescreen live on it). So `allow_missing_role` sends every
-# unroled client to the `default` policy, and `global_allow_list` is the flat set
-# of hosts allowed for all. Anything not listed is denied.
+# Egress allowlist for the INGEST lane (feed/download compute) — the one lane whose
+# nature requires egress. NOT deployed yet: no plane lane egresses today (the GPU lane
+# runs from a pre-warmed offline model cache; ingest still lives in the coordinator).
+# This kit returns to the deploy compose when the ingest lane lands.
+#
+# Identity model: this smokescreen build hard-denies clients it cannot role — and the
+# only role source is a TLS client certificate (CN = role). That roleless hard-deny is
+# the fail-closed default we WANT: an unidentified container gets nothing. Wiring a lane
+# means issuing it a client cert and giving its role a `services:` stanza here, so every
+# lane carries its OWN allowlist (per-identity, least-privilege) instead of sharing a
+# flat global one.
 ---
 version: v1
 
-# Unroled clients (no client cert) are allowed to proxy, evaluated against the
-# `default` service policy below. Without this, a missing role is a hard deny.
-allow_missing_role: true
-
-# No per-identity roles (compute is unroled); everything falls through to default.
+# Per-role stanzas (CN -> policy) are added as lanes are wired for egress, e.g.:
+#   - name: ingest
+#     project: easypod
+#     action: enforce
+#     allowed_domains: [feeds.libsyn.com, ...]
 services: []
 
-# Deny-all for any client (no identity, no matching service) — the allow set is
-# `global_allow_list` below, applied to every client.
+# Anything without a matching role stanza: enforce against an EMPTY allow set = deny.
 default:
   name: default
   project: easypod
   action: enforce
   allowed_domains: []
 
-# The one allowlist that applies to every client, roled or not.
+# Feed / CDN hosts the ingest lane will need (moved into its role stanza when wired).
 global_allow_list:
-  # Model pulls (GPU compute preload): whisperx / pyannote / sentence-transformers
-  # fetch from the HF hub into the persistent cache on a miss — through the guard,
-  # never raw egress. Steady state hits the cache and makes no request.
-  - "huggingface.co"
-  - "cdn-lfs.huggingface.co"
-  - "cdn-lfs-us-1.huggingface.co"
-  - "cas-bridge.xethub.hf.co"
-  # Feed / CDN hosts for the ingest lane (feed / download compute).
   - "feeds.libsyn.com"
   - "traffic.libsyn.com"
   - "*.megaphone.fm"

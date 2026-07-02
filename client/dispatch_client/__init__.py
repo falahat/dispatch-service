@@ -16,3 +16,7 @@ from .client import DispatchClient, DispatchError
 from .frame import CONTRACT_VERSION, FrameError
 
 __all__ = ["DispatchClient", "DispatchError", "FrameError", "CONTRACT_VERSION"]
+
+# The CAS client (dispatch_client.cas) is imported explicitly by consumers that
+# need it — it carries the one non-stdlib dependency (PyNaCl for PoP signing):
+#     from dispatch_client.cas import CasClient, Credential

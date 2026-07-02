@@ -4,15 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dispatch-client"
-version = "0.1.0"
-description = "Pure-stdlib Python client for the dispatch-service app surface (wire contract v0.1)."
+version = "0.2.0"
+description = "Python client for the dispatch-service app surface (wire contract v0.1) + the PEP's CAS surface."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+# The core wire client is pure stdlib. The CAS client (dispatch_client.cas)
+# additionally needs PyNaCl for the Ed25519 proof-of-possession; it is imported
+# lazily so the wire client works without it.
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+cas = ["pynacl>=1.5"]
+test = ["pytest>=7", "pynacl>=1.5"]
 
 [tool.setuptools]
 packages = ["dispatch_client"]

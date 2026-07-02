@@ -3,6 +3,21 @@
 //! backends receive pre-authenticated requests over loopback and hold no auth
 //! crypto. See docs/TRUST_PLANE.md.
 
+pub mod canonical;
+pub mod cred;
+pub mod error;
+pub mod nonce;
+pub mod pop;
+pub mod signer;
+
+pub use canonical::Op;
+pub use cred::{attenuate_for_lease, mint, verify, AuthedRequest, Identity, MintParams};
+pub use error::{AuthError, Result};
+pub use nonce::{NonceStore, DEFAULT_WINDOW_MS};
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+#[cfg(test)]
+mod tests;

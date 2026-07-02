@@ -19,7 +19,7 @@
       "$comment": "relative; no leading /, no .. segment, no backslash, no control chars (incl. NUL) — consumers MUST re-check"
     },
     "canonical_value": {
-      "$comment": "params values: integers only among numbers (RFC 8785 determinism rule); decimals go as strings",
+      "$comment": "params values: integers only among numbers (compute containers read params in arbitrary languages; floats parse ambiguously); decimals go as strings",
       "oneOf": [
         { "type": "string", "maxLength": 65536 },
         { "type": "boolean" },
@@ -98,10 +98,10 @@
     "action_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "invocation_digest", "outputs", "metrics", "runner"],
+      "required": ["kind", "invocation_address", "outputs", "metrics", "runner"],
       "properties": {
         "kind": { "const": "action_result/v0" },
-        "invocation_digest": { "$ref": "#/$defs/address" },
+        "invocation_address": { "$ref": "#/$defs/address" },
         "outputs": {
           "type": "object",
           "maxProperties": 64,

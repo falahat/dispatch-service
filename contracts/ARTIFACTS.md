@@ -38,21 +38,27 @@ grant. The compute container receives it verbatim.
   `inputs/<name>/<entry.path>`, verifying each. Incremental by construction: entries the
   runner already holds (same address) need no transfer.
 
-## Invocation digest (the computation identity)
+## Computation identity — the invocation's own address (no separate digest)
 
-`invocation_digest = "sha256:" + hex(sha256(JCS(invocation)))` where **JCS is RFC 8785**
-(the JSON Canonicalization Scheme) over the exact invocation document. Two hard rules that
-make the digest deterministic across languages:
+**The invocation's CAS address IS its computation identity.** Because
+`invocation_address = sha256(invocation bytes)` and the invocation is exactly
+`{op, op_version, params, input addresses}`, that one address already names the precise
+computation — Bazel's *action key*, realized as content rather than recomputed. It is the
+provenance key (fetch it back to see exactly what ran) and the future action-cache key. The
+two identities stay distinct: **`job_key`** (intent, enqueue-time, idempotency) vs
+**`invocation_address`** (computation, build-time, provenance/memo).
 
-1. **Numbers appearing anywhere in `params` MUST be integers.** Non-integer numerics MUST be
-   encoded as strings (`"temperature": "0.7"`); the schema rejects fractional or exponent
-   forms. (Float serialization is the classic cross-language canonicalization footgun.)
-2. Addresses are already lowercase hex (enforced by shape).
+There is **no separate `invocation_digest`, and therefore no cross-language canonicalizer** —
+every component but the authoring app compares addresses as opaque strings.
 
-The digest names the *computation*: same op, same version, same params, same input
-addresses ⇒ same digest. It is recorded in the action result (provenance) and is the key of
-any future action cache. The `job_key` (intent, enqueue-time) and the invocation digest
-(computation, build-time) are deliberately distinct identities.
+- **Canonicalization is an app-side SHOULD, not a wire MUST.** The app SHOULD emit stable
+  bytes (sorted keys) so re-building the same computation yields the same address and the
+  action cache hits. It is never correctness-critical: a formatting drift costs at most a
+  memo miss (a recompute), never a wrong result.
+- **`params` numbers MUST still be integers** (decimals as strings, `"temperature": "0.7"`;
+  the schema rejects fractional/exponent forms) — retained not for digest determinism but
+  because `params` are read by **compute containers in arbitrary languages**, where float
+  parsing is ambiguous.
 
 ## Manifest (`kind: "manifest/v0"`)
 
@@ -76,13 +82,14 @@ The runner's `complete` payload — **addresses and numbers only, never domain b
 ```jsonc
 {
   "kind": "action_result/v0",
-  "invocation_digest": "sha256:…",
+  "invocation_address": "sha256:…",   // echoed from the grant — the computation that ran
   "outputs": { "transcript": { "address": "sha256:…", "size": 482133 } },  // ≤ 64, names as inputs
   "metrics": { "wall_s": 512, "work_units": 3600, "peak_vram_mb": 9800 },  // integers only
   "runner":  { "node": "desktop-ai", "version": "runner/0.1.0" }
 }
 ```
 
-The app resolves `outputs` from the CAS (verify-on-read), parses fail-closed, persists into
-its own store, then `ack`s. A re-persist after redelivery MUST be a no-op (content-addressed
+The runner **echoes** `invocation_address` from its grant (it cannot lie — it fetched exactly
+that address, whose bytes are hash-bound). The app resolves `outputs` from the CAS
+(verify-on-read), parses fail-closed, persists into its own store, then `ack`s. A re-persist after redelivery MUST be a no-op (content-addressed
 domain ids make this natural).

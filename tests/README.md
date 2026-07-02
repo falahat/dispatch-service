@@ -12,8 +12,9 @@ suites for its surface before merge.
   JSON-Schema-test-suite pattern). Subtrees:
   - `wire/` — golden request→response transcripts per verb + the `states.json`-derived
     legal-transition matrix (every illegal transition asserted impossible).
-  - `artifacts/` — canonicalization + digest vectors (same invocation → same
-    `invocation_digest` across languages; the integer-only and RFC-8785 rules exercised).
+  - `artifacts/` — address + integrity vectors (a fixed invocation → a fixed
+    `invocation_address`; verify-on-read/write; the integer-only `params` rule; the
+    manifest traversal guard). No canonicalizer to test — canonicalization is app-side.
   - `auth/` — the trust-core verdict vectors (accept / deny-with-reason). **Python
     trust-core and the Rust PEP MUST both pass this file** — the born-Rust PEP is what makes
     language-neutrality real in Phase 1, not Phase 5.

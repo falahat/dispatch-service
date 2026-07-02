@@ -6,6 +6,16 @@ reference is easy-podcast's [`docs/DISPATCH_PLANE.md`](../transcription/easy-pod
 this repo is its implementation home. Auth is [trust-core](../trust-core) (Biscuit + PoP);
 pure policy math is [dispatch-kit](../dispatch-kit).
 
+## Status
+
+The **plane is built and verified**: dispatcher, runner, and the Rust PEP/PDP +
+signer, plus the Python client, `dispatchctl`, the echo-compute reference image,
+and the compose/egress-jail topology. Tested at every layer — unit suites,
+component integration, a **cross-language auth E2E** (Go runner ⇄ Rust PEP ⇄
+dispatcher + CAS), and a **SIGKILL crash-injection** proving exactly-once recovery.
+What remains is the **cutover** of the two live apps and the on-hardware deploy —
+scoped file-by-file in [`docs/CUTOVER.md`](docs/CUTOVER.md).
+
 ## Layout
 
 | Path | What | Language |

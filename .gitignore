@@ -3,3 +3,9 @@ __pycache__/
 target/
 node_modules/
 *.pyc
+.pytest_cache/
+*.exe
+*.db
+*.db-wal
+*.db-shm
+dispatch.db*

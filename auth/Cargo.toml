@@ -1,0 +1,40 @@
+[package]
+name = "dispatch-auth"
+version = "0.1.0"
+edition = "2021"
+description = "The dispatch plane's single auth engine: Biscuit + PoP verification (PEP/PDP) and the credential signer."
+license = "MIT"
+
+[lib]
+name = "dispatch_auth"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pep"
+path = "src/bin/pep.rs"
+
+[[bin]]
+name = "signer"
+path = "src/bin/signer.rs"
+
+[dependencies]
+biscuit-auth = "5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+redb = "2"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "client-legacy"] }
+http-body-util = "0.1"
+bytes = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"

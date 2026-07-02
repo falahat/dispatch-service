@@ -1,8 +1,9 @@
 # CAS contract v0 — the byte plane, as seen through the PEP
 
-Normative. The store itself is **adopted** (bazel-remote preferred: it hash-verifies CAS
-puts natively; MinIO acceptable with PEP-side streaming verification). This page specifies
-the surface the **PEP** (born Rust) exposes to runners and apps — the only way bytes move.
+Normative. The store is **bazel-remote** (adopted; it hash-verifies CAS puts natively, so the
+PEP inherits integrity). This page specifies the surface the **PEP** (Rust) exposes to
+runners and apps — the only way bytes move. (A swap to MinIO would only require the PEP to
+stream-verify PUTs itself; blobs are content-addressed, so no migration.)
 
 ## HTTP surface
 

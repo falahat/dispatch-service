@@ -23,6 +23,23 @@ The existing Python `dispatch-kit` / `trust-core` / easy-podcast coordinator are
 behavioural *reference* (what the Go/Rust code must do), retired once the migration deletes
 their last consumer.
 
+## Stack (decided)
+
+- **Monorepo.** All new components live here, one `compose.yml`, one CI. Co-deployment +
+  fatal version-mismatch make a single repo the only sane unit.
+- **Go** components: stdlib `net/http`, `modernc.org/sqlite` (pure-Go, cgo-free → static
+  scratch image). **Rust** components: tokio + hyper/axum + `biscuit-auth`.
+- **CAS = bazel-remote** (verifies digests on write natively; the PEP inherits integrity).
+  The cloud lane is the same address space over GCS signed URLs.
+- **EgressGuard = smokescreen** (adopted), the ingest lane's only outbound neighbor — built
+  in Phase 1, not later.
+- **Cost gate** (reserve-on-approval, `$0` fail-closed default) is **in v0** — inert until
+  cloud is enabled.
+- **Config:** one `plane.toml` per stack, read at boot; change = restart (downtime is free).
+- **Signer cutover preserves the existing issuer key + pairings** (same secrets-volume
+  format — re-keying would force re-enrolling every device for no gain).
+- **First cutover: easy-podcast** (the reference, the live fleet, the daily-driver data).
+
 ## Rules for implementers (human or agent)
 
 1. Implement against `contracts/schemas/*.json` and `contracts/states.json` — never against

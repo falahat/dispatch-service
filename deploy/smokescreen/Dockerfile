@@ -1,7 +1,8 @@
 # EgressGuard = stripe/smokescreen embedded with a static "worker" role (main.go —
 # the vendor's RoleFromRequest hook; the stock binary can only role clients via TLS
-# client certs and hard-denies everything else). Pinned via go.mod/go.sum.
-FROM golang:1.22-bookworm AS build
+# client certs and hard-denies everything else). Pinned via go.mod/go.sum. The build
+# image must satisfy the smokescreen pin's `go 1.25` (GOTOOLCHAIN=local — no download).
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum main.go ./
 RUN go build -o /smokescreen .

@@ -119,12 +119,12 @@ const (
 // Policy is the dispatcher-enforced retry/routing policy attached to a job.
 // Pointers distinguish "absent" (apply default) from an explicit value.
 type Policy struct {
-	MaxAttempts         *int                          `json:"max_attempts,omitempty"`
-	BackoffClass        *BackoffClass                 `json:"backoff_class,omitempty"`
-	ErrorClassOverrides map[ErrorClass]string         `json:"error_class_overrides,omitempty"`
-	ExpectedWallS       *int                          `json:"expected_wall_s,omitempty"`
-	Priority            *int                          `json:"priority,omitempty"`
-	ReleaseCap          *int                          `json:"release_cap,omitempty"`
+	MaxAttempts         *int                  `json:"max_attempts,omitempty"`
+	BackoffClass        *BackoffClass         `json:"backoff_class,omitempty"`
+	ErrorClassOverrides map[ErrorClass]string `json:"error_class_overrides,omitempty"`
+	ExpectedWallS       *int                  `json:"expected_wall_s,omitempty"`
+	Priority            *int                  `json:"priority,omitempty"`
+	ReleaseCap          *int                  `json:"release_cap,omitempty"`
 }
 
 // --- runner surface ---
@@ -144,10 +144,10 @@ type Hello struct {
 }
 
 type HelloOK struct {
-	ServerTS            int64 `json:"server_ts"`
-	HeartbeatIntervalS  int   `json:"heartbeat_interval_s"`
-	MinWaitS            int   `json:"min_wait_s"`
-	MaxWaitS            int   `json:"max_wait_s"`
+	ServerTS           int64 `json:"server_ts"`
+	HeartbeatIntervalS int   `json:"heartbeat_interval_s"`
+	MinWaitS           int   `json:"min_wait_s"`
+	MaxWaitS           int   `json:"max_wait_s"`
 }
 
 // Lease is the long-poll request.
@@ -158,12 +158,12 @@ type Lease struct {
 
 // GrantJob is the job description carried in a grant.
 type GrantJob struct {
-	JobID             string      `json:"job_id"`
-	JobKey            string      `json:"job_key"`
-	Lane              string      `json:"lane"`
+	JobID             string           `json:"job_id"`
+	JobKey            string           `json:"job_key"`
+	Lane              string           `json:"lane"`
 	InvocationAddress artifact.Address `json:"invocation_address"`
-	Attempt           int         `json:"attempt"`
-	Hints             *GrantHints `json:"hints,omitempty"`
+	Attempt           int              `json:"attempt"`
+	Hints             *GrantHints      `json:"hints,omitempty"`
 }
 
 // GrantHints are optional sizing feedback (decimals as strings per the rule).

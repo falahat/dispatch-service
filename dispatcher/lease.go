@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"time"
@@ -33,7 +34,8 @@ type claimResult struct {
 
 // Lease is the runner's long-poll: it blocks up to the clamped wait for a job
 // runnable in one of the requested lanes, returning a grant or an empty reason.
-func (d *Dispatcher) Lease(runnerID string, req wire.Lease) (*wire.Grant, *wire.Empty, *wire.Error) {
+// ctx cancellation (server shutdown / client disconnect) unblocks it promptly.
+func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease) (*wire.Grant, *wire.Empty, *wire.Error) {
 	if len(req.Lanes) == 0 || len(req.Lanes) > 32 {
 		return nil, nil, &wire.Error{Code: wire.CodeInvalid, Message: "lease: 1..32 lanes required"}
 	}
@@ -71,6 +73,9 @@ func (d *Dispatcher) Lease(runnerID string, req wire.Lease) (*wire.Grant, *wire.
 			select {
 			case <-wake:
 			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				return nil, &wire.Empty{}, nil
 			}
 			t.Stop()
 		}

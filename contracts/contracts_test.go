@@ -65,12 +65,12 @@ func TestLegalTransitions(t *testing.T) {
 func TestIllegalTransitionsHaveNoTargets(t *testing.T) {
 	sm := contracts.Machine()
 	illegal := []struct{ from, event string }{
-		{"QUEUED", "complete"},   // can't complete what never ran
-		{"RUNNING", "ack"},       // ack is app-side from PERSISTING only
-		{"SUCCEEDED", "claim"},   // terminal
-		{"FAILED", "complete"},   // terminal
-		{"PERSISTING", "claim"},  // in the inbox, not runnable
-		{"QUEUED", "heartbeat"},  // not an event on QUEUED
+		{"QUEUED", "complete"},  // can't complete what never ran
+		{"RUNNING", "ack"},      // ack is app-side from PERSISTING only
+		{"SUCCEEDED", "claim"},  // terminal
+		{"FAILED", "complete"},  // terminal
+		{"PERSISTING", "claim"}, // in the inbox, not runnable
+		{"QUEUED", "heartbeat"}, // not an event on QUEUED
 		{"AWAITING_APPROVAL", "claim"},
 	}
 	for _, c := range illegal {

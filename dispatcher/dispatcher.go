@@ -100,9 +100,9 @@ func (b *broadcaster) broadcast() {
 // --- rate limiter: per-runner grants per minute ---
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	perMin   int
-	grants   map[string][]int64 // runnerID -> recent grant timestamps (ms)
+	mu     sync.Mutex
+	perMin int
+	grants map[string][]int64 // runnerID -> recent grant timestamps (ms)
 }
 
 func newRateLimiter(perMin int) *rateLimiter {
@@ -142,8 +142,8 @@ type subMgr struct {
 }
 
 type subscription struct {
-	wake     chan struct{}  // buffered(1): a completion may be available
-	takeover chan struct{}  // closed when a newer subscribe supersedes this one
+	wake     chan struct{} // buffered(1): a completion may be available
+	takeover chan struct{} // closed when a newer subscribe supersedes this one
 }
 
 func newSubMgr() *subMgr { return &subMgr{} }

@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -63,7 +64,7 @@ func hello(t *testing.T, d *Dispatcher, id string, lanes ...string) {
 
 func leaseOne(t *testing.T, d *Dispatcher, runner string, lanes ...string) (*wire.Grant, *wire.Empty) {
 	t.Helper()
-	g, e, werr := d.Lease(runner, wire.Lease{Lanes: lanes, WaitS: 0})
+	g, e, werr := d.Lease(context.Background(), runner, wire.Lease{Lanes: lanes, WaitS: 0})
 	if werr != nil {
 		t.Fatalf("lease: %v", werr)
 	}

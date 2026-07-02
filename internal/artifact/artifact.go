@@ -76,10 +76,10 @@ type Output struct {
 // kept as raw bytes: no non-app component canonicalizes or reinterprets it,
 // and keeping it raw preserves the exact bytes handed to the compute container.
 type Invocation struct {
-	Kind      string          `json:"kind"` // must be "invocation/v0"
-	Op        string          `json:"op"`
-	OpVersion int             `json:"op_version"`
-	Params    json.RawMessage `json:"params"`
+	Kind      string           `json:"kind"` // must be "invocation/v0"
+	Op        string           `json:"op"`
+	OpVersion int              `json:"op_version"`
+	Params    json.RawMessage  `json:"params"`
 	Inputs    map[string]Input `json:"inputs"`
 }
 

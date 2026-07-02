@@ -33,8 +33,8 @@ func TestMalformedAddresses(t *testing.T) {
 		"sha1:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
 		"sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824", // uppercase
 		"sha256:xyz",
-		"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", // no scheme
-		"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b982",  // 63 hex
+		"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",         // no scheme
+		"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b982",   // 63 hex
 		"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b98244", // 65 hex
 	}
 	for _, b := range bad {
@@ -52,14 +52,14 @@ func TestTraversalGuard(t *testing.T) {
 		"..",
 		"a/..",
 		"../",
-		"/etc/passwd",         // absolute
-		`a\b`,                 // backslash (windows separator)
-		`..\..\windows`,       // backslash traversal
-		"a/b/../../../c",      // deep traversal
-		"foo/\x00bar",         // NUL
-		"foo/\x01bar",         // control char
+		"/etc/passwd",            // absolute
+		`a\b`,                    // backslash (windows separator)
+		`..\..\windows`,          // backslash traversal
+		"a/b/../../../c",         // deep traversal
+		"foo/\x00bar",            // NUL
+		"foo/\x01bar",            // control char
 		strings.Repeat("a", 513), // over length
-		"",                    // empty
+		"",                       // empty
 	}
 	for _, p := range attacks {
 		if err := artifact.ValidateRelPath(p); err == nil {
@@ -90,15 +90,15 @@ func TestCanonicalParamsIntegerOnly(t *testing.T) {
 		}
 	}
 	bad := []string{
-		`{"temp": 0.7}`,       // fractional
-		`{"x": 1e3}`,          // exponent
-		`{"x": 1.0}`,          // trailing .0 is still a float form
-		`{"a": [1, 2.5]}`,     // nested float
-		`{"n": {"m": 3.14}}`,  // deep float
-		`[1,2,3]`,             // params must be an object
-		`"string"`,            // not an object
-		`42`,                  // not an object
-		`{"a": 1} trailing`,   // trailing data
+		`{"temp": 0.7}`,      // fractional
+		`{"x": 1e3}`,         // exponent
+		`{"x": 1.0}`,         // trailing .0 is still a float form
+		`{"a": [1, 2.5]}`,    // nested float
+		`{"n": {"m": 3.14}}`, // deep float
+		`[1,2,3]`,            // params must be an object
+		`"string"`,           // not an object
+		`42`,                 // not an object
+		`{"a": 1} trailing`,  // trailing data
 	}
 	for _, s := range bad {
 		if err := artifact.ValidateCanonicalParams(json.RawMessage(s)); err == nil {

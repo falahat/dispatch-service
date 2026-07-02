@@ -62,7 +62,7 @@ func ResolvePolicy(p *wire.Policy) ResolvedPolicy {
 // retry (bounded by max_attempts / the poison cap); deterministic failures are
 // terminal — retrying them just burns a GPU. A per-job override flips any class.
 var defaultRetriable = map[wire.ErrorClass]bool{
-	wire.ClassOOM:       true,  // retry smaller (batch_scale hint)
+	wire.ClassOOM:       true, // retry smaller (batch_scale hint)
 	wire.ClassTimeout:   true,
 	wire.ClassRateLimit: true,
 	wire.ClassNetwork:   true,

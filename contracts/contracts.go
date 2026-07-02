@@ -20,11 +20,11 @@ var files embed.FS
 // the dispatcher implements them in code — this table binds only which
 // (from, event) -> to transitions are legal.
 type Transition struct {
-	From  *string `json:"from"`
-	Event string  `json:"event"`
-	To    string  `json:"to"`
-	Guard string  `json:"guard,omitempty"`
-	Effect string `json:"effect,omitempty"`
+	From   *string `json:"from"`
+	Event  string  `json:"event"`
+	To     string  `json:"to"`
+	Guard  string  `json:"guard,omitempty"`
+	Effect string  `json:"effect,omitempty"`
 }
 
 // StateInfo is a state's metadata.

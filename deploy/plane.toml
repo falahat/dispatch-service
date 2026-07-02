@@ -1,0 +1,33 @@
+# Dispatcher config for the containerized plane. Change = restart.
+db_path = "/data/dispatch.db"
+runner_listen = "0.0.0.0:7700"   # backplane only; the PEP fronts this
+app_socket = "/run/dispatch/app.sock"
+heartbeat_interval_s = 15
+lease_ttl_s = 300
+min_wait_s = 0
+max_wait_s = 60
+runner_rate_per_min = 240
+sweep_interval_s = 5
+
+[default_lane]
+concurrency = 0
+persisting_watermark = 64
+
+[lanes.transcribe]
+concurrency = 1        # one GPU job at a time
+persisting_watermark = 8
+
+[lanes.embed]
+concurrency = 4
+persisting_watermark = 64
+
+[lanes.feed]
+concurrency = 2
+persisting_watermark = 32
+
+[lanes.download]
+concurrency = 2
+persisting_watermark = 32
+
+[budget]
+cap_usd = "0.00"       # fail-closed: no priced (cloud) job runs until raised

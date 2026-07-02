@@ -1,0 +1,15 @@
+# Egress allowlist for ingest-lane compute (feed/download). Default deny;
+# add the podcast feed + media hosts your corpus actually fetches. Enforced
+# in "enforce" mode — a request to any other host is refused.
+---
+version: v1
+default:
+  name: default
+  action: enforce
+  allowed_domains:
+    # Example placeholders — replace with the real feed/CDN hosts.
+    - "*.libsyn.com"
+    - "*.megaphone.fm"
+    - "*.simplecast.com"
+    - "*.acast.com"
+    - "feeds.buzzsprout.com"

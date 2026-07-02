@@ -1,0 +1,120 @@
+# The dispatch plane, single-host, for local integration + E2E. Production
+# distributes the runner/compute pairs across the tailnet (see deploy/README.md);
+# the container graph is identical.
+#
+# Trust boundaries as network topology:
+#   backplane (internal) — pep <-> dispatcher <-> cas over "loopback"; never exposed.
+#   edge                 — the pep's tailnet-facing surfaces; the only exposed doors.
+#   worker  (internal)   — a runner and its compute container; compute has no route
+#                          out except (for ingest lanes) the smokescreen egress guard.
+#   egress               — smokescreen's path to the internet.
+#
+# Bootstrap (once): ./deploy/bootstrap.sh generates secrets/, .env, and cred/.
+
+networks:
+  backplane:
+    internal: true
+  edge: {}
+  worker:
+    internal: true
+  egress: {}
+
+volumes:
+  cas-data: {}
+  dispatch-db: {}
+  app-sock: {}
+  pep-nonces: {}
+  work: {}
+
+services:
+  # Content-addressable byte store (adopted). Only the PEP may reach it.
+  cas:
+    image: buchgr/bazel-remote-cache:latest
+    command: ["--dir=/data", "--max_size=64", "--http_address=0.0.0.0:8080"]
+    networks: [backplane]
+    volumes:
+      - cas-data:/data
+    restart: unless-stopped
+
+  # The durable work service. Runner surface is reached only via the PEP; the
+  # app surface is a UDS on a shared volume.
+  dispatcher:
+    build:
+      context: .
+      dockerfile: dispatcher/Dockerfile
+    networks: [backplane]
+    volumes:
+      - dispatch-db:/data
+      - app-sock:/run/dispatch
+      - ./deploy/plane.toml:/etc/dispatch/plane.toml:ro
+    restart: unless-stopped
+
+  # The single verify engine. Fronts BOTH tailnet surfaces; holds only the root
+  # public key. The two exposed ports are the plane's only external doors.
+  pep:
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+    depends_on: [dispatcher, cas]
+    networks: [backplane, edge]
+    env_file: .env # PEP_ROOT_PUBKEY, written by bootstrap
+    environment:
+      PEP_DISPATCHER_ADDR: dispatcher:7700
+      PEP_CAS_BACKEND: http://cas:8080
+      PEP_CAS_STYLE: bazel
+      PEP_RUNNER_LISTEN: 0.0.0.0:7443
+      PEP_CAS_LISTEN: 0.0.0.0:8443
+      PEP_NONCE_DB: /data/nonces.redb
+      RUST_LOG: info
+    volumes:
+      - pep-nonces:/data
+    ports:
+      - "7443:7443" # runner surface (tailnet)
+      - "8443:8443" # cas surface (tailnet)
+    restart: unless-stopped
+
+  # EgressGuard (adopted smokescreen): the ONLY outbound neighbor of ingest-lane
+  # compute. On [worker] (reachable by ingest compute) + [egress] (reaches out).
+  smokescreen:
+    build:
+      context: ./deploy/smokescreen
+    command: ["--config-file", "/etc/smokescreen/config.yaml"]
+    networks: [worker, egress]
+    volumes:
+      - ./deploy/smokescreen/config.yaml:/etc/smokescreen/config.yaml:ro
+      - ./deploy/smokescreen/allowlist.yaml:/etc/smokescreen/allowlist.yaml:ro
+    restart: unless-stopped
+
+  # A worker: the runner drives its paired compute over the invoke protocol on
+  # the private worker network; both share the /work volume. This example runs
+  # the echo compute on the `embed` lane.
+  runner-embed:
+    build:
+      context: .
+      dockerfile: runner/Dockerfile
+    depends_on: [pep, echo]
+    networks: [edge, worker]
+    environment:
+      DISPATCHER_ADDR: pep:7443
+      CAS_URL: http://pep:8443
+      INVOKE_ADDR: echo:8080
+      WORK_ROOT: /work
+      LANES: embed
+      CREDENTIAL: /run/cred/cred.json
+    volumes:
+      - work:/work
+      - ./deploy/cred:/run/cred:ro
+    restart: unless-stopped
+
+  # The compute container: jailed on the worker network, no credentials, no
+  # egress. (An ingest-lane image would additionally set HTTP(S)_PROXY to
+  # smokescreen and be its only outbound door.)
+  echo:
+    build:
+      context: ./compute/echo
+    networks: [worker]
+    environment:
+      INVOKE_ADDR: 0.0.0.0:8080
+    volumes:
+      - work:/work
+    restart: unless-stopped

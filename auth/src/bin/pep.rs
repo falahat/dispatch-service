@@ -5,7 +5,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::PublicKey;
-use dispatch_auth::cas_proxy::{CasConfig, CasProxy};
+use dispatch_auth::cas_proxy::{BackendStyle, CasConfig, CasProxy};
 use dispatch_auth::frame_proxy::FrameProxy;
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
@@ -94,12 +94,14 @@ async fn main() {
         now.clone(),
     );
     let quota = Quota::new(max_req, max_bytes);
+    let style = BackendStyle::parse(&env("PEP_CAS_STYLE", "passthrough"));
     let cas = CasProxy::new(
         root_pub,
         nonces.clone(),
         CasConfig {
             backend: cas_backend.clone(),
             max_blob_bytes,
+            style,
         },
         quota,
         now.clone(),

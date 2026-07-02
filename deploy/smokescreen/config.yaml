@@ -1,0 +1,15 @@
+# Smokescreen (EgressGuard) config. Ingest-lane compute reaches the internet
+# ONLY through this proxy, and only to allowlisted hosts. Deny is the default.
+---
+listen_ip: 0.0.0.0
+listen_port: 4750
+egress_acl_file: /etc/smokescreen/allowlist.yaml
+# Deny access to link-local / private ranges by default (SSRF hardening,
+# including the CGNAT range). smokescreen blocks RFC1918 + loopback natively;
+# these add the remaining special ranges.
+deny_ranges:
+  - 169.254.0.0/16
+  - 100.64.0.0/10
+  - 127.0.0.0/8
+  - ::1/128
+  - fe80::/10

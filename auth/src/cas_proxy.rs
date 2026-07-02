@@ -22,11 +22,37 @@ use tokio::net::TcpListener;
 
 type BoxedBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
+/// How the backend store names blobs. The PEP's own surface is always
+/// `/blobs/sha256/<hex>`; the backend path may differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BackendStyle {
+    /// Forward `/blobs/sha256/<hex>` verbatim (MinIO-style / the test stub).
+    Passthrough,
+    /// Rewrite to `/cas/<hex>` (bazel-remote's HTTP CAS surface).
+    Bazel,
+}
+
+impl BackendStyle {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "bazel" => BackendStyle::Bazel,
+            _ => BackendStyle::Passthrough,
+        }
+    }
+    fn path(&self, hexaddr: &str) -> String {
+        match self {
+            BackendStyle::Passthrough => format!("/blobs/sha256/{hexaddr}"),
+            BackendStyle::Bazel => format!("/cas/{hexaddr}"),
+        }
+    }
+}
+
 /// Configuration for the CAS proxy.
 #[derive(Clone)]
 pub struct CasConfig {
     pub backend: String,     // e.g. http://127.0.0.1:9092
     pub max_blob_bytes: u64, // per-PUT cap
+    pub style: BackendStyle, // backend blob-path convention
 }
 
 /// The CAS proxy (cheaply cloneable — shared state is behind Arc).
@@ -137,7 +163,12 @@ impl CasProxy {
         }
 
         // Forward to the backend, streaming the body through (no buffering).
-        let backend_uri = format!("{}{}", self.cfg.backend.trim_end_matches('/'), path);
+        // The backend blob path may differ from the PEP's own surface.
+        let backend_uri = format!(
+            "{}{}",
+            self.cfg.backend.trim_end_matches('/'),
+            self.cfg.style.path(&hexaddr)
+        );
         let (parts, body) = req.into_parts();
         let boxed: BoxedBody = body
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)

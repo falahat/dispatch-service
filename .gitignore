@@ -9,3 +9,7 @@ node_modules/
 *.db-wal
 *.db-shm
 dispatch.db*
+.env
+deploy/secrets/
+deploy/cred/
+*.redb

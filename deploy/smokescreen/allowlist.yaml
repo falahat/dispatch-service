@@ -7,7 +7,13 @@ default:
   name: default
   action: enforce
   allowed_domains:
-    # Example placeholders — replace with the real feed/CDN hosts.
+    # Model pulls (GPU compute preload): whisperx/pyannote fetch from the HF
+    # hub into the persistent cache volume on a cache miss — through the guard,
+    # never raw egress. Steady state hits the cache and makes no request.
+    - "huggingface.co"
+    - "*.huggingface.co"
+    - "*.hf.co"
+    # Feed/CDN hosts for the ingest lane (feed/download compute).
     - "*.libsyn.com"
     - "*.megaphone.fm"
     - "*.simplecast.com"

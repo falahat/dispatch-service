@@ -1,12 +1,14 @@
-//! The PEP: the single in-path enforcement point. It fronts BOTH tailnet
-//! surfaces — the dispatcher's runner surface (framed) and the CAS (HTTP) —
-//! verifying Biscuit + PoP and forwarding pre-authenticated traffic to the
-//! co-located backends over loopback. It holds only the root PUBLIC key.
+//! The PEP: the single in-path enforcement point. It fronts the tailnet
+//! surfaces — the dispatcher's runner surface (framed), the CAS (HTTP), and,
+//! optionally, an app's generic HTTP surface (route-table driven) — verifying
+//! Biscuit + PoP and forwarding pre-authenticated traffic to the co-located
+//! backends over loopback. It holds only the root PUBLIC key.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::PublicKey;
 use dispatch_auth::cas_proxy::{BackendStyle, CasConfig, CasProxy};
 use dispatch_auth::frame_proxy::FrameProxy;
+use dispatch_auth::http_proxy::{HttpProxy, RouteTableSpec};
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
 use std::sync::Arc;
@@ -56,6 +58,19 @@ async fn main() {
     let cas_backend = env("PEP_CAS_BACKEND", "http://127.0.0.1:9092");
     let runner_listen = env("PEP_RUNNER_LISTEN", "0.0.0.0:7443");
     let cas_listen = env("PEP_CAS_LISTEN", "0.0.0.0:8443");
+    // Optional generic HTTP surface (app API). Both the route table AND the
+    // listen address must be set for it to come up — absent = surface not served.
+    let http_routes = std::env::var("PEP_HTTP_ROUTES").ok();
+    let http_listen = std::env::var("PEP_HTTP_LISTEN").ok();
+    let http_max_req: u32 = env("PEP_HTTP_MAX_REQ_PER_MIN", "6000")
+        .parse()
+        .unwrap_or(6000);
+    let http_max_bytes: u64 = env(
+        "PEP_HTTP_MAX_BYTES_PER_MIN",
+        &(4u64 * 1024 * 1024 * 1024).to_string(),
+    )
+    .parse()
+    .unwrap_or(4 << 30);
     let max_blob_bytes: u64 = env(
         "PEP_MAX_BLOB_BYTES",
         &(8u64 * 1024 * 1024 * 1024).to_string(),
@@ -107,6 +122,34 @@ async fn main() {
         now.clone(),
     );
 
+    // Build the optional generic HTTP surface if configured. A malformed route
+    // table is a boot failure, never a request-time surprise.
+    let http = match (http_routes, http_listen) {
+        (Some(routes_path), Some(listen)) => {
+            let raw = std::fs::read_to_string(&routes_path).unwrap_or_else(|e| {
+                eprintln!("pep: read http route table {routes_path}: {e}");
+                std::process::exit(2);
+            });
+            let spec: RouteTableSpec = toml::from_str(&raw).unwrap_or_else(|e| {
+                eprintln!("pep: parse http route table {routes_path}: {e}");
+                std::process::exit(2);
+            });
+            let cfg = spec.resolve().unwrap_or_else(|e| {
+                eprintln!("pep: {e}");
+                std::process::exit(2);
+            });
+            let backend = cfg.backend.clone();
+            let http_quota = Quota::new(http_max_req, http_max_bytes);
+            let proxy = HttpProxy::new(root_pub, nonces.clone(), cfg, http_quota, now.clone());
+            Some((proxy, listen, backend))
+        }
+        (None, None) => None,
+        _ => {
+            eprintln!("pep: set BOTH PEP_HTTP_ROUTES and PEP_HTTP_LISTEN, or neither");
+            std::process::exit(2);
+        }
+    };
+
     let frame_ln = TcpListener::bind(&runner_listen).await.unwrap_or_else(|e| {
         eprintln!("pep: bind runner surface {runner_listen}: {e}");
         std::process::exit(1);
@@ -119,5 +162,24 @@ async fn main() {
     log::info!("pep: runner surface {runner_listen} -> {dispatcher_addr}; cas surface {cas_listen} -> {cas_backend}");
     let f = tokio::spawn(frame.serve(frame_ln));
     let c = tokio::spawn(cas.serve(cas_ln));
-    let _ = tokio::join!(f, c);
+
+    let h = if let Some((proxy, listen, backend)) = http {
+        let http_ln = TcpListener::bind(&listen).await.unwrap_or_else(|e| {
+            eprintln!("pep: bind http surface {listen}: {e}");
+            std::process::exit(1);
+        });
+        log::info!("pep: http surface {listen} -> {backend}");
+        Some(tokio::spawn(proxy.serve(http_ln)))
+    } else {
+        None
+    };
+
+    match h {
+        Some(h) => {
+            let _ = tokio::join!(f, c, h);
+        }
+        None => {
+            let _ = tokio::join!(f, c);
+        }
+    }
 }

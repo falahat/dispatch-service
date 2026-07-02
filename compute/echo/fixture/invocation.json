@@ -1,0 +1,16 @@
+{
+  "kind": "invocation/v0",
+  "op": "echo",
+  "op_version": 1,
+  "params": {
+    "note": "reference fixture for the echo compute image",
+    "rounds": 1,
+    "verbose": true
+  },
+  "inputs": {
+    "data": {
+      "address": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "kind": "blob"
+    }
+  }
+}

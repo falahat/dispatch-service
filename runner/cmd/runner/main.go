@@ -26,14 +26,28 @@ func main() {
 		runCmd(os.Args[2:], log)
 	case "check":
 		checkCmd(os.Args[2:], log)
+	case "keygen":
+		keygenCmd()
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: runner run [flags] | runner check <image> [--fixture dir]")
+	fmt.Fprintln(os.Stderr, "usage: runner run [flags] | runner check <image> [--fixture dir] | runner keygen")
 	os.Exit(2)
+}
+
+// keygenCmd mints a fresh Ed25519 keypair; enroll the printed pubkey with the
+// signer, then assemble a credential file {biscuit, pubkey_hex, seed_b64}.
+func keygenCmd() {
+	seed, pub, err := runner.GenerateKeypair()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "keygen:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("pubkey_hex=%s\nseed_b64=%s\n", pub, seed)
+	fmt.Fprintln(os.Stderr, "next: signer enroll --pubkey "+pub+" --rights ... --lanes ...  then write {biscuit, pubkey_hex, seed_b64} to a credential file")
 }
 
 func runCmd(args []string, log *slog.Logger) {
@@ -50,6 +64,7 @@ func runCmd(args []string, log *slog.Logger) {
 	fs.IntVar(&cfg.Capacity, "capacity", 1, "concurrent capacity")
 	fs.IntVar(&cfg.LeaseWaitS, "wait", 30, "lease long-poll seconds")
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
+	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
 	_ = fs.Parse(args)
 
 	if *lanes != "" {
@@ -60,9 +75,27 @@ func runCmd(args []string, log *slog.Logger) {
 		os.Exit(2)
 	}
 
-	// Direct/trusted mode (no PEP wrapper / CAS signer). Production wires the
-	// Biscuit+PoP signer + frame wrapper here.
-	rn := runner.New(cfg, nil, nil, log)
+	// PEP mode when a credential is provided (Biscuit + PoP signer + frame
+	// wrapper); otherwise direct/trusted mode.
+	var signer runner.Signer
+	var wrapper runner.FrameWrapper
+	if *credPath != "" {
+		cred, err := runner.LoadCredential(*credPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "runner run:", err)
+			os.Exit(2)
+		}
+		ps, err := runner.NewPoPSigner(cred)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "runner run:", err)
+			os.Exit(2)
+		}
+		signer, wrapper = ps, ps
+		if cfg.RunnerID == "" {
+			cfg.RunnerID = cred.PubkeyHex
+		}
+	}
+	rn := runner.New(cfg, signer, wrapper, log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

@@ -1,36 +1,35 @@
-# Egress allowlist for the INGEST lane (feed/download compute) — the one lane whose
-# nature requires egress. NOT deployed yet: no plane lane egresses today (the GPU lane
-# runs from a pre-warmed offline model cache; ingest still lives in the coordinator).
-# This kit returns to the deploy compose when the ingest lane lands.
+# Egress allowlist for the plane's worker lane. Every worker-net client gets the static
+# "worker" role (main.go — the internal network's membership is the identity: only a
+# runner and its compute pair live there), and that role reaches EXACTLY the known
+# model hosts below; everything else is denied. Models pull themselves on first use
+# into the cache volume (a speed/convenience cache, not a maintained artifact).
 #
-# Identity model: this smokescreen build hard-denies clients it cannot role — and the
-# only role source is a TLS client certificate (CN = role). That roleless hard-deny is
-# the fail-closed default we WANT: an unidentified container gets nothing. Wiring a lane
-# means issuing it a client cert and giving its role a `services:` stanza here, so every
-# lane carries its OWN allowlist (per-identity, least-privilege) instead of sharing a
-# flat global one.
+# The host set is EMPIRICAL — observed from a full production-policy pipeline run
+# (transcribe + align + diarize + embed), not guessed:
+#   huggingface.co + cdn-lfs*/xet     hub API, LFS + xet-backed weight downloads
+#   download.pytorch.org              torchaudio alignment pipelines (wav2vec2)
+#   raw.githubusercontent.com         nltk tokenizer data (pulled at first use)
+# A lane with different egress needs gets its OWN role (mTLS client-cert CN) and its
+# own stanza — never a widening of this one.
 ---
 version: v1
 
-# Per-role stanzas (CN -> policy) are added as lanes are wired for egress, e.g.:
-#   - name: ingest
-#     project: easypod
-#     action: enforce
-#     allowed_domains: [feeds.libsyn.com, ...]
-services: []
+services:
+  - name: worker
+    project: easypod
+    action: enforce
+    allowed_domains:
+      - "huggingface.co"
+      - "cdn-lfs.huggingface.co"
+      - "cdn-lfs-us-1.huggingface.co"
+      - "cas-bridge.xethub.hf.co"
+      - "transfer.xethub.hf.co"
+      - "download.pytorch.org"
+      - "raw.githubusercontent.com"
 
-# Anything without a matching role stanza: enforce against an EMPTY allow set = deny.
+# Anything not carrying a known role: enforce against an empty allow set = deny.
 default:
   name: default
   project: easypod
   action: enforce
   allowed_domains: []
-
-# Feed / CDN hosts the ingest lane will need (moved into its role stanza when wired).
-global_allow_list:
-  - "feeds.libsyn.com"
-  - "traffic.libsyn.com"
-  - "*.megaphone.fm"
-  - "*.simplecast.com"
-  - "*.acast.com"
-  - "feeds.buzzsprout.com"

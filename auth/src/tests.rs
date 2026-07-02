@@ -401,3 +401,51 @@ fn signer_roundtrip_and_key_preserved() {
     let s3 = Signer::open(&path).unwrap();
     assert_eq!(s2.public_key_b64(), s3.public_key_b64());
 }
+
+#[test]
+fn signer_loads_the_deployed_secretstore_format_readonly() {
+    // The LIVE key file on the coordinator host is easy-podcast's SecretStore:
+    //   {"secrets": {"worker_issuer_ed25519_sk": "<hex of the 32-byte seed>"}}
+    // The plane signer must (1) load the issuer key from it BYTE-IDENTICALLY (no
+    // re-keying -> no device re-pairs), (2) never write that file (the Python
+    // signer owns it; the volume is mounted read-only), keeping its pairing
+    // registry in its own sibling file.
+    use crate::signer::{Pairing, Signer};
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("secrets.json");
+
+    let seed: [u8; 32] = [7; 32];
+    let store = serde_json::json!({
+        "secrets": { "worker_issuer_ed25519_sk": hex::encode(seed) }
+    });
+    let original = serde_json::to_vec_pretty(&store).unwrap();
+    std::fs::write(&key_path, &original).unwrap();
+
+    let mut s = Signer::open(&key_path).unwrap();
+    // The loaded key derives the exact public key of that seed.
+    let expected = biscuit_auth::KeyPair::from(
+        &biscuit_auth::PrivateKey::from_bytes(&seed).unwrap(),
+    );
+    assert_eq!(s.public_key_b64(), {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        STANDARD.encode(expected.public().to_bytes())
+    });
+
+    // Enrolling writes ONLY the sibling pairing registry, never the key file.
+    let (_sk, pkh) = holder();
+    s.enroll(Pairing {
+        pubkey_hex: pkh.clone(),
+        rights: vec!["lease".into()],
+        lanes: vec!["transcribe".into()],
+        note: Some("gpu runner".into()),
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&key_path).unwrap(), original, "key file must be untouched");
+    let pairings_path = dir.path().join("plane-pairings.json");
+    assert!(pairings_path.exists(), "pairings live in their own file");
+
+    // Reopen: same key, pairing survived.
+    let s2 = Signer::open(&key_path).unwrap();
+    assert_eq!(s2.public_key_b64(), s.public_key_b64());
+    assert!(s2.pairings().contains_key(&pkh));
+}

@@ -22,66 +22,120 @@ pub struct Pairing {
     pub note: Option<String>,
 }
 
-/// The signer's on-disk secrets: the issuer private key and the pairing
-/// registry. This is the format preserved across the trust-plane cutover.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Secrets {
-    /// Base64 of the 32-byte Ed25519 issuer private key.
-    pub issuer_private_key_b64: String,
-    /// identity (== pubkey_hex) -> pairing.
+/// The deployed key file: easy-podcast's `SecretStore` format, whose issuer key
+/// lives under `secrets.worker_issuer_ed25519_sk` as HEX of the 32-byte Ed25519
+/// seed. The Python signer owns this file; the plane signer only READS it — the
+/// key volume can (and should) be mounted read-only.
+#[derive(Debug, Deserialize)]
+struct SecretStoreFile {
+    secrets: BTreeMap<String, String>,
+}
+
+/// The key under which the issuer seed lives in the deployed SecretStore.
+const ISSUER_KEY_NAME: &str = "worker_issuer_ed25519_sk";
+
+/// A fresh plane's own key file (no Python signer present): base64 of the seed.
+#[derive(Debug, Serialize, Deserialize)]
+struct PlaneKeyFile {
+    issuer_private_key_b64: String,
+}
+
+/// The plane's pairing registry — its OWN file, never the key file (the key
+/// file may be read-only and is owned by the phone trust plane).
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PairingsFile {
     #[serde(default)]
-    pub pairings: BTreeMap<String, Pairing>,
+    pairings: BTreeMap<String, Pairing>,
 }
 
 /// The running signer.
 pub struct Signer {
     keypair: KeyPair,
-    secrets: Secrets,
-    path: std::path::PathBuf,
+    pairings: BTreeMap<String, Pairing>,
+    pairings_path: std::path::PathBuf,
 }
 
 impl Signer {
-    /// Open the signer, creating a fresh issuer key + empty registry if the file
-    /// is absent.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let path = path.as_ref().to_path_buf();
-        if path.exists() {
-            let data = std::fs::read(&path).map_err(|e| AuthError::Io(e.to_string()))?;
-            let secrets: Secrets =
+    /// Open the signer against a key file + a pairing-registry file.
+    ///
+    /// The key file is either the DEPLOYED easy-podcast SecretStore
+    /// (`{"secrets": {"worker_issuer_ed25519_sk": "<hex>"}}` — read-only, the
+    /// existing issuer key is PRESERVED so no device re-pairs) or this signer's
+    /// own `{"issuer_private_key_b64": ...}`; a missing key file mints a fresh
+    /// key in the latter format. Pairings always live in `pairings_path`.
+    pub fn open_with<P: AsRef<Path>, Q: AsRef<Path>>(key_path: P, pairings_path: Q) -> Result<Self> {
+        let key_path = key_path.as_ref().to_path_buf();
+        let pairings_path = pairings_path.as_ref().to_path_buf();
+        let keypair = if key_path.exists() {
+            let data = std::fs::read(&key_path).map_err(|e| AuthError::Io(e.to_string()))?;
+            Self::keypair_from_file(&data)?
+        } else {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let keypair = KeyPair::new();
+            let fresh = PlaneKeyFile {
+                issuer_private_key_b64: STANDARD.encode(keypair.private().to_bytes()),
+            };
+            let data =
+                serde_json::to_vec_pretty(&fresh).map_err(|e| AuthError::Io(e.to_string()))?;
+            std::fs::write(&key_path, data).map_err(|e| AuthError::Io(e.to_string()))?;
+            keypair
+        };
+        let pairings = if pairings_path.exists() {
+            let data = std::fs::read(&pairings_path).map_err(|e| AuthError::Io(e.to_string()))?;
+            let file: PairingsFile =
                 serde_json::from_slice(&data).map_err(|e| AuthError::Malformed(e.to_string()))?;
+            file.pairings
+        } else {
+            BTreeMap::new()
+        };
+        Ok(Self {
+            keypair,
+            pairings,
+            pairings_path,
+        })
+    }
+
+    /// Open with the default pairing registry next to the key file
+    /// (`plane-pairings.json`).
+    pub fn open<P: AsRef<Path>>(key_path: P) -> Result<Self> {
+        let key_path = key_path.as_ref().to_path_buf();
+        let pairings = key_path.with_file_name("plane-pairings.json");
+        Self::open_with(key_path, pairings)
+    }
+
+    /// Parse whichever key-file format is present.
+    fn keypair_from_file(data: &[u8]) -> Result<KeyPair> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        // The deployed SecretStore shape first (the live format on the host).
+        if let Ok(store) = serde_json::from_slice::<SecretStoreFile>(data) {
+            if let Some(hex_sk) = store.secrets.get(ISSUER_KEY_NAME) {
+                let priv_bytes =
+                    hex::decode(hex_sk).map_err(|_| AuthError::Malformed("issuer key hex".into()))?;
+                let private = PrivateKey::from_bytes(&priv_bytes)
+                    .map_err(|e| AuthError::Malformed(e.to_string()))?;
+                return Ok(KeyPair::from(&private));
+            }
+        }
+        // This signer's own format.
+        if let Ok(own) = serde_json::from_slice::<PlaneKeyFile>(data) {
             let priv_bytes = STANDARD
-                .decode(&secrets.issuer_private_key_b64)
+                .decode(&own.issuer_private_key_b64)
                 .map_err(|_| AuthError::Malformed("issuer key b64".into()))?;
             let private = PrivateKey::from_bytes(&priv_bytes)
                 .map_err(|e| AuthError::Malformed(e.to_string()))?;
-            let keypair = KeyPair::from(&private);
-            Ok(Self {
-                keypair,
-                secrets,
-                path,
-            })
-        } else {
-            let keypair = KeyPair::new();
-            let priv_b64 = STANDARD.encode(keypair.private().to_bytes());
-            let secrets = Secrets {
-                issuer_private_key_b64: priv_b64,
-                pairings: BTreeMap::new(),
-            };
-            let s = Self {
-                keypair,
-                secrets,
-                path,
-            };
-            s.save()?;
-            Ok(s)
+            return Ok(KeyPair::from(&private));
         }
+        Err(AuthError::Malformed(
+            "key file is neither a SecretStore nor a plane key file".into(),
+        ))
     }
 
     fn save(&self) -> Result<()> {
-        let data =
-            serde_json::to_vec_pretty(&self.secrets).map_err(|e| AuthError::Io(e.to_string()))?;
-        std::fs::write(&self.path, data).map_err(|e| AuthError::Io(e.to_string()))
+        let file = PairingsFile {
+            pairings: self.pairings.clone(),
+        };
+        let data = serde_json::to_vec_pretty(&file).map_err(|e| AuthError::Io(e.to_string()))?;
+        std::fs::write(&self.pairings_path, data).map_err(|e| AuthError::Io(e.to_string()))
     }
 
     /// The root public key backends use to verify (the PEP holds only this).
@@ -98,7 +152,7 @@ impl Signer {
     /// Enroll (pair) an identity and persist it, then mint its credential.
     pub fn enroll(&mut self, pairing: Pairing) -> Result<String> {
         let id = pairing.pubkey_hex.clone();
-        self.secrets.pairings.insert(id.clone(), pairing.clone());
+        self.pairings.insert(id.clone(), pairing.clone());
         self.save()?;
         self.mint_for(&id)
     }
@@ -106,7 +160,6 @@ impl Signer {
     /// Mint a credential for an already-enrolled identity.
     pub fn mint_for(&self, id: &str) -> Result<String> {
         let p = self
-            .secrets
             .pairings
             .get(id)
             .ok_or_else(|| AuthError::Denied(format!("unknown identity {id}")))?;
@@ -122,6 +175,6 @@ impl Signer {
 
     /// The enrolled pairings (read-only).
     pub fn pairings(&self) -> &BTreeMap<String, Pairing> {
-        &self.secrets.pairings
+        &self.pairings
     }
 }

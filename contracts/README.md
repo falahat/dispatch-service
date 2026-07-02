@@ -13,7 +13,7 @@ reads the others fast.
 | [ARTIFACTS.md](ARTIFACTS.md) + [`schemas/artifacts.schema.json`](schemas/artifacts.schema.json) | what rides in the CAS (invocation · manifest · action result) + the digest rule | — | content-addressed integrity |
 | [INVOKE.md](INVOKE.md) | runner ⇄ compute container (local HTTP) | compute container | none (compute is jailed, credential-less) |
 | [CAS.md](CAS.md) | runner/app ⇄ CAS, via the PEP (HTTP) | PEP | Biscuit+PoP |
-| [states.json](states.json) | the job state machine (shared by dispatcher + conformance) | — | — |
+| [states.json](states.json) | the job state machine (shared by the dispatcher + its tests) | — | — |
 
 ## The seven design invariants (cite these in PRs)
 
@@ -36,7 +36,8 @@ reads the others fast.
 
 ## Versioning
 
-`v0.x` — additive minors within major 0; a new optional field or enum value bumps the minor.
-Any removal, rename, or semantic change to an existing field is a **major** bump and a
-human-approved contract PR. Implementations negotiate exact-major / highest-common-minor in
-`hello`.
+Every frame carries the contract version. All components are **co-deployed**, so there is no
+mixed-version negotiation: a mismatch at `hello` is a hard error (a misconfiguration). A
+contract change is its own human-approved PR that bumps the version and updates every
+implementation together — no "additive-only for compatibility" gymnastics, because nothing
+old is left running to be compatible with.

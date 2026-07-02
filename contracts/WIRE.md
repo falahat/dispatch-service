@@ -9,10 +9,11 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
   frame: `{"v": "0.1", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
-- **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok` or
-  closes. Version negotiation is exact-major, highest-common-minor. After `hello`, frames
-  with an unknown `type` or schema-invalid `body` → `error{invalid}` (fail-closed; unknown
-  fields are rejected, additive evolution bumps the minor version).
+- **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
+  `error{version_mismatch}` and closes. All components are co-deployed, so a version
+  mismatch is a **hard error** (a misconfiguration), not a negotiated mixed-version state.
+  After `hello`, frames with an unknown `type` or schema-invalid `body` → `error{invalid}`
+  (fail-closed; unknown fields are rejected).
 - **Surfaces.** *Runner surface*: tailnet TCP, **terminated by the in-path Rust PEP/PDP**
   (the single verify engine — it also fronts the CAS); the PEP forwards pre-authenticated
   frames to the dispatcher over loopback. The dispatcher parses **no credential** and holds
@@ -43,10 +44,10 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Job states
 
 `AWAITING_APPROVAL · REJECTED · QUEUED · RUNNING · PERSISTING · SUCCEEDED · FAILED ·
-CANCELLED` (+ `BLOCKED`/`SKIPPED` reserved for the DAG extension). The transition table in
-[`states.json`](states.json) is exhaustive: **any transition not listed is illegal and the
-conformance suite asserts it cannot occur.** Terminal: `SUCCEEDED, FAILED, REJECTED,
-CANCELLED`.
+CANCELLED`. The transition table in [`states.json`](states.json) is exhaustive: **any
+transition not listed is illegal, and the dispatcher's tests assert it cannot occur.**
+Terminal: `SUCCEEDED, FAILED, REJECTED, CANCELLED`. (No DAG states — `depends_on` is a
+non-goal; the app's reconciler decides what jobs exist.)
 
 ## Leases (fencing)
 

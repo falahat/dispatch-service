@@ -55,6 +55,6 @@ declared fixture) at boot before its first lease — on failure, never join the 
 ## Conformance
 
 `runner check <image>` validates any compute image against this page locally (healthz,
-fixture invoke, 409 behavior, deadline behavior, error mapping) — the same checks the
-conformance suite runs in CI. An image that passes `runner check` is a valid compute
-container, in any language, with no SDK.
+fixture invoke, 409 behavior, deadline behavior, error mapping) — the same checks the E2E
+suite runs in CI. An image that passes `runner check` is a valid compute container, in any
+language, with no SDK.

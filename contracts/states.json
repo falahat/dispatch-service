@@ -1,5 +1,5 @@
 {
-  "$comment": "The job state machine as data. Any transition not listed is illegal; the conformance suite derives legality checks from this file. Guards reference WIRE.md.",
+  "$comment": "The job state machine as data. Any transition not listed is illegal; the dispatcher's unit tests derive legality checks from this file. Guards reference WIRE.md.",
   "version": "0.1",
   "states": {
     "AWAITING_APPROVAL": { "terminal": false },
@@ -9,9 +9,7 @@
     "SUCCEEDED":         { "terminal": true },
     "FAILED":            { "terminal": true },
     "REJECTED":          { "terminal": true },
-    "CANCELLED":         { "terminal": true },
-    "BLOCKED":           { "terminal": false, "reserved": "DAG extension" },
-    "SKIPPED":           { "terminal": true,  "reserved": "DAG extension" }
+    "CANCELLED":         { "terminal": true }
   },
   "transitions": [
     { "from": null,                "event": "enqueue",       "to": "QUEUED",            "guard": "cost_estimate_usd is absent or 0" },

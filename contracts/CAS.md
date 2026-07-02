@@ -24,6 +24,10 @@ Errors: `401 unauthenticated · 403 forbidden · 404 not_found · 400 hash_misma
 - Rights: `right("cas_get")` for GET/HEAD, `right("cas_put")` for PUT. Per-identity
   policy: `max_blob_bytes` (per lane class), rolling byte + request quotas. Denials are
   logged as first-class outcomes.
+- **Per-lease attenuation (built, not deferred):** the PEP mints each lease's Biscuit from
+  the dispatcher's grant so GET is scoped to that invocation's reachable addresses and PUT is
+  tagged to the job. This closes the digest-as-capability membership-oracle (an enrolled
+  worker guessing a blob's exact bytes could otherwise confirm its existence).
 - The PEP holds **no private keys** (verifier only) and streams — it MUST NOT buffer whole
   blobs.
 

@@ -1,15 +1,21 @@
 # Egress allowlist for ingest-lane compute (feed/download) + GPU model pulls.
-# Smokescreen v1 ACL. Our compute clients present no identity cert, so per-role
-# `services` matching can't key on them; we use `global_allow_list` — a flat
-# allowlist enforced for EVERY client. Anything not listed is denied (a `default`
-# service in `enforce` with no allowed_domains = deny-all fallthrough).
+# Smokescreen v1 ACL. Our compute clients present no identity cert (no mTLS on
+# the internal worker network — that network's isolation is itself the boundary:
+# only runner+compute+smokescreen live on it). So `allow_missing_role` sends every
+# unroled client to the `default` policy, and `global_allow_list` is the flat set
+# of hosts allowed for all. Anything not listed is denied.
 ---
 version: v1
+
+# Unroled clients (no client cert) are allowed to proxy, evaluated against the
+# `default` service policy below. Without this, a missing role is a hard deny.
+allow_missing_role: true
 
 # No per-identity roles (compute is unroled); everything falls through to default.
 services: []
 
-# Deny-all for any client (no identity, no matching service).
+# Deny-all for any client (no identity, no matching service) — the allow set is
+# `global_allow_list` below, applied to every client.
 default:
   name: default
   project: easypod

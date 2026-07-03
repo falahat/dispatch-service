@@ -220,7 +220,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_surfaces, SurfacePlan};
+    use super::plan_surfaces;
     use std::collections::HashMap;
 
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

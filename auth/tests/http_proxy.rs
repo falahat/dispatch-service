@@ -988,6 +988,58 @@ auth = "passthrough"
     );
 }
 
+#[tokio::test]
+async fn approve_credential_cannot_reject_or_dispatch() {
+    // The parked-job decision actions use ACTION-FIRST paths (/jobs/approve/{id},
+    // /jobs/reject/{id}) so each carries a DISTINCT right at the single enforcement
+    // point. An approve-only credential must be able to approve but be DENIED on reject
+    // and on dispatch — proving the capability split is real, not cosmetic.
+    let backend = start_echo().await;
+    let routes = r#"
+[[routes]]
+methods = ["POST"]
+path = "/jobs"
+auth = "header"
+right = "dispatch"
+
+[[routes]]
+methods = ["POST"]
+prefix = "/jobs/approve"
+auth = "header"
+right = "approve"
+
+[[routes]]
+methods = ["POST"]
+prefix = "/jobs/reject"
+auth = "header"
+right = "reject"
+"#;
+    let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["approve"]); // approve-only credential
+
+    // Allowed: approve with the approve right.
+    let n1 = nonce_b64();
+    let p1 = sign_http(&sk, "POST", "/jobs/approve/7", b"{}", &n1, NOW);
+    let h1 = auth_headers(&cred, &pk, &n1, NOW, &p1);
+    let ok = send(&pep.addr, "POST", "/jobs/approve/7", &h1, b"{}").await;
+    assert_eq!(ok.status, 200, "approve right may approve: {}", ok.body);
+
+    // Denied: the SAME credential cannot reject (lacks the reject right) -> 403.
+    let n2 = nonce_b64();
+    let p2 = sign_http(&sk, "POST", "/jobs/reject/7", b"{}", &n2, NOW);
+    let h2 = auth_headers(&cred, &pk, &n2, NOW, &p2);
+    let no_reject = send(&pep.addr, "POST", "/jobs/reject/7", &h2, b"{}").await;
+    assert_eq!(no_reject.status, 403, "approve right must NOT reject: {}", no_reject.body);
+
+    // Denied: nor dispatch a new job -> 403.
+    let n3 = nonce_b64();
+    let p3 = sign_http(&sk, "POST", "/jobs", b"{}", &n3, NOW);
+    let h3 = auth_headers(&cred, &pk, &n3, NOW, &p3);
+    let no_dispatch = send(&pep.addr, "POST", "/jobs", &h3, b"{}").await;
+    assert_eq!(no_dispatch.status, 403, "approve right must NOT dispatch: {}", no_dispatch.body);
+}
+
 // ---------- adversarial: size + rate ----------
 
 /// An 8-byte-capped route table used by the oversize tests.

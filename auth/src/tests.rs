@@ -613,6 +613,44 @@ fn revocation_live_reloads_without_restart() {
 }
 
 #[test]
+fn revocation_survives_deny_list_deletion() {
+    // Fail-closed on a VANISHING deny-list: if the file is deleted at runtime (an
+    // accidental unmount / botched deploy), the running store RETAINS its
+    // last-known-good revocations rather than silently un-revoking a credential. A
+    // deleted file must never fail OPEN. (To CLEAR a revocation the operator writes
+    // an explicit empty list, never deletes the file.)
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, path) = rev_store();
+    rev.revoke(&authority_revocation_id(&root, &cred), "compromised", NOW)
+        .unwrap();
+    // Denied while the file exists.
+    let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    match verify(&root.public(), &ns, &rev, NOW, &req, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked before deletion, got {other:?}"),
+    }
+    // Delete the deny-list file out from under the running store.
+    std::fs::remove_file(&path).unwrap();
+    // STILL denied — the live revocation is retained, not dropped.
+    let again = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW + 1);
+    match verify(&root.public(), &ns, &rev, NOW + 1, &again, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked to survive file deletion, got {other:?}"),
+    }
+}
+
+#[test]
 fn missing_deny_list_revokes_nothing() {
     // A deny-list whose file never exists must revoke nothing (not error).
     let root = KeyPair::new();

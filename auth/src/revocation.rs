@@ -135,9 +135,19 @@ impl RevocationStore {
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // The file was removed → nothing revoked. This is a legitimate
-                // operator action (clear the deny-list), so honor it.
-                cache.ids.clear();
+                // The file DISAPPEARED at runtime (it existed at the last read — the
+                // stamp changed from Some to None). RETAIN the last-known-good set:
+                // a deleted deny-list must never fail OPEN by silently dropping live
+                // revocations (an accidental unmount / botched deploy would otherwise
+                // un-revoke a revoked credential). Set the stamp to absent so we don't
+                // re-read on every request, but keep the ids until the file reappears.
+                // To CLEAR revocations, write an explicit empty `{"revoked":[]}` — a
+                // positive, auditable action, never an ambiguous absence.
+                log::warn!(
+                    "revocation: deny-list {} disappeared; RETAINING last-known-good \
+                     revocations (write an explicit empty list to clear)",
+                    self.path.display()
+                );
                 cache.stamp = None;
             }
             Err(e) => {

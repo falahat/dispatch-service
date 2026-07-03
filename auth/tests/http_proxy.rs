@@ -9,10 +9,12 @@
 //! These are hand-authored attack tests, one per boundary the HTTP surface adds:
 //! forged/invalid biscuit, replayed nonce, stale ts, wrong right, tampered
 //! path/body, tampered query-auth, a passthrough route that must never reach an
-//! authed backend route, and oversize/quota. The core engine's own boundaries
-//! (PoP forgery, biscuit signature, pubkey-binding) are already covered in the
-//! crate's unit `tests.rs`; here we prove the HTTP wiring feeds `verify()`
-//! faithfully and fails closed end to end.
+//! authed backend route, oversize (caught during buffering), and quota. Plus the
+//! two hardenings: the PoP binds the body (tamper the body → 401), and a
+//! signed-URL query read is reusable within its freshness window but expires.
+//! The core engine's own boundaries (PoP forgery, biscuit signature,
+//! pubkey-binding) are already covered in the crate's unit `tests.rs`; here we
+//! prove the HTTP wiring feeds `verify()` faithfully and fails closed end to end.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::KeyPair;
@@ -26,6 +28,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -54,9 +57,18 @@ fn nonce_b64() -> String {
     STANDARD.encode(b)
 }
 
-/// Sign the HTTP canonical string: `http/v0 <METHOD> <path> <nonce> <ts>`.
-fn sign_http(sk: &SigningKey, method: &str, path: &str, nonce: &str, ts: i64) -> String {
-    let canonical = format!("http/v0 {method} {path} {nonce} {ts}");
+/// Sign the HTTP canonical string, which binds the body:
+/// `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`.
+fn sign_http(
+    sk: &SigningKey,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    nonce: &str,
+    ts: i64,
+) -> String {
+    let body_hash = hex::encode(Sha256::digest(body));
+    let canonical = format!("http/v0 {method} {path} {body_hash} {nonce} {ts}");
     STANDARD.encode(sk.sign(canonical.as_bytes()).to_bytes())
 }
 
@@ -199,6 +211,68 @@ async fn send(
     }
 }
 
+/// Send a request with an HTTP/1.1 CHUNKED body (no Content-Length at all),
+/// written raw so we control the framing. Used to prove the body cap is enforced
+/// while buffering, not by trusting a declared length. Reads the status line
+/// back; the PEP is expected to reject the oversize body before the chunks end.
+async fn send_chunked(
+    base: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+) -> Resp {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let authority = base.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(authority).await.unwrap();
+    let mut req =
+        format!("{method} {path} HTTP/1.1\r\nHost: {authority}\r\nTransfer-Encoding: chunked\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    stream.write_all(req.as_bytes()).await.unwrap();
+    // One chunk carrying the whole (oversize) body, then the terminating chunk.
+    // The PEP is expected to reject mid-stream; the terminating chunk may never
+    // be consumed, so we do NOT block waiting for the connection to close —
+    // we read only the response head, under a timeout.
+    stream
+        .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+        .await
+        .unwrap();
+    let _ = stream.write_all(body).await;
+    let _ = stream.write_all(b"\r\n0\r\n\r\n").await;
+    // Read until the end of the response headers (\r\n\r\n) or a short timeout.
+    let mut buf = Vec::new();
+    let deadline = std::time::Duration::from_secs(5);
+    let _ = tokio::time::timeout(deadline, async {
+        let mut chunk = [0u8; 512];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    })
+    .await;
+    let text = String::from_utf8_lossy(&buf);
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    Resp {
+        status,
+        body: text.into_owned(),
+    }
+}
+
 /// The five auth headers for a header-auth request.
 fn auth_headers(
     biscuit: &str,
@@ -246,7 +320,7 @@ async fn header_auth_happy_path_forwards_and_strips_auth() {
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
     assert_eq!(r.status, 200, "body: {}", r.body);
@@ -270,7 +344,7 @@ async fn query_auth_happy_path_forwards_full_query() {
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", &nonce, NOW);
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
     // The signed-URL query carries the five fields plus an app param (id).
     let q = format!(
         "/audio?id=ep42&biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
@@ -321,7 +395,7 @@ async fn forged_biscuit_from_other_root_is_401() {
     )
     .unwrap();
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r.status, 401, "body: {}", r.body);
@@ -333,7 +407,7 @@ async fn garbage_biscuit_is_401() {
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
     let hdrs = auth_headers("not-a-biscuit", &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r.status, 401, "body: {}", r.body);
@@ -355,7 +429,7 @@ async fn replayed_nonce_is_401_on_second_use() {
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r1 = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r1.status, 200, "first should pass: {}", r1.body);
@@ -372,7 +446,7 @@ async fn stale_timestamp_is_401() {
     let cred = pep.mint(&pk, &["sync_write"]);
     let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, stale);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, stale);
     let hdrs = auth_headers(&cred, &pk, &nonce, stale, &pop);
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r.status, 401, "body: {}", r.body);
@@ -386,7 +460,7 @@ async fn wrong_right_is_403() {
     // Credential grants audio_get, but /upsert requires sync_write.
     let cred = pep.mint(&pk, &["audio_get"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r.status, 403, "wrong right must be forbidden: {}", r.body);
@@ -417,31 +491,46 @@ right = "sync_write"
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "POST", "/upsert-evil", &hdrs, b"x").await;
     assert_eq!(r.status, 401, "tampered path must fail PoP: {}", r.body);
 }
 
 #[tokio::test]
-async fn tampered_body_does_not_break_pop_but_query_path_still_bound() {
-    // The HTTP canonical form binds method+path+nonce+ts, NOT the body (bodies
-    // stream unbuffered; CAS binds content via its address instead). This test
-    // documents that a body change does NOT invalidate a header-auth PoP — the
-    // app is responsible for body integrity — while proving the path IS bound:
-    // reusing the same signature on a different path is rejected above. Here we
-    // simply confirm a matching-path request with any body authenticates, so no
-    // false sense of body-binding is assumed by later phases.
+async fn tampered_body_breaks_pop_401() {
+    // FIX 1: the PoP binds the body. Sign over body A but deliver body B — the
+    // canonical string the PEP rebuilds (from the hash of the DELIVERED body)
+    // won't match, so PoP fails closed. This is the regression the hardening
+    // closes: the transport does NOT get to protect the body.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+    // Sign over body A ...
+    let pop = sign_http(&sk, "POST", "/upsert", b"body-A", &nonce, NOW);
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"a-different-body").await;
+    // ... but deliver body B.
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"body-B").await;
+    assert_eq!(r.status, 401, "tampered body must fail PoP: {}", r.body);
+}
+
+#[tokio::test]
+async fn matching_body_authenticates_200() {
+    // The positive counterpart: signing over the exact delivered body passes,
+    // and the body reaches the backend intact.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let nonce = nonce_b64();
+    let body = b"{\"k\":\"v\"}";
+    let pop = sign_http(&sk, "POST", "/upsert", body, &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, body).await;
     assert_eq!(r.status, 200, "body: {}", r.body);
-    assert_eq!(r.echo().body, "a-different-body");
+    assert_eq!(r.echo().body, "{\"k\":\"v\"}");
 }
 
 #[tokio::test]
@@ -452,7 +541,7 @@ async fn tampered_query_auth_pop_is_401() {
     let cred = pep.mint(&pk, &["audio_get"]);
     let nonce = nonce_b64();
     // A valid PoP for /audio, then flip one base64 char of the pop param.
-    let mut pop = sign_http(&sk, "GET", "/audio", &nonce, NOW);
+    let mut pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
     let first = pop.remove(0);
     let flipped = if first == 'A' { 'B' } else { 'A' };
     pop.insert(0, flipped);
@@ -491,7 +580,7 @@ right = "audio_get"
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", &nonce, NOW); // signs /audio
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW); // signs /audio
     let q = format!(
         "/audio-secret?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
         urlenc(&cred),
@@ -502,6 +591,61 @@ right = "audio_get"
     );
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r.status, 401, "cross-path signed URL must fail: {}", r.body);
+}
+
+// ---------- signed-URL reuse + expiry (FIX 2) ----------
+
+#[tokio::test]
+async fn signed_url_is_reusable_within_freshness_window() {
+    // FIX 2: a browser <audio> element reuses ONE signed URL across range
+    // requests / retries. Query-auth is freshness-only, so the SAME signed URL
+    // (same nonce) must succeed more than once — it is NOT replay-rejected.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
+    let q = format!(
+        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        urlenc(&cred),
+        pk,
+        urlenc(&nonce),
+        NOW,
+        urlenc(&pop),
+    );
+    let r1 = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(r1.status, 200, "first read: {}", r1.body);
+    // Reuse the EXACT same URL (same nonce) — must NOT be replay-rejected.
+    let r2 = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(
+        r2.status, 200,
+        "reused signed URL must still pass: {}",
+        r2.body
+    );
+}
+
+#[tokio::test]
+async fn signed_url_still_expires_when_stale() {
+    // Freshness is still enforced for query-auth: a signed URL with a ts outside
+    // the window is rejected, so the URL is not a permanent bearer token.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    let nonce = nonce_b64();
+    let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, stale);
+    let q = format!(
+        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        urlenc(&cred),
+        pk,
+        urlenc(&nonce),
+        stale,
+        urlenc(&pop),
+    );
+    let r = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(r.status, 401, "stale signed URL must expire: {}", r.body);
 }
 
 // ---------- adversarial: routing isolation ----------
@@ -577,11 +721,8 @@ auth = "passthrough"
 
 // ---------- adversarial: size + rate ----------
 
-#[tokio::test]
-async fn oversize_declared_body_is_413() {
-    let backend = start_echo().await;
-    // An 8-byte per-request body cap (top-level key, then the route table).
-    let routes = r#"
+/// An 8-byte-capped route table used by the oversize tests.
+const CAP8_ROUTES: &str = r#"
 max_body_bytes = 8
 
 [[routes]]
@@ -590,16 +731,43 @@ path = "/upsert"
 auth = "header"
 right = "sync_write"
 "#;
-    let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
+
+#[tokio::test]
+async fn oversize_body_is_413_with_truthful_length() {
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, CAP8_ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    // 20-byte body with a declared Content-Length exceeds the 8-byte cap.
     let big = vec![b'z'; 20];
+    // Signed over the 20-byte body (so this is a size denial, not a PoP fail).
+    let pop = sign_http(&sk, "POST", "/upsert", &big, &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    // 20-byte body exceeds the 8-byte cap — caught while buffering, 413.
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, &big).await;
     assert_eq!(r.status, 413, "oversize must be 413: {}", r.body);
+}
+
+#[tokio::test]
+async fn oversize_body_is_413_with_no_content_length() {
+    // The cap must NOT rely on Content-Length: a chunked (length-less) oversize
+    // body must still be caught WHILE buffering. Proves the advisory header is
+    // not the control. The backend must never see the body.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, CAP8_ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let nonce = nonce_b64();
+    let big = vec![b'z'; 20];
+    let pop = sign_http(&sk, "POST", "/upsert", &big, &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    // Send the body as HTTP/1.1 chunked (no Content-Length header at all).
+    let r = send_chunked(&pep.addr, "POST", "/upsert", &hdrs, &big).await;
+    assert_eq!(
+        r.status, 413,
+        "chunked oversize must be 413 (no CL to trust): {}",
+        r.body
+    );
 }
 
 #[tokio::test]
@@ -613,7 +781,7 @@ async fn request_quota_exhaustion_is_429() {
     let mut last = 0u16;
     for _ in 0..3 {
         let nonce = nonce_b64();
-        let pop = sign_http(&sk, "POST", "/upsert", &nonce, NOW);
+        let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
         let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
         last = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await.status;
     }
@@ -677,6 +845,39 @@ auth = "magic"
         spec.resolve().is_err(),
         "unknown auth mode must be rejected"
     );
+}
+
+#[test]
+fn route_table_rejects_query_auth_on_mutating_method() {
+    // FIX 2: query-auth is freshness-only (reusable), so a mutating signed URL
+    // could be replayed within the window — it must be GET/HEAD only, at boot.
+    let toml = r#"
+backend = "http://127.0.0.1:1"
+[[routes]]
+methods = ["POST"]
+path = "/x"
+auth = "query"
+right = "audio_get"
+"#;
+    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+    assert!(
+        spec.resolve().is_err(),
+        "query auth on POST must be rejected"
+    );
+}
+
+#[test]
+fn route_table_allows_query_auth_on_get_and_head() {
+    let toml = r#"
+backend = "http://127.0.0.1:1"
+[[routes]]
+methods = ["GET", "HEAD"]
+path = "/audio"
+auth = "query"
+right = "audio_get"
+"#;
+    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+    assert!(spec.resolve().is_ok(), "GET/HEAD query auth is allowed");
 }
 
 // ---------- helpers ----------

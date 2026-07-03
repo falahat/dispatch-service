@@ -90,7 +90,7 @@ fn happy_path_cas_get() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    let id = verify(&root.public(), &ns, NOW, &req).expect("valid request");
+    let id = verify(&root.public(), &ns, NOW, &req, true).expect("valid request");
     assert_eq!(id.id, pk_hex);
 }
 
@@ -111,7 +111,7 @@ fn pop_with_wrong_key_is_rejected() {
     let (_d, ns) = store("n.redb");
     // Present the victim's pubkey but sign with the attacker's key.
     let req = cas_get_req(&attacker, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::PopFailed) => {}
         other => panic!("expected PopFailed, got {other:?}"),
     }
@@ -133,7 +133,7 @@ fn forged_biscuit_from_other_root_is_rejected() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::BiscuitSignature) => {}
         other => panic!("expected BiscuitSignature, got {other:?}"),
     }
@@ -154,11 +154,40 @@ fn replay_same_nonce_is_rejected() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    verify(&root.public(), &ns, NOW, &req).expect("first ok");
+    verify(&root.public(), &ns, NOW, &req, true).expect("first ok");
     // Replay the exact same request (same nonce).
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::Replay) => {}
         other => panic!("expected Replay, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_single_use_allows_nonce_reuse_but_still_enforces_freshness() {
+    // The freshness-only path (signed-URL reads): the SAME nonce verifies more
+    // than once (no dedup), but a stale ts is still rejected. This is what lets
+    // a browser reuse one signed URL across range requests while the URL expires.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    // Reused twice with single_use=false: both pass (no replay rejection).
+    verify(&root.public(), &ns, NOW, &req, false).expect("first freshness-only ok");
+    verify(&root.public(), &ns, NOW, &req, false).expect("reuse must still pass");
+    // But a stale ts is rejected even freshness-only (the URL expires).
+    let stale = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW - 10 * 60 * 1000);
+    match verify(&root.public(), &ns, NOW, &stale, false) {
+        Err(AuthError::Freshness) => {}
+        other => panic!("expected Freshness for stale freshness-only, got {other:?}"),
     }
 }
 
@@ -180,10 +209,10 @@ fn replay_across_restart_is_rejected() {
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     {
         let ns = NonceStore::open(&path, crate::nonce::DEFAULT_WINDOW_MS).unwrap();
-        verify(&root.public(), &ns, NOW, &req).expect("first ok");
+        verify(&root.public(), &ns, NOW, &req, true).expect("first ok");
     } // store dropped (restart)
     let ns2 = NonceStore::open(&path, crate::nonce::DEFAULT_WINDOW_MS).unwrap();
-    match verify(&root.public(), &ns2, NOW, &req) {
+    match verify(&root.public(), &ns2, NOW, &req, true) {
         Err(AuthError::Replay) => {}
         other => panic!("expected Replay across restart, got {other:?}"),
     }
@@ -205,7 +234,7 @@ fn stale_timestamp_is_rejected() {
     let (_d, ns) = store("n.redb");
     let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, stale);
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::Freshness) => {}
         other => panic!("expected Freshness, got {other:?}"),
     }
@@ -227,7 +256,7 @@ fn missing_right_is_denied() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied, got {other:?}"),
     }
@@ -252,7 +281,7 @@ fn presented_pubkey_must_match_credential() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req) {
+    match verify(&root.public(), &ns, NOW, &req, true) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied (pubkey mismatch), got {other:?}"),
     }
@@ -294,9 +323,15 @@ fn lane_scope_enforced_on_lease() {
     };
 
     // A lane the credential grants: ok.
-    verify(&root.public(), &ns, NOW, &mk("embed", NOW)).expect("embed lease ok");
+    verify(&root.public(), &ns, NOW, &mk("embed", NOW), true).expect("embed lease ok");
     // A lane it does not grant: denied.
-    match verify(&root.public(), &ns, NOW + 1, &mk("transcribe", NOW + 1)) {
+    match verify(
+        &root.public(),
+        &ns,
+        NOW + 1,
+        &mk("transcribe", NOW + 1),
+        true,
+    ) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied for ungranted lane, got {other:?}"),
     }
@@ -326,6 +361,7 @@ fn attenuated_token_scopes_get_to_closure() {
         &ns,
         NOW,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
+        true,
     )
     .expect("in-closure ok");
     // GET of another job's address: denied.
@@ -334,6 +370,7 @@ fn attenuated_token_scopes_get_to_closure() {
         &ns,
         NOW + 1,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_B, NOW + 1),
+        true,
     ) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied for out-of-closure address, got {other:?}"),
@@ -362,6 +399,7 @@ fn attenuated_token_expires() {
         &ns,
         NOW,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
+        true,
     ) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied (expired), got {other:?}"),

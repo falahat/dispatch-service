@@ -5,9 +5,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Per-identity sliding windows: `id -> [(ts_ms, bytes)]`, the samples still inside
+/// the rolling minute. Shared across clones of the `Quota` handle.
+type Windows = Arc<Mutex<HashMap<String, Vec<(i64, u64)>>>>;
+
 #[derive(Clone)]
 pub struct Quota {
-    inner: Arc<Mutex<HashMap<String, Vec<(i64, u64)>>>>, // id -> [(ts_ms, bytes)]
+    inner: Windows,
     max_requests_per_min: u32,
     max_bytes_per_min: u64,
 }

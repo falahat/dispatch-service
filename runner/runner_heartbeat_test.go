@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,4 +173,83 @@ func TestHeartbeatReconnectsAfterConnectionDrop(t *testing.T) {
 	if !reconnected {
 		t.Fatal("heartbeat did not reconnect after the connection dropped: lease renewal would stall and the drain collapse")
 	}
+}
+
+// busyThenOKComputeHandler serves the invoke protocol, returning 409 (busy) for the
+// first busyTimes invokes and succeeding after — to model a single-flight compute
+// briefly occupied by an orphaned run.
+func busyThenOKComputeHandler(busyTimes int32) http.Handler {
+	var n int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ready": true, "op": "echo", "op_version": 1})
+	})
+	mux.HandleFunc("/invoke", func(w http.ResponseWriter, r *http.Request) {
+		var req runner.InvokeRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if atomic.AddInt32(&n, 1) <= busyTimes {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error_class": "fatal", "message": "invoke in flight"})
+			return
+		}
+		_ = os.MkdirAll(filepath.Join(req.Workdir, req.OutputsDir), 0o755)
+		_ = json.NewEncoder(w).Encode(map[string]any{"outputs": map[string]string{}, "metrics": map[string]int64{}})
+	})
+	return mux
+}
+
+// TestRunnerWaitsThroughComputeBusy guards the drain-collapse tail: a single-flight
+// compute that is momentarily busy (409) must NOT fail the job — the runner holds the
+// lease and retries until the compute frees. Before the fix, one busy compute (an
+// orphaned/abandoned run still finishing) failed every queued job with instant
+// "compute busy" 409s, burning the whole backlog.
+func TestRunnerWaitsThroughComputeBusy(t *testing.T) {
+	prev := runner.ComputeBusyRetryInterval
+	runner.ComputeBusyRetryInterval = 50 * time.Millisecond
+	defer func() { runner.ComputeBusyRetryInterval = prev }()
+
+	srv := startDispatcher(t)
+	cas := newStubCAS()
+	casSrv := httptest.NewServer(cas.handler())
+	defer casSrv.Close()
+	computeSrv := httptest.NewServer(busyThenOKComputeHandler(3)) // 409 three times, then succeed
+	defer computeSrv.Close()
+
+	inv := artifact.Invocation{Kind: artifact.InvocationKind, Op: "echo", OpVersion: 1, Params: json.RawMessage(`{}`)}
+	invBytes, _ := json.Marshal(inv)
+	invAddr := cas.put(invBytes)
+
+	app := dialApp(t, srv.AppAddr())
+	app.call("e1", wire.TypeEnqueue, wire.Enqueue{Jobs: []wire.EnqueueJob{
+		{JobKey: "busy-k", Lane: "embed", InvocationAddress: invAddr},
+	}})
+
+	rn := runner.New(runner.Config{
+		RunnerID: "Rbusy", Node: "n1", Version: "runner/test",
+		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
+		ComputeAddr: strings.TrimPrefix(computeSrv.URL, "http://"),
+		WorkRoot:    t.TempDir(), Lanes: []string{"embed"}, Capacity: 1, LeaseWaitS: 2,
+	}, nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rn.Run(ctx)
+
+	// The job must reach PERSISTING despite the first invokes being 409 — proving the
+	// runner waited through the busy responses instead of failing the job.
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		je := app.call("j1", wire.TypeJobs, map[string]any{"filter": map[string]string{"state": "PERSISTING"}})
+		var jr struct {
+			Jobs []struct {
+				JobID string `json:"job_id"`
+				State string `json:"state"`
+			} `json:"jobs"`
+		}
+		_ = json.Unmarshal(je.Body, &jr)
+		if len(jr.Jobs) == 1 {
+			return // completed — the runner waited through the 409s
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("job did not reach PERSISTING: the runner failed on a busy compute instead of waiting through it")
 }

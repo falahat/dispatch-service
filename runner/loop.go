@@ -158,12 +158,14 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		return
 	}
 
-	// 3. Invoke the compute container.
+	// 3. Invoke the compute container. The compute is single-flight; if it is busy
+	// with another invoke (typically an abandoned run still finishing server-side),
+	// hold this lease and wait rather than failing — see invokeWaitingForFreeCompute.
 	inputs := map[string]string{}
 	for name := range inv.Inputs {
 		inputs[name] = filepath.ToSlash(filepath.Join("inputs", name))
 	}
-	res, failure, ierr := r.invoke.Invoke(jobCtx, InvokeRequest{
+	res, failure, ierr := r.invokeWaitingForFreeCompute(jobCtx, g, InvokeRequest{
 		JobID:      g.Job.JobID,
 		Invocation: invBytes,
 		Workdir:    workdir,
@@ -179,10 +181,6 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		}
 		if errors.Is(ierr, context.DeadlineExceeded) {
 			r.fail(dc, g, wire.ClassTimeout, "invoke deadline exceeded")
-			return
-		}
-		if _, busy := ierr.(ErrBusy); busy {
-			r.fail(dc, g, wire.ClassUnknown, "compute busy (unexpected concurrent invoke)")
 			return
 		}
 		r.fail(dc, g, wire.ClassFatal, "invoke transport: "+ierr.Error())
@@ -216,6 +214,39 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		ar.Metrics = map[string]int64{}
 	}
 	r.complete(dc, g, ar)
+}
+
+// ComputeBusyRetryInterval is how long the runner waits before retrying an invoke
+// that a single-flight compute rejected as busy (409). Exported so tests can shorten it.
+var ComputeBusyRetryInterval = 5 * time.Second
+
+// invokeWaitingForFreeCompute invokes the compute, holding the lease and waiting
+// through a 409 (compute busy) instead of failing the job. The compute serves one
+// invoke at a time; a busy response means another invoke — typically an abandoned
+// run still finishing server-side — holds the slot. Failing here would burn the
+// entire queue into instant 409s while one run drains (the observed drain-collapse
+// tail after the keep-alive fix). Instead we keep this job leased (the heartbeat
+// renews it) and retry until the compute frees or the deadline/abandon fires; a
+// cancelled ctx returns its error, handled as abandon/timeout by the caller.
+func (r *Runner) invokeWaitingForFreeCompute(
+	ctx context.Context, g *wire.Grant, req InvokeRequest,
+) (*InvokeResult, *InvokeFailure, error) {
+	loggedBusy := false
+	for {
+		res, failure, ierr := r.invoke.Invoke(ctx, req)
+		if _, busy := ierr.(ErrBusy); !busy {
+			return res, failure, ierr
+		}
+		if !loggedBusy {
+			r.log.Info("compute busy; holding job, waiting for the compute to free", "job", g.Job.JobID)
+			loggedBusy = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(ComputeBusyRetryInterval):
+		}
+	}
 }
 
 // --- terminal verb senders ---

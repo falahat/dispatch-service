@@ -635,6 +635,58 @@ fn missing_deny_list_revokes_nothing() {
 }
 
 #[test]
+fn signer_revoke_end_to_end_rejects_the_credential() {
+    // Feature C ⇄ Feature B: enroll records the credential's authority revocation
+    // id; `revoke` writes it to the deny-list the PEP reads; a request bearing
+    // that credential is then denied by `verify()` (Revoked), end to end.
+    use crate::signer::{Pairing, Signer};
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = dir.path().join("secrets.json");
+    let deny_list = dir.path().join("pep-revocations.json");
+
+    let (sk, pk_hex) = holder();
+    let mut signer = Signer::open(&secrets).unwrap();
+    let cred = signer
+        .enroll(Pairing {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+            note: Some("phone".into()),
+            revocation_id: String::new(),
+        })
+        .unwrap();
+
+    // enroll recorded a non-empty authority revocation id on the pairing.
+    let recorded = signer.pairings()[&pk_hex].revocation_id.clone();
+    assert!(!recorded.is_empty(), "enroll must record a revocation id");
+    // ...and it matches the credential's actual authority id.
+    let root_pub = signer.public_key();
+    assert_eq!(recorded, authority_revocation_id_from_pub(&root_pub, &cred));
+
+    // Before revocation the credential verifies against the same root.
+    let (_d, ns) = store("n.redb");
+    let rev = RevocationStore::open(&deny_list).unwrap();
+    let ok = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    verify(&root_pub, &ns, &rev, NOW, &ok, true).expect("passes before revoke");
+
+    // Revoke via the signer (writes the deny-list the PEP reads).
+    signer.revoke(&pk_hex, &deny_list, NOW).unwrap();
+
+    // The next request is denied — the deny-list holds the recorded id.
+    let next = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW + 1);
+    match verify(&root_pub, &ns, &rev, NOW + 1, &next, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked after signer.revoke, got {other:?}"),
+    }
+}
+
+/// Authority revocation id of `cred` parsed against a raw root public key.
+fn authority_revocation_id_from_pub(root_pub: &biscuit_auth::PublicKey, cred: &str) -> String {
+    let biscuit = biscuit_auth::Biscuit::from_base64(cred, *root_pub).unwrap();
+    hex::encode(&biscuit.revocation_identifiers()[0])
+}
+
+#[test]
 fn signer_roundtrip_and_key_preserved() {
     use crate::signer::{Pairing, Signer};
     let dir = tempfile::tempdir().unwrap();
@@ -651,6 +703,7 @@ fn signer_roundtrip_and_key_preserved() {
                 rights: vec!["cas_get".into()],
                 lanes: vec![],
                 note: None,
+                revocation_id: String::new(),
             })
             .unwrap();
     }
@@ -703,6 +756,7 @@ fn signer_loads_the_deployed_secretstore_format_readonly() {
         rights: vec!["lease".into()],
         lanes: vec!["transcribe".into()],
         note: Some("gpu runner".into()),
+        revocation_id: String::new(),
     })
     .unwrap();
     assert_eq!(

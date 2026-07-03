@@ -6,7 +6,8 @@
 
 use crate::cred::{mint, MintParams};
 use crate::error::{AuthError, Result};
-use biscuit_auth::{KeyPair, PrivateKey, PublicKey};
+use crate::revocation::RevocationStore;
+use biscuit_auth::{Biscuit, KeyPair, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,6 +21,13 @@ pub struct Pairing {
     pub lanes: Vec<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// The authority-block revocation identifier (lowercase hex) of this
+    /// identity's minted credential, recorded at enrollment. Revoking pushes this
+    /// onto the PEP's deny-list — and because every attenuation of the credential
+    /// inherits the authority id, one entry kills the credential and all its
+    /// leases. Empty until the identity is enrolled (defaulted for older files).
+    #[serde(default)]
+    pub revocation_id: String,
 }
 
 /// The deployed key file: easy-podcast's `SecretStore` format, whose issuer key
@@ -152,12 +160,20 @@ impl Signer {
         STANDARD.encode(self.keypair.public().to_bytes())
     }
 
-    /// Enroll (pair) an identity and persist it, then mint its credential.
+    /// Enroll (pair) an identity, mint its credential, and record the
+    /// credential's authority-block revocation identifier on the pairing (so it
+    /// can later be revoked without re-deriving it). Returns the minted token.
     pub fn enroll(&mut self, pairing: Pairing) -> Result<String> {
         let id = pairing.pubkey_hex.clone();
-        self.pairings.insert(id.clone(), pairing.clone());
+        self.pairings.insert(id.clone(), pairing);
+        let cred = self.mint_for(&id)?;
+        // Record the authority revocation id so `revoke` needs no re-derivation.
+        let rev_id = authority_revocation_id(&cred, &self.keypair.public())?;
+        if let Some(p) = self.pairings.get_mut(&id) {
+            p.revocation_id = rev_id;
+        }
         self.save()?;
-        self.mint_for(&id)
+        Ok(cred)
     }
 
     /// Mint a credential for an already-enrolled identity.
@@ -176,8 +192,52 @@ impl Signer {
         )
     }
 
+    /// Revoke an enrolled identity: append its recorded authority-block
+    /// revocation id to the PEP's deny-list file (creating it if absent) and
+    /// persist. The PEP live-reloads the file, so the next request bearing that
+    /// credential — or any lease attenuated from it — is denied. Idempotent.
+    pub fn revoke<P: AsRef<Path>>(
+        &mut self,
+        pubkey_hex: &str,
+        deny_list_path: P,
+        now_ms: i64,
+    ) -> Result<()> {
+        let p = self
+            .pairings
+            .get(pubkey_hex)
+            .ok_or_else(|| AuthError::Denied(format!("unknown identity {pubkey_hex}")))?;
+        if p.revocation_id.is_empty() {
+            return Err(AuthError::Malformed(format!(
+                "identity {pubkey_hex} has no recorded revocation id (re-enroll to mint one)"
+            )));
+        }
+        let note = format!(
+            "revoked pairing {pubkey_hex}{}",
+            p.note
+                .as_deref()
+                .map(|n| format!(" ({n})"))
+                .unwrap_or_default()
+        );
+        // Reuse the deny-list writer so the on-disk format stays single-sourced.
+        let deny = RevocationStore::open(&deny_list_path)?;
+        deny.revoke(&p.revocation_id, &note, now_ms)
+    }
+
     /// The enrolled pairings (read-only).
     pub fn pairings(&self) -> &BTreeMap<String, Pairing> {
         &self.pairings
     }
+}
+
+/// The authority-block revocation identifier (lowercase hex) of a minted token,
+/// parsed against `root` (its issuer). This is the id an operator puts on the
+/// deny-list to revoke the credential.
+fn authority_revocation_id(cred_b64: &str, root: &PublicKey) -> Result<String> {
+    let biscuit =
+        Biscuit::from_base64(cred_b64, *root).map_err(|e| AuthError::Malformed(e.to_string()))?;
+    let ids = biscuit.revocation_identifiers();
+    let authority = ids
+        .first()
+        .ok_or_else(|| AuthError::Malformed("credential has no revocation id".into()))?;
+    Ok(hex::encode(authority))
 }

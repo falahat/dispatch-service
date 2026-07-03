@@ -21,6 +21,8 @@ pub enum AuthError {
     MissingIdentity,
     #[error("authorization denied: {0}")]
     Denied(String),
+    #[error("credential revoked")]
+    Revoked,
     #[error("nonce store: {0}")]
     Store(String),
     #[error("io: {0}")]

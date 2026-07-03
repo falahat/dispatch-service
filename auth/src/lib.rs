@@ -12,12 +12,14 @@ pub mod http_proxy;
 pub mod nonce;
 pub mod pop;
 pub mod quota;
+pub mod revocation;
 pub mod signer;
 
 pub use canonical::Op;
 pub use cred::{attenuate_for_lease, mint, verify, AuthedRequest, Identity, MintParams};
 pub use error::{AuthError, Result};
 pub use nonce::{NonceStore, DEFAULT_WINDOW_MS};
+pub use revocation::RevocationStore;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

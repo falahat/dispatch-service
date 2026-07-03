@@ -7,6 +7,7 @@ use crate::cred::{verify, AuthedRequest};
 use crate::error::AuthError;
 use crate::nonce::NonceStore;
 use crate::quota::Quota;
+use crate::revocation::RevocationStore;
 use crate::Op;
 use biscuit_auth::PublicKey;
 use bytes::Bytes;
@@ -60,6 +61,7 @@ pub struct CasConfig {
 pub struct CasProxy {
     root_pub: PublicKey,
     nonces: NonceStore,
+    revocations: RevocationStore,
     cfg: CasConfig,
     quota: Quota,
     client: Client<HttpConnector, BoxedBody>,
@@ -70,6 +72,7 @@ impl CasProxy {
     pub fn new(
         root_pub: PublicKey,
         nonces: NonceStore,
+        revocations: RevocationStore,
         cfg: CasConfig,
         quota: Quota,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -78,6 +81,7 @@ impl CasProxy {
         Self {
             root_pub,
             nonces,
+            revocations,
             cfg,
             quota,
             client,
@@ -133,7 +137,14 @@ impl CasProxy {
         };
         let now = (self.now)();
         // CAS is single-use: every blob request consumes its nonce.
-        let identity = match verify(&self.root_pub, &self.nonces, now, &areq, true) {
+        let identity = match verify(
+            &self.root_pub,
+            &self.nonces,
+            &self.revocations,
+            now,
+            &areq,
+            true,
+        ) {
             Ok(id) => id,
             Err(e) => return deny(&method, &path, e),
         };
@@ -263,7 +274,7 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
         | AuthError::BiscuitSignature
         | AuthError::MissingPubkey
         | AuthError::MissingIdentity => StatusCode::UNAUTHORIZED,
-        AuthError::Denied(_) => StatusCode::FORBIDDEN,
+        AuthError::Denied(_) | AuthError::Revoked => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     log::warn!("cas: {} {} denied: {}", method, path, e);

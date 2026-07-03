@@ -25,6 +25,7 @@ use biscuit_auth::KeyPair;
 use dispatch_auth::cred::{mint, verify, AuthedRequest, MintParams};
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::pop;
+use dispatch_auth::revocation::RevocationStore;
 use dispatch_auth::Op;
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde::Deserialize;
@@ -133,6 +134,7 @@ fn ts_request_passes_full_verify() {
     let dir = tempfile::tempdir().unwrap();
     let nonces =
         NonceStore::open(dir.path().join("n.redb"), dispatch_auth::DEFAULT_WINDOW_MS).unwrap();
+    let revocations = RevocationStore::open(dir.path().join("revocations.json")).unwrap();
 
     let areq = AuthedRequest {
         op: op_for(&v),
@@ -146,7 +148,7 @@ fn ts_request_passes_full_verify() {
     };
 
     // Header-auth semantics: single-use. `now == ts` so it is fresh.
-    let id = verify(&root.public(), &nonces, v.ts_ms, &areq, true)
+    let id = verify(&root.public(), &nonces, &revocations, v.ts_ms, &areq, true)
         .expect("TS request must pass the full verify path");
     assert_eq!(id.id, v.pubkey_hex);
 }
@@ -171,6 +173,7 @@ fn wrong_right_denies_the_ts_request() {
     let dir = tempfile::tempdir().unwrap();
     let nonces =
         NonceStore::open(dir.path().join("n.redb"), dispatch_auth::DEFAULT_WINDOW_MS).unwrap();
+    let revocations = RevocationStore::open(dir.path().join("revocations.json")).unwrap();
 
     let areq = AuthedRequest {
         op: op_for(&v),
@@ -184,7 +187,7 @@ fn wrong_right_denies_the_ts_request() {
     };
 
     assert!(
-        verify(&root.public(), &nonces, v.ts_ms, &areq, true).is_err(),
+        verify(&root.public(), &nonces, &revocations, v.ts_ms, &areq, true).is_err(),
         "a Biscuit without the required right must be denied",
     );
 }

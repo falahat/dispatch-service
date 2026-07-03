@@ -36,6 +36,7 @@ use crate::cred::{verify, AuthedRequest};
 use crate::error::AuthError;
 use crate::nonce::NonceStore;
 use crate::quota::Quota;
+use crate::revocation::RevocationStore;
 use crate::Op;
 use biscuit_auth::PublicKey;
 use bytes::Bytes;
@@ -313,6 +314,7 @@ pub struct HttpConfig {
 pub struct HttpProxy {
     root_pub: PublicKey,
     nonces: NonceStore,
+    revocations: RevocationStore,
     cfg: HttpConfig,
     quota: Quota,
     client: Client<HttpConnector, BoxedBody>,
@@ -323,6 +325,7 @@ impl HttpProxy {
     pub fn new(
         root_pub: PublicKey,
         nonces: NonceStore,
+        revocations: RevocationStore,
         cfg: HttpConfig,
         quota: Quota,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -331,6 +334,7 @@ impl HttpProxy {
         Self {
             root_pub,
             nonces,
+            revocations,
             cfg,
             quota,
             client,
@@ -443,7 +447,15 @@ impl HttpProxy {
     /// Verify a built request against the shared engine (UNCHANGED `verify()`).
     fn authenticate(&self, areq: &AuthedRequest, single_use: bool) -> Result<String, AuthError> {
         let now = (self.now)();
-        verify(&self.root_pub, &self.nonces, now, areq, single_use).map(|id| id.id)
+        verify(
+            &self.root_pub,
+            &self.nonces,
+            &self.revocations,
+            now,
+            areq,
+            single_use,
+        )
+        .map(|id| id.id)
     }
 
     /// Forward the buffered request to the loopback backend, preserving method,
@@ -730,7 +742,7 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
         | AuthError::BiscuitSignature
         | AuthError::MissingPubkey
         | AuthError::MissingIdentity => StatusCode::UNAUTHORIZED,
-        AuthError::Denied(_) => StatusCode::FORBIDDEN,
+        AuthError::Denied(_) | AuthError::Revoked => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     log::warn!("http: {method} {path} denied: {e}");

@@ -5,10 +5,18 @@ use crate::canonical::Op;
 use crate::cred::{attenuate_for_lease, mint, verify, AuthedRequest, MintParams};
 use crate::error::AuthError;
 use crate::nonce::NonceStore;
+use crate::revocation::RevocationStore;
 use biscuit_auth::KeyPair;
 use ed25519_dalek::{Signer as _, SigningKey};
 
 const NOW: i64 = 1_700_000_000_000;
+
+/// An empty deny-list (its file never exists → nothing is revoked), for the
+/// tests that are not about revocation. Revocation has its own tests below.
+fn no_rev() -> RevocationStore {
+    let dir = std::env::temp_dir().join(format!("pep-norev-{}", rand::random::<u64>()));
+    RevocationStore::open(dir.join("revocations.json")).unwrap()
+}
 
 fn holder() -> (SigningKey, String) {
     let seed: [u8; 32] = rand_bytes();
@@ -90,7 +98,7 @@ fn happy_path_cas_get() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    let id = verify(&root.public(), &ns, NOW, &req, true).expect("valid request");
+    let id = verify(&root.public(), &ns, &no_rev(), NOW, &req, true).expect("valid request");
     assert_eq!(id.id, pk_hex);
 }
 
@@ -111,7 +119,7 @@ fn pop_with_wrong_key_is_rejected() {
     let (_d, ns) = store("n.redb");
     // Present the victim's pubkey but sign with the attacker's key.
     let req = cas_get_req(&attacker, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::PopFailed) => {}
         other => panic!("expected PopFailed, got {other:?}"),
     }
@@ -133,7 +141,7 @@ fn forged_biscuit_from_other_root_is_rejected() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::BiscuitSignature) => {}
         other => panic!("expected BiscuitSignature, got {other:?}"),
     }
@@ -154,9 +162,9 @@ fn replay_same_nonce_is_rejected() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    verify(&root.public(), &ns, NOW, &req, true).expect("first ok");
+    verify(&root.public(), &ns, &no_rev(), NOW, &req, true).expect("first ok");
     // Replay the exact same request (same nonce).
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::Replay) => {}
         other => panic!("expected Replay, got {other:?}"),
     }
@@ -181,11 +189,11 @@ fn non_single_use_allows_nonce_reuse_but_still_enforces_freshness() {
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     // Reused twice with single_use=false: both pass (no replay rejection).
-    verify(&root.public(), &ns, NOW, &req, false).expect("first freshness-only ok");
-    verify(&root.public(), &ns, NOW, &req, false).expect("reuse must still pass");
+    verify(&root.public(), &ns, &no_rev(), NOW, &req, false).expect("first freshness-only ok");
+    verify(&root.public(), &ns, &no_rev(), NOW, &req, false).expect("reuse must still pass");
     // But a stale ts is rejected even freshness-only (the URL expires).
     let stale = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW - 10 * 60 * 1000);
-    match verify(&root.public(), &ns, NOW, &stale, false) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &stale, false) {
         Err(AuthError::Freshness) => {}
         other => panic!("expected Freshness for stale freshness-only, got {other:?}"),
     }
@@ -209,10 +217,10 @@ fn replay_across_restart_is_rejected() {
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     {
         let ns = NonceStore::open(&path, crate::nonce::DEFAULT_WINDOW_MS).unwrap();
-        verify(&root.public(), &ns, NOW, &req, true).expect("first ok");
+        verify(&root.public(), &ns, &no_rev(), NOW, &req, true).expect("first ok");
     } // store dropped (restart)
     let ns2 = NonceStore::open(&path, crate::nonce::DEFAULT_WINDOW_MS).unwrap();
-    match verify(&root.public(), &ns2, NOW, &req, true) {
+    match verify(&root.public(), &ns2, &no_rev(), NOW, &req, true) {
         Err(AuthError::Replay) => {}
         other => panic!("expected Replay across restart, got {other:?}"),
     }
@@ -234,7 +242,7 @@ fn stale_timestamp_is_rejected() {
     let (_d, ns) = store("n.redb");
     let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, stale);
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::Freshness) => {}
         other => panic!("expected Freshness, got {other:?}"),
     }
@@ -256,7 +264,7 @@ fn missing_right_is_denied() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied, got {other:?}"),
     }
@@ -281,7 +289,7 @@ fn presented_pubkey_must_match_credential() {
     .unwrap();
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
-    match verify(&root.public(), &ns, NOW, &req, true) {
+    match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied (pubkey mismatch), got {other:?}"),
     }
@@ -323,11 +331,12 @@ fn lane_scope_enforced_on_lease() {
     };
 
     // A lane the credential grants: ok.
-    verify(&root.public(), &ns, NOW, &mk("embed", NOW), true).expect("embed lease ok");
+    verify(&root.public(), &ns, &no_rev(), NOW, &mk("embed", NOW), true).expect("embed lease ok");
     // A lane it does not grant: denied.
     match verify(
         &root.public(),
         &ns,
+        &no_rev(),
         NOW + 1,
         &mk("transcribe", NOW + 1),
         true,
@@ -359,6 +368,7 @@ fn attenuated_token_scopes_get_to_closure() {
     verify(
         &root.public(),
         &ns,
+        &no_rev(),
         NOW,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
         true,
@@ -368,6 +378,7 @@ fn attenuated_token_scopes_get_to_closure() {
     match verify(
         &root.public(),
         &ns,
+        &no_rev(),
         NOW + 1,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_B, NOW + 1),
         true,
@@ -397,6 +408,7 @@ fn attenuated_token_expires() {
     match verify(
         &root.public(),
         &ns,
+        &no_rev(),
         NOW,
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
         true,
@@ -404,6 +416,222 @@ fn attenuated_token_expires() {
         Err(AuthError::Denied(_)) => {}
         other => panic!("expected Denied (expired), got {other:?}"),
     }
+}
+
+// ---------- revocation (deny-list enforcement in verify) ----------
+
+/// Open an empty deny-list in a tempdir; return the store and its file path so a
+/// test can revoke a credential mid-run (proving the live-reload).
+fn rev_store() -> (tempfile::TempDir, RevocationStore, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("revocations.json");
+    let rev = RevocationStore::open(&path).unwrap();
+    (dir, rev, path)
+}
+
+/// The authority-block revocation id (lowercase hex) of a minted credential —
+/// what an operator would put on the deny-list to revoke it.
+fn authority_revocation_id(root: &KeyPair, cred: &str) -> String {
+    let biscuit = biscuit_auth::Biscuit::from_base64(cred, root.public()).unwrap();
+    hex::encode(&biscuit.revocation_identifiers()[0])
+}
+
+#[test]
+fn revoked_credential_is_denied() {
+    // A credential whose authority revocation id is on the deny-list is denied
+    // with the dedicated `Revoked` outcome — before the capability check, so it
+    // is denied regardless of the right it would otherwise satisfy.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, _path) = rev_store();
+    rev.revoke(&authority_revocation_id(&root, &cred), "compromised", NOW)
+        .unwrap();
+    let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    match verify(&root.public(), &ns, &rev, NOW, &req, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_revoked_credential_still_passes() {
+    // The negative control: a deny-list holding some OTHER id does not deny an
+    // unrelated credential.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, _path) = rev_store();
+    // Revoke an unrelated id (64 hex zeros) — must not affect this credential.
+    rev.revoke(&"0".repeat(64), "someone else", NOW).unwrap();
+    let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    let id = verify(&root.public(), &ns, &rev, NOW, &req, true).expect("non-revoked must pass");
+    assert_eq!(id.id, pk_hex);
+}
+
+#[test]
+fn revoking_authority_id_denies_every_attenuation() {
+    // The security guarantee: revoking the AUTHORITY-block id denies not just the
+    // base credential but every token attenuated from it, because the authority
+    // id stays in an attenuated token's revocation_identifiers. We attenuate the
+    // base for a lease, then revoke the base's authority id and prove the
+    // attenuated token is denied.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let base = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let scoped =
+        attenuate_for_lease(&base, &root.public(), &[ADDR_A.to_string()], NOW + 60_000).unwrap();
+    // Sanity: the attenuated token's revocation ids INCLUDE the base authority id.
+    let base_auth_id = authority_revocation_id(&root, &base);
+    let scoped_biscuit = biscuit_auth::Biscuit::from_base64(&scoped, root.public()).unwrap();
+    let scoped_ids: Vec<String> = scoped_biscuit
+        .revocation_identifiers()
+        .iter()
+        .map(hex::encode)
+        .collect();
+    assert!(
+        scoped_ids.contains(&base_auth_id),
+        "attenuated token must inherit the base authority revocation id",
+    );
+
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, _path) = rev_store();
+    rev.revoke(&base_auth_id, "base compromised", NOW).unwrap();
+    // The attenuated token is now denied by the base's revocation.
+    let req = cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW);
+    match verify(&root.public(), &ns, &rev, NOW, &req, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked for attenuation of a revoked base, got {other:?}"),
+    }
+}
+
+#[test]
+fn revoking_dispatch_credential_is_denied() {
+    // Cover the frame/dispatch op kind too (the runner surface): a revoked
+    // dispatch credential is denied by the same engine path.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["lease".into()],
+            lanes: vec!["embed".into()],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, _path) = rev_store();
+    rev.revoke(&authority_revocation_id(&root, &cred), "runner banned", NOW)
+        .unwrap();
+    let op = Op::Dispatch {
+        verb: "lease".into(),
+        frame_sha256_hex: "00".repeat(32),
+    };
+    let nonce = nonce_b64();
+    let canonical = op.canonical(&nonce, NOW);
+    let sig = sign_pop(&sk, &canonical);
+    let req = AuthedRequest {
+        op,
+        biscuit_b64: cred.clone(),
+        pubkey_hex: pk_hex.clone(),
+        nonce_b64: nonce,
+        ts_ms: NOW,
+        pop_sig_b64: sig,
+        required_lanes: vec!["embed".into()],
+        address_hex: None,
+    };
+    match verify(&root.public(), &ns, &rev, NOW, &req, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked for dispatch op, got {other:?}"),
+    }
+}
+
+#[test]
+fn revocation_live_reloads_without_restart() {
+    // Write the deny-list file AFTER the store is open and a request has already
+    // passed; the very next verify must be denied — no restart. This is the
+    // operator revoke path: drop a file, deny immediately.
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    let (_rd, rev, path) = rev_store();
+
+    // First request passes (empty deny-list).
+    let ok = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    verify(&root.public(), &ns, &rev, NOW, &ok, true).expect("passes before revocation");
+
+    // A DIFFERENT store instance writes the file (mimics an out-of-band operator
+    // / the signer CLI), proving the running store live-reloads it, not just its
+    // own writer cache.
+    let writer = RevocationStore::open(&path).unwrap();
+    writer
+        .revoke(&authority_revocation_id(&root, &cred), "revoked mid-run", NOW)
+        .unwrap();
+
+    // The next request through the ORIGINAL store is denied — it re-read the file.
+    let next = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW + 1);
+    match verify(&root.public(), &ns, &rev, NOW + 1, &next, true) {
+        Err(AuthError::Revoked) => {}
+        other => panic!("expected Revoked after live reload, got {other:?}"),
+    }
+}
+
+#[test]
+fn missing_deny_list_revokes_nothing() {
+    // A deny-list whose file never exists must revoke nothing (not error).
+    let root = KeyPair::new();
+    let (sk, pk_hex) = holder();
+    let cred = mint(
+        &root,
+        &MintParams {
+            pubkey_hex: pk_hex.clone(),
+            rights: vec!["cas_get".into()],
+            lanes: vec![],
+        },
+    )
+    .unwrap();
+    let (_d, ns) = store("n.redb");
+    // Point at a path with no file — is_revoked must be false throughout.
+    let missing = std::env::temp_dir().join(format!("pep-missing-{}.json", rand::random::<u64>()));
+    let rev = RevocationStore::open(&missing).unwrap();
+    let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
+    verify(&root.public(), &ns, &rev, NOW, &req, true).expect("missing deny-list revokes nothing");
 }
 
 #[test]

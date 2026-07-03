@@ -12,6 +12,7 @@ use crate::canonical::Op;
 use crate::error::{AuthError, Result};
 use crate::nonce::NonceStore;
 use crate::pop;
+use crate::revocation::RevocationStore;
 use biscuit_auth::builder::BlockBuilder;
 use biscuit_auth::macros::{check, fact, policy};
 use biscuit_auth::{Biscuit, KeyPair, PublicKey};
@@ -116,6 +117,7 @@ pub struct AuthedRequest {
 pub fn verify(
     root_pub: &PublicKey,
     nonces: &NonceStore,
+    revocations: &RevocationStore,
     now_ms: i64,
     req: &AuthedRequest,
     single_use: bool,
@@ -134,6 +136,18 @@ pub fn verify(
     // 2. Parse the Biscuit against the root key (verifies its signature chain).
     let biscuit = Biscuit::from_base64(&req.biscuit_b64, *root_pub)
         .map_err(|_| AuthError::BiscuitSignature)?;
+
+    // 2b. Revocation: a credential is revoked by putting any of its block
+    //     revocation identifiers on the deny-list. `revocation_identifiers()`
+    //     ALWAYS includes the authority-block id (index 0), which every
+    //     attenuation inherits — so revoking the authority id denies the base
+    //     credential AND every token attenuated from it. Checked after the
+    //     signature parse (so only a genuinely-signed credential is measured
+    //     against the list) and before authorization (a revoked credential is
+    //     denied regardless of the right it would otherwise grant).
+    if revocations.is_revoked(&biscuit.revocation_identifiers()) {
+        return Err(AuthError::Revoked);
+    }
 
     // 3. Authorize: bind the presented pubkey, the operation, address, and time;
     //    require the right and the pubkey match (and any required lanes).

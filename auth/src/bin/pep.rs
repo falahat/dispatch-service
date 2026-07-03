@@ -11,6 +11,7 @@ use dispatch_auth::frame_proxy::FrameProxy;
 use dispatch_auth::http_proxy::{HttpProxy, RouteTableSpec};
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
+use dispatch_auth::revocation::RevocationStore;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -51,6 +52,16 @@ async fn main() {
     let window_ms: i64 = env("PEP_FRESHNESS_MS", "300000").parse().unwrap_or(300_000);
     let nonces = NonceStore::open(&nonce_db, window_ms).unwrap_or_else(|e| {
         eprintln!("pep: nonce store: {e}");
+        std::process::exit(1);
+    });
+
+    // The live-reloaded credential deny-list, shared across all three surfaces
+    // (like the nonce store). A missing file means nothing is revoked; writing
+    // the file at runtime denies the very next request that bears a revoked
+    // credential, with no PEP restart.
+    let revocation_db = env("PEP_REVOCATION_DB", "pep-revocations.json");
+    let revocations = RevocationStore::open(&revocation_db).unwrap_or_else(|e| {
+        eprintln!("pep: revocation store {revocation_db}: {e}");
         std::process::exit(1);
     });
 
@@ -105,6 +116,7 @@ async fn main() {
     let frame = FrameProxy::new(
         root_pub,
         nonces.clone(),
+        revocations.clone(),
         dispatcher_addr.clone(),
         now.clone(),
     );
@@ -113,6 +125,7 @@ async fn main() {
     let cas = CasProxy::new(
         root_pub,
         nonces.clone(),
+        revocations.clone(),
         CasConfig {
             backend: cas_backend.clone(),
             max_blob_bytes,
@@ -140,7 +153,14 @@ async fn main() {
             });
             let backend = cfg.backend.clone();
             let http_quota = Quota::new(http_max_req, http_max_bytes);
-            let proxy = HttpProxy::new(root_pub, nonces.clone(), cfg, http_quota, now.clone());
+            let proxy = HttpProxy::new(
+                root_pub,
+                nonces.clone(),
+                revocations.clone(),
+                cfg,
+                http_quota,
+                now.clone(),
+            );
             Some((proxy, listen, backend))
         }
         (None, None) => None,

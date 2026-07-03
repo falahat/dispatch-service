@@ -136,6 +136,39 @@ A malformed route table (both `path` and `prefix`, neither, an authed route with
 route on a non-GET/HEAD method) is a **boot failure** — never a request-time
 surprise.
 
+## Credential revocation (deny-list)
+
+Revocation is a **plane-wide** control shared by all three surfaces (runner, CAS,
+HTTP), independent of the route table. A credential is revoked by putting one of its
+Biscuit **revocation identifiers** on a **live-reloaded deny-list file**. `verify()`
+computes the presented credential's revocation identifiers and denies (**403** /
+`forbidden`) if **any** is on the list — checked *after* the signature parse and
+*before* the capability check, so a revoked credential is denied regardless of the
+right it would otherwise satisfy.
+
+- **Revoke the authority-block id and every attenuation dies too.** A token's
+  revocation identifiers always include its authority-block id, which every
+  attenuated child inherits — so one deny-list entry kills the base credential and
+  all leases derived from it.
+- **Live reload, no restart.** The file is re-read when its mtime/size changes, so
+  writing it denies the *very next* request. A **missing** file means nothing is
+  revoked (not an error); a present-but-malformed file keeps the last-known-good set
+  (a revocation is never *lost* to a bad write) and is logged.
+
+Deny-list file format:
+
+```json
+{
+  "revoked": [
+    { "id": "<lowercase-hex revocation id>", "note": "why", "revoked_at": 0 }
+  ]
+}
+```
+
+`id` is a lowercase-hex Biscuit revocation identifier. The **signer** records each
+credential's authority-block revocation id at enrollment and the `signer revoke
+--pubkey <hex>` subcommand appends it to this file (see the signer CLI).
+
 ## PEP env for the HTTP surface
 
 | env | default | meaning |
@@ -144,3 +177,4 @@ surprise.
 | `PEP_HTTP_LISTEN` | — | listen address, e.g. `0.0.0.0:9443`. |
 | `PEP_HTTP_MAX_REQ_PER_MIN` | `6000` | per-identity request-rate cap (429 over). |
 | `PEP_HTTP_MAX_BYTES_PER_MIN` | `4 GiB` | per-identity byte-rate cap (429 over). |
+| `PEP_REVOCATION_DB` | `pep-revocations.json` | live-reloaded credential deny-list (shared across all three surfaces). |

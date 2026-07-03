@@ -22,6 +22,7 @@ use dispatch_auth::cred::{mint, MintParams};
 use dispatch_auth::http_proxy::{HttpProxy, RouteTableSpec};
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
+use dispatch_auth::revocation::RevocationStore;
 use ed25519_dalek::{Signer as _, SigningKey};
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
@@ -129,6 +130,9 @@ async fn echo_handle(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, In
 struct Pep {
     addr: String,
     root: KeyPair,
+    /// The deny-list file path, so a revocation test can write it mid-run and
+    /// prove the live-reload denies the very next request.
+    revocation_path: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -137,18 +141,28 @@ struct Pep {
 async fn start_pep(backend: &str, routes_toml: &str, max_req: u32, max_bytes: u64) -> Pep {
     let dir = tempfile::tempdir().unwrap();
     let ns = NonceStore::open(dir.path().join("n.redb"), dispatch_auth::DEFAULT_WINDOW_MS).unwrap();
+    let revocation_path = dir.path().join("revocations.json");
+    let revocations = RevocationStore::open(&revocation_path).unwrap();
     let root = KeyPair::new();
     let full = format!("backend = \"{backend}\"\n{routes_toml}");
     let spec: RouteTableSpec = toml::from_str(&full).unwrap();
     let cfg = spec.resolve().unwrap();
     let now: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(|| NOW);
-    let proxy = HttpProxy::new(root.public(), ns, cfg, Quota::new(max_req, max_bytes), now);
+    let proxy = HttpProxy::new(
+        root.public(),
+        ns,
+        revocations,
+        cfg,
+        Quota::new(max_req, max_bytes),
+        now,
+    );
     let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
     tokio::spawn(proxy.serve(ln));
     Pep {
         addr: format!("http://{addr}"),
         root,
+        revocation_path,
         _dir: dir,
     }
 }
@@ -482,6 +496,119 @@ async fn passthrough_injects_no_identity() {
         "passthrough must inject no identity, and strip any client-sent one",
     );
 }
+
+// ---------- revocation (deny-list enforcement on the HTTP surface) ----------
+
+/// The authority-block revocation id (lowercase hex) of a credential minted by
+/// `root` — what an operator puts on the deny-list to revoke it.
+fn authority_revocation_id(root: &KeyPair, cred: &str) -> String {
+    let biscuit = biscuit_auth::Biscuit::from_base64(cred, root.public()).unwrap();
+    hex::encode(&biscuit.revocation_identifiers()[0])
+}
+
+/// Write the deny-list file the PEP reads, revoking exactly these hex ids. Proves
+/// the on-disk format is the contract (`{"revoked":[{"id","note","revoked_at"}]}`).
+fn write_deny_list(path: &std::path::Path, ids: &[&str]) {
+    let revoked: Vec<_> = ids
+        .iter()
+        .map(|id| serde_json::json!({ "id": id, "note": "test", "revoked_at": NOW }))
+        .collect();
+    let doc = serde_json::json!({ "revoked": revoked });
+    std::fs::write(path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn revoked_credential_is_403_on_header_auth() {
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    // Revoke this credential's authority id.
+    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    assert_eq!(r.status, 403, "revoked credential must be 403: {}", r.body);
+}
+
+#[tokio::test]
+async fn revoked_credential_is_403_on_query_auth() {
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
+    let q = format!(
+        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        urlenc(&cred),
+        pk,
+        urlenc(&nonce),
+        NOW,
+        urlenc(&pop),
+    );
+    let r = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(
+        r.status, 403,
+        "revoked signed-URL credential must be 403: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
+async fn non_revoked_credential_still_passes_with_a_populated_deny_list() {
+    // A deny-list holding an UNRELATED id must not deny an unrelated credential.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    write_deny_list(&pep.revocation_path, &[&"0".repeat(64)]); // someone else
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    assert_eq!(r.status, 200, "unrelated revocation must not deny: {}", r.body);
+}
+
+#[tokio::test]
+async fn revocation_live_reloads_mid_run() {
+    // Write the deny-list AFTER the PEP is serving and one request has passed;
+    // the very next request must be denied — no restart.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+
+    // First request passes (empty deny-list).
+    let nonce1 = nonce_b64();
+    let pop1 = sign_http(&sk, "POST", "/upsert", b"x", &nonce1, NOW);
+    let h1 = auth_headers(&cred, &pk, &nonce1, NOW, &pop1);
+    let r1 = send(&pep.addr, "POST", "/upsert", &h1, b"x").await;
+    assert_eq!(r1.status, 200, "passes before revocation: {}", r1.body);
+
+    // Revoke mid-run by writing the file.
+    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
+
+    // The next request (fresh nonce, so this is a revocation denial, not a replay)
+    // is denied immediately — the store live-reloaded the file.
+    let nonce2 = nonce_b64();
+    let pop2 = sign_http(&sk, "POST", "/upsert", b"y", &nonce2, NOW);
+    let h2 = auth_headers(&cred, &pk, &nonce2, NOW, &pop2);
+    let r2 = send(&pep.addr, "POST", "/upsert", &h2, b"y").await;
+    assert_eq!(
+        r2.status, 403,
+        "the very next request after revocation must be 403: {}",
+        r2.body
+    );
+}
+
+// The engine-level guarantee that revoking the authority id denies EVERY
+// attenuation lives in the unit test `revoking_authority_id_denies_every_
+// attenuation` (src/tests.rs) — where `revocation_identifiers()` inheritance is
+// asserted directly, without depending on a route whose op happens to be
+// attenuation-compatible.
 
 // ---------- adversarial: authentication boundaries ----------
 

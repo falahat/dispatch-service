@@ -11,6 +11,7 @@
 
 use crate::cred::{verify, AuthedRequest};
 use crate::nonce::NonceStore;
+use crate::revocation::RevocationStore;
 use crate::Op;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::PublicKey;
@@ -26,6 +27,7 @@ const MAX_FRAME: u32 = 4 << 20;
 pub struct FrameProxy {
     root_pub: PublicKey,
     nonces: NonceStore,
+    revocations: RevocationStore,
     dispatcher_addr: String, // loopback address of the dispatcher runner surface
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
@@ -44,12 +46,14 @@ impl FrameProxy {
     pub fn new(
         root_pub: PublicKey,
         nonces: NonceStore,
+        revocations: RevocationStore,
         dispatcher_addr: String,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Self {
         Self {
             root_pub,
             nonces,
+            revocations,
             dispatcher_addr,
             now,
         }
@@ -130,11 +134,18 @@ impl FrameProxy {
             };
             let now = (self.now)();
             // The runner frame is single-use: every frame consumes its nonce.
-            let identity = match verify(&self.root_pub, &self.nonces, now, &areq, true) {
+            let identity = match verify(
+                &self.root_pub,
+                &self.nonces,
+                &self.revocations,
+                now,
+                &areq,
+                true,
+            ) {
                 Ok(id) => id,
                 Err(e) => {
                     let code = match e {
-                        crate::AuthError::Denied(_) => "forbidden",
+                        crate::AuthError::Denied(_) | crate::AuthError::Revoked => "forbidden",
                         _ => "unauthenticated",
                     };
                     log::warn!("frame: {} denied: {}", verb, e);

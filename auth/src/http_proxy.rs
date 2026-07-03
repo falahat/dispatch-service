@@ -401,9 +401,11 @@ impl HttpProxy {
         // Enforce, if the route demands it. On success we hold the identity for
         // quota accounting; passthrough attributes to a fixed anonymous bucket.
         // Header-auth is single-use (mutating); query-auth is freshness-only
-        // (reusable signed-URL read, but still expires).
-        let id = match &auth {
-            RouteAuth::Passthrough => "anon".to_string(),
+        // (reusable signed-URL read, but still expires). `verified` is the
+        // authenticated pubkey to hand the backend on an authed route, and None
+        // on passthrough (there is no verified identity to inject).
+        let (id, verified): (String, Option<String>) = match &auth {
+            RouteAuth::Passthrough => ("anon".to_string(), None),
             RouteAuth::Header(right) => {
                 let areq =
                     match extract_auth_headers(&parts, &method, &path, right, &body_sha256_hex) {
@@ -411,7 +413,7 @@ impl HttpProxy {
                         Err(e) => return deny(&method, &path, e),
                     };
                 match self.authenticate(&areq, true) {
-                    Ok(identity) => identity,
+                    Ok(identity) => (identity.clone(), Some(identity)),
                     Err(e) => return deny(&method, &path, e),
                 }
             }
@@ -422,7 +424,7 @@ impl HttpProxy {
                     Err(e) => return deny(&method, &path, e),
                 };
                 match self.authenticate(&areq, false) {
-                    Ok(identity) => identity,
+                    Ok(identity) => (identity.clone(), Some(identity)),
                     Err(e) => return deny(&method, &path, e),
                 }
             }
@@ -435,7 +437,7 @@ impl HttpProxy {
             return text(StatusCode::TOO_MANY_REQUESTS, "quota_exceeded");
         }
 
-        self.forward(parts, buffered).await
+        self.forward(parts, buffered, verified.as_deref()).await
     }
 
     /// Verify a built request against the shared engine (UNCHANGED `verify()`).
@@ -447,10 +449,17 @@ impl HttpProxy {
     /// Forward the buffered request to the loopback backend, preserving method,
     /// the full path+query, and the (already-read) body. The response body still
     /// streams straight back, unbuffered.
+    ///
+    /// `verified` is the authenticated pubkey (hex) on an authed route, or None
+    /// on passthrough. When present, it is injected as `x-dispatch-identity` AFTER
+    /// the client headers are copied — and `is_forwardable` strips every client
+    /// `x-dispatch-*` header first, so a client cannot spoof this: the backend
+    /// sees exactly the identity the PEP verified, or (on passthrough) none at all.
     async fn forward(
         &self,
         parts: hyper::http::request::Parts,
         body: Bytes,
+        verified: Option<&str>,
     ) -> Response<BoxedBody> {
         let path = parts.uri.path();
         let pq = match parts.uri.query() {
@@ -469,6 +478,12 @@ impl HttpProxy {
             if is_forwardable(name.as_str()) {
                 fwd = fwd.header(name, value);
             }
+        }
+        // Inject the verified identity for the backend (authed routes only). The
+        // client's own x-dispatch-* headers were already stripped above, so this
+        // is the sole source of the header the backend sees.
+        if let Some(id) = verified {
+            fwd = fwd.header("x-dispatch-identity", id);
         }
         fwd = fwd.header(hyper::header::CONTENT_LENGTH, body_len);
         let fwd = match fwd.body(boxed) {

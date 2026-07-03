@@ -328,13 +328,20 @@ async fn header_auth_happy_path_forwards_and_strips_auth() {
     assert_eq!(echo.method, "POST");
     assert_eq!(echo.uri, "/upsert");
     assert_eq!(echo.body, "payload");
-    // The backend must NEVER see the auth material.
+    // The backend must NEVER see the client's auth material. The one x-dispatch-*
+    // header it MAY see is the PEP-injected x-dispatch-identity — the client's own
+    // auth headers (biscuit/pubkey/nonce/ts/pop) are all stripped.
     for k in echo.headers.keys() {
         assert!(
-            !k.starts_with("x-dispatch-"),
+            !k.starts_with("x-dispatch-") || k == "x-dispatch-identity",
             "auth header leaked to backend: {k}"
         );
     }
+    assert_eq!(
+        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        Some(pk.as_str()),
+        "the only x-dispatch-* the backend sees is the verified identity",
+    );
 }
 
 #[tokio::test]
@@ -374,6 +381,106 @@ async fn passthrough_happy_path_forwards_unauthenticated() {
     let r = send(&pep.addr, "GET", "/app-shell", &[], b"").await;
     assert_eq!(r.status, 200, "body: {}", r.body);
     assert_eq!(r.echo().uri, "/app-shell");
+}
+
+// ---------- verified-identity injection (x-dispatch-identity) ----------
+
+#[tokio::test]
+async fn header_auth_injects_verified_identity_for_backend() {
+    // On an authed route the backend must receive x-dispatch-identity equal to
+    // the PEP-verified pubkey — so the loopback app can attribute the request to
+    // an identity without holding any auth crypto or trusting a client header.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    let echo = r.echo();
+    assert_eq!(
+        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        Some(pk.as_str()),
+        "backend must see the verified pubkey as x-dispatch-identity",
+    );
+}
+
+#[tokio::test]
+async fn client_supplied_identity_is_stripped_and_replaced() {
+    // An attacker sets x-dispatch-identity itself, hoping the backend trusts it.
+    // is_forwardable strips ALL client x-dispatch-* headers before the PEP adds
+    // the real one, so the backend sees the VERIFIED identity, never the forged.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
+    let mut hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    hdrs.push(("x-dispatch-identity", "attacker".to_string()));
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    let echo = r.echo();
+    assert_eq!(
+        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        Some(pk.as_str()),
+        "the forged identity must be replaced with the verified pubkey",
+    );
+    assert_ne!(
+        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        Some("attacker"),
+        "the attacker's forged identity must never reach the backend",
+    );
+}
+
+#[tokio::test]
+async fn query_auth_injects_verified_identity_for_backend() {
+    // Signed-URL (query-auth) reads inject the identity too — the backend can
+    // attribute a media fetch to the verified owner.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    let nonce = nonce_b64();
+    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
+    let q = format!(
+        "/audio?id=ep42&biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        urlenc(&cred),
+        pk,
+        urlenc(&nonce),
+        NOW,
+        urlenc(&pop),
+    );
+    let r = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    assert_eq!(
+        r.echo().headers.get("x-dispatch-identity").map(String::as_str),
+        Some(pk.as_str()),
+        "query-auth must also inject the verified identity",
+    );
+}
+
+#[tokio::test]
+async fn passthrough_injects_no_identity() {
+    // Passthrough has no verified identity, so no x-dispatch-identity may reach
+    // the backend — and a client that tries to smuggle one is stripped anyway.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let r = send(
+        &pep.addr,
+        "GET",
+        "/app-shell",
+        &[("x-dispatch-identity", "attacker".to_string())],
+        b"",
+    )
+    .await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    assert!(
+        !r.echo().headers.contains_key("x-dispatch-identity"),
+        "passthrough must inject no identity, and strip any client-sent one",
+    );
 }
 
 // ---------- adversarial: authentication boundaries ----------

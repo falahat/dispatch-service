@@ -49,6 +49,19 @@ prefix: `biscuit`, `pubkey`, `nonce`, `ts`, `pop`.
 
 The freshness window is the plane-wide `PEP_FRESHNESS_MS` (default 5 min).
 
+## Verified identity handed to the backend
+
+On an **authed** route (`header` or `query`), the PEP forwards the verified caller
+identity to the loopback backend as **`x-dispatch-identity: <pubkey-hex>`** — the same
+Ed25519 pubkey the credential is bound to (the runner/device fingerprint). The backend
+attributes the request to that identity **without holding any auth crypto**.
+
+This header is un-spoofable: the PEP strips **every** client `x-dispatch-*` header before
+injecting its own, so a client that sends `x-dispatch-identity: someone-else` has it
+dropped and replaced with the PEP-verified value. On a **passthrough** route there is no
+verified identity, so **no** `x-dispatch-identity` is injected (and any client-sent one is
+still stripped).
+
 ## Route-table format
 
 TOML (or JSON — anything serde reads). **Phases 3 & 5 must author files in exactly

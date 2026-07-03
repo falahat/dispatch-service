@@ -80,6 +80,7 @@ struct Echo {
     uri: String, // path + query, exactly as the backend saw it
     body: String,
     headers: HashMap<String, String>,
+    content_length_count: usize, // raw # of Content-Length header lines the backend received
 }
 
 /// Start a loopback echo backend; returns its `http://127.0.0.1:PORT` base.
@@ -114,12 +115,17 @@ async fn echo_handle(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, In
     for (n, v) in req.headers().iter() {
         headers.insert(n.as_str().to_string(), v.to_str().unwrap_or("").to_string());
     }
+    // How many Content-Length header lines the backend actually received. A map collapses
+    // duplicates, so this raw count is the only way to prove the PEP did not relay the client's
+    // Content-Length alongside its own (a duplicate a strict backend parser rejects).
+    let content_length_count = req.headers().get_all("content-length").iter().count();
     let body = req.into_body().collect().await.unwrap().to_bytes();
     let echo = serde_json::json!({
         "method": method,
         "uri": uri,
         "body": String::from_utf8_lossy(&body),
         "headers": headers,
+        "content_length_count": content_length_count,
     });
     Ok(Response::new(Full::new(Bytes::from(
         serde_json::to_vec(&echo).unwrap(),
@@ -418,6 +424,35 @@ async fn header_auth_injects_verified_identity_for_backend() {
         echo.headers.get("x-dispatch-identity").map(String::as_str),
         Some(pk.as_str()),
         "backend must see the verified pubkey as x-dispatch-identity",
+    );
+}
+
+#[tokio::test]
+async fn forwarded_post_carries_a_single_content_length() {
+    // Regression: `is_forwardable` must strip the client's Content-Length so the PEP's own
+    // authoritative length is the ONLY one the backend sees. Relaying both emits a DUPLICATE
+    // Content-Length — a strict backend parser (httptools/uvicorn) rejects it as malformed
+    // ("Invalid HTTP request received."), while a lenient one would accept a client-forged length.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let nonce = nonce_b64();
+    let body = b"the app payload";
+    let pop = sign_http(&sk, "POST", "/upsert", body, &nonce, NOW);
+    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, body).await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    let echo = r.echo();
+    assert_eq!(
+        echo.content_length_count, 1,
+        "the backend must receive EXACTLY one Content-Length (the PEP's), never the client's too",
+    );
+    let expected_len = body.len().to_string();
+    assert_eq!(
+        echo.headers.get("content-length").map(String::as_str),
+        Some(expected_len.as_str()),
+        "the single Content-Length must be the true buffered body length",
     );
 }
 

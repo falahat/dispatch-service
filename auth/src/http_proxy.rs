@@ -566,6 +566,11 @@ fn is_forwardable(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "host"
+            // The PEP re-buffers the body and sets the authoritative Content-Length itself
+            // (see `forward`). Relaying the client's would emit a DUPLICATE Content-Length: a
+            // strict backend parser (httptools/uvicorn) rejects that as a malformed request,
+            // and it would let a lying client length reach a lenient backend. The PEP owns it.
+            | "content-length"
     )
 }
 

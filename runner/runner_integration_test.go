@@ -174,6 +174,7 @@ func startDispatcher(t *testing.T) *dispatcher.Server {
 	cfg.AppSocket = ""
 	cfg.MaxWaitS = 2
 	cfg.SweepIntervalS = 1
+	cfg.HeartbeatIntervalS = 1 // fast heartbeats so tests observe renewal/reconnect quickly
 	cfg.Lanes = map[string]dispatcher.LaneConfig{"embed": {Concurrency: 4, PersistingWatermark: 64}}
 	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
 	if err != nil {

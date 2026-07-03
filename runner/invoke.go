@@ -22,17 +22,25 @@ type InvokeClient struct {
 
 // NewInvokeClient builds a client for INVOKE_ADDR. A value containing a slash or
 // a "unix:" prefix is a unix socket path; otherwise it is host:port.
+//
+// Keep-alive is DISABLED: every invoke (and healthz) uses a fresh connection. The
+// compute server is single-flight, so if an invoke is ever cancelled (an abandon)
+// or rejected (409) mid-body, its connection can be left byte-misaligned; reusing
+// a pooled connection in that state makes the NEXT invoke read a stale body as its
+// request line (501/400), which cascades into failing the whole queue. A fresh
+// connection per request makes any such fault self-contained.
 func NewInvokeClient(addr string) *InvokeClient {
 	if strings.HasPrefix(addr, "unix:") || strings.HasPrefix(addr, "/") || strings.HasPrefix(addr, `\`) {
 		sock := strings.TrimPrefix(addr, "unix:")
 		tr := &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 			},
 		}
 		return &InvokeClient{baseURL: "http://unix", hc: &http.Client{Transport: tr}}
 	}
-	return &InvokeClient{baseURL: "http://" + addr, hc: &http.Client{}}
+	return &InvokeClient{baseURL: "http://" + addr, hc: &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}}
 }
 
 // Health is the /healthz response.

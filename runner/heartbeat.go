@@ -10,37 +10,59 @@ import (
 // heartbeatLoop renews the current lease and applies steering directives. It
 // runs on a dedicated connection so it never contends with the work loop, and
 // keeps the fleet row fresh even while idle.
+//
+// It OWNS its connection's lifecycle and reconnects on failure: a dead heartbeat
+// connection is not benign — it stops the dispatcher-side lease renewal, so the
+// in-flight job hits the lease TTL, gets reclaimed + requeued mid-run, and the
+// re-lease invokes a compute that is still busy with the orphaned run. That is
+// exactly the failure mode that silently collapses a drain, so the heartbeat must
+// heal its connection the same way the work loop already does.
 func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	defer func() { dc.close() }() // close whichever connection we currently hold
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			r.beat(dc)
+			if err := r.beat(dc); err != nil {
+				r.log.Warn("heartbeat send failed; reconnecting", "err", err)
+				dc.close()
+				nd, derr := r.redial(ctx)
+				if derr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					r.log.Warn("heartbeat reconnect failed; retrying next tick", "err", derr)
+					continue
+				}
+				dc = nd
+			}
 		}
 	}
 }
 
-func (r *Runner) beat(dc *dispatcherConn) {
+// beat sends one heartbeat and applies the returned directives. A non-nil error
+// means the connection is dead (the caller reconnects); a protocol-level
+// rejection or decode error is logged but is not a dead connection.
+func (r *Runner) beat(dc *dispatcherConn) error {
 	status, lease := r.currentStatus()
 	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease})
 	if err != nil {
-		r.log.Warn("heartbeat send failed", "err", err)
-		return
+		return err // dead connection -> caller reconnects so lease renewal resumes
 	}
 	if e := asError(env); e != nil {
 		r.log.Warn("heartbeat rejected", "code", e.Code, "msg", e.Message)
-		return
+		return nil
 	}
 	beat, err := wire.DecodeBody[wire.BeatOK](env)
 	if err != nil {
 		r.log.Warn("heartbeat decode", "err", err)
-		return
+		return nil
 	}
 	for _, dir := range beat.Directives {
 		switch dir.Kind {
@@ -56,4 +78,5 @@ func (r *Runner) beat(dc *dispatcherConn) {
 			}
 		}
 	}
+	return nil
 }

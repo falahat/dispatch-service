@@ -139,7 +139,20 @@ struct Pep {
     /// The deny-list file path, so a revocation test can write it mid-run and
     /// prove the live-reload denies the very next request.
     revocation_path: std::path::PathBuf,
+    /// The serve task. Held (not detached) so Drop can stop it BEFORE `_dir` deletes
+    /// the redb file — otherwise teardown races the serving task's DB handle against
+    /// the file deletion (unlink-while-open is benign on Linux but a nondeterministic
+    /// cross-platform hazard, a plausible source of "redb test-parallelism" flakiness).
+    task: tokio::task::JoinHandle<()>,
     _dir: tempfile::TempDir,
+}
+
+impl Drop for Pep {
+    fn drop(&mut self) {
+        // Runs before any field drops (incl. `_dir`): stop serving — the task is parked
+        // on accept at test end, so it releases the redb DB before the file is deleted.
+        self.task.abort();
+    }
 }
 
 /// Build a PEP HTTP surface from a route-table TOML body pointed at `backend`,
@@ -164,11 +177,12 @@ async fn start_pep(backend: &str, routes_toml: &str, max_req: u32, max_bytes: u6
     );
     let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
-    tokio::spawn(proxy.serve(ln));
+    let task = tokio::spawn(proxy.serve(ln));
     Pep {
         addr: format!("http://{addr}"),
         root,
         revocation_path,
+        task,
         _dir: dir,
     }
 }

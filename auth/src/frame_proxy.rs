@@ -129,7 +129,8 @@ impl FrameProxy {
                 address_hex: None,
             };
             let now = (self.now)();
-            let identity = match verify(&self.root_pub, &self.nonces, now, &areq) {
+            // The runner frame is single-use: every frame consumes its nonce.
+            let identity = match verify(&self.root_pub, &self.nonces, now, &areq, true) {
                 Ok(id) => id,
                 Err(e) => {
                     let code = match e {

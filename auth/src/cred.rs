@@ -103,12 +103,22 @@ pub struct AuthedRequest {
 }
 
 /// Verify a request end to end: PoP, Biscuit signature, capability authorization,
-/// and single-use freshness. Any failure is a typed denial, never a panic.
+/// and freshness. Any failure is a typed denial, never a panic.
+///
+/// `single_use` controls the nonce discipline. `true` (the default for every
+/// mutating surface — CAS, the runner frame, header-auth HTTP) requires the
+/// nonce to be fresh AND unseen, storing it so a replay of the exact request is
+/// denied. `false` (signed-URL query-auth reads) enforces freshness ONLY: the
+/// timestamp must be within the window (so a signed URL still EXPIRES), but the
+/// nonce is not stored, so a browser reusing one signed URL across range
+/// requests / retries is not replay-rejected. Only idempotent GET/HEAD reads are
+/// allowed to run non-single-use (enforced at route-table boot time).
 pub fn verify(
     root_pub: &PublicKey,
     nonces: &NonceStore,
     now_ms: i64,
     req: &AuthedRequest,
+    single_use: bool,
 ) -> Result<Identity> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -163,9 +173,16 @@ pub fn verify(
         .authorize()
         .map_err(|e| AuthError::Denied(e.to_string()))?;
 
-    // 4. Single-use + freshness — only after the request authenticates, so
-    //    unauthenticated traffic can never pollute the nonce store.
-    nonces.check_and_store(&req.nonce_b64, req.ts_ms, now_ms)?;
+    // 4. Freshness (+ single-use, if required) — only after the request
+    //    authenticates, so unauthenticated traffic can never pollute the store.
+    //    Non-single-use (signed-URL reads) is freshness-only: still rejects a
+    //    stale ts, but does not store the nonce, so the URL is reusable until it
+    //    expires.
+    if single_use {
+        nonces.check_and_store(&req.nonce_b64, req.ts_ms, now_ms)?;
+    } else {
+        nonces.check_freshness(req.ts_ms, now_ms)?;
+    }
 
     Ok(Identity {
         id: req.pubkey_hex.clone(),

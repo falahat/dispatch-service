@@ -18,15 +18,21 @@ pub enum Op {
         frame_sha256_hex: String,
     },
     /// A generic HTTP request fronted by the PEP's HTTP mode. Canonical:
-    /// `http/v0 <METHOD> <path> <nonce> <ts>`. The required capability is carried
-    /// on the op (resolved from the app's route table) rather than derived from
-    /// the method, because an app maps arbitrary (method, path) pairs to its own
-    /// rights. The path is bound but the query string is not — signed-URL auth
-    /// fields travel in the query and must not sign themselves.
+    /// `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`. The required
+    /// capability is carried on the op (resolved from the app's route table)
+    /// rather than derived from the method, because an app maps arbitrary
+    /// (method, path) pairs to its own rights.
+    ///
+    /// Method, path, AND the full request body are bound: the PEP buffers and
+    /// hashes the body, so tampering with it after signing breaks the PoP — we
+    /// do NOT trust the transport to protect the body. The query string is NOT
+    /// bound: signed-URL auth fields travel in the query and must not sign
+    /// themselves (and a GET/HEAD body is empty → `sha256hex(b"")`).
     Http {
         method: String,
         path: String,
         right: String,
+        body_sha256_hex: String,
     },
 }
 
@@ -46,8 +52,16 @@ impl Op {
                     verb, frame_sha256_hex, nonce_b64, ts_ms
                 )
             }
-            Op::Http { method, path, .. } => {
-                format!("http/v0 {} {} {} {}", method, path, nonce_b64, ts_ms)
+            Op::Http {
+                method,
+                path,
+                body_sha256_hex,
+                ..
+            } => {
+                format!(
+                    "http/v0 {} {} {} {} {}",
+                    method, path, body_sha256_hex, nonce_b64, ts_ms
+                )
             }
         }
     }

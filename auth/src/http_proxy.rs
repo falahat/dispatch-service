@@ -1,27 +1,36 @@
 //! The generic HTTP enforcement proxy: it fronts an arbitrary loopback HTTP
 //! backend (an app's Flask/FastAPI server) and, per a static per-app route
-//! table, enforces Biscuit + PoP on each request before streaming it through.
-//! The backend sees only pre-authenticated loopback traffic and holds no auth
-//! crypto — identical to `CasProxy`, but the capability for each (method, path)
-//! is named by the route table rather than a fixed CAS convention.
+//! table, enforces Biscuit + PoP on each request before forwarding it. The
+//! backend sees only pre-authenticated loopback traffic and holds no auth
+//! crypto — like `CasProxy`, but the capability for each (method, path) is named
+//! by the route table rather than a fixed CAS convention.
+//!
+//! The PoP binds method + path + the FULL request body:
+//!   `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`
+//! On an authed route the PEP buffers the body under a HARD cap (413 if the cap
+//! is hit WHILE reading — the advisory Content-Length is never trusted), hashes
+//! it, verifies, then forwards the buffered bytes. We do NOT trust the transport
+//! to protect the body. This is the small app-JSON surface; large blobs stay on
+//! the streaming CAS. Response bodies still stream straight back, unbuffered.
 //!
 //! Three auth modes per route.
 //!
 //! `Header(right)`: the five PoP fields ride in `x-dispatch-*` headers — the
-//! standard authed API call.
+//! standard authed (mutating) API call. SINGLE-USE: the nonce is consumed, so an
+//! exact replay is rejected.
 //!
 //! `Query(right)`: the same five fields ride in the query string, for signed-URL
-//! GETs (`GET /audio?...&pop=...`). The PoP signs `http/v0 <METHOD> <path>
-//! <nonce> <ts>`; the path is bound, the query is NOT (the auth fields cannot
-//! sign themselves), so a signed URL is bound to its exact method+path but
-//! portable across benign query reorderings — and any path tamper breaks the PoP.
+//! GET/HEAD reads (`GET /audio?...&pop=...`). Method + path are bound (the body
+//! is empty → `sha256hex(b"")`); the query is NOT bound (the auth fields cannot
+//! sign themselves). FRESHNESS-ONLY: the ts must be within the window (so the URL
+//! EXPIRES) but the nonce is not stored, so a browser reusing one signed URL
+//! across range requests / retries is not replay-rejected. Query-auth is
+//! restricted to idempotent GET/HEAD at route-table boot time.
 //!
 //! `Passthrough`: forwarded unauthenticated (app-shell GET, the enrollment
 //! redeem endpoint). A passthrough route can never satisfy an authed route:
 //! routing is decided once, before auth, by longest-match, so a request is
 //! authed iff the route it matched says so.
-//!
-//! Bodies stream both ways with no buffering, exactly like `CasProxy`.
 
 use crate::cred::{verify, AuthedRequest};
 use crate::error::AuthError;
@@ -37,15 +46,16 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 type BoxedBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
-/// A per-PUT/POST body cap: reject a declared Content-Length above this. Applies
-/// to every authed route (a passthrough route is app-shell / enrollment and is
-/// small; it is still capped to stop an unbounded upload to an open path).
+/// A per-request body cap, enforced by counting bytes WHILE buffering (not by
+/// trusting Content-Length): the body is rejected 413 the moment it exceeds this.
+/// The HTTP surface is small app JSON — large blobs belong on the streaming CAS.
 const DEFAULT_MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// How a matched route is authorized.
@@ -251,6 +261,19 @@ impl RouteTableSpec {
                     )))
                 }
             };
+            // Query-auth (signed URLs) is freshness-only (reusable until expiry),
+            // so it MUST be an idempotent read — a mutating signed URL could be
+            // replayed within the window. Restrict it to GET/HEAD at boot.
+            if matches!(auth, RouteAuth::Query(_))
+                && !methods
+                    .iter()
+                    .all(|m| m == Method::GET || m == Method::HEAD)
+            {
+                return Err(RouteTableError(format!(
+                    "{}: query auth is GET/HEAD only (signed URLs are reusable reads)",
+                    where_()
+                )));
+            }
             routes.push(Route {
                 methods,
                 matcher,
@@ -357,82 +380,97 @@ impl HttpProxy {
             Resolution::NotFound => return text(StatusCode::NOT_FOUND, "not_found"),
         };
 
+        // Split headers/query (needed for auth) from the body (buffered next).
+        let (parts, body) = req.into_parts();
+
+        // Buffer the body under a HARD cap, counting bytes as we read — the
+        // advisory Content-Length is never trusted (a lying or absent header
+        // cannot smuggle an oversize body past the cap). This binds the body:
+        // its hash goes into the PoP canonical string. The cap applies to every
+        // route, including passthrough, so no open path is an unbounded sink.
+        let buffered = match buffer_capped(body, self.cfg.max_body_bytes).await {
+            Ok(b) => b,
+            Err(BufferError::TooLarge) => {
+                log::warn!("http: 413 oversize body on {method} {path}");
+                return text(StatusCode::PAYLOAD_TOO_LARGE, "too_large");
+            }
+            Err(BufferError::Read) => return text(StatusCode::BAD_REQUEST, "body_read"),
+        };
+        let body_sha256_hex = hex::encode(Sha256::digest(&buffered));
+
         // Enforce, if the route demands it. On success we hold the identity for
         // quota accounting; passthrough attributes to a fixed anonymous bucket.
+        // Header-auth is single-use (mutating); query-auth is freshness-only
+        // (reusable signed-URL read, but still expires).
         let id = match &auth {
             RouteAuth::Passthrough => "anon".to_string(),
             RouteAuth::Header(right) => {
-                let areq = match extract_auth_headers(&req, &method, &path, right) {
-                    Ok(a) => a,
-                    Err(e) => return deny(&method, &path, e),
-                };
-                match self.authenticate(&areq) {
+                let areq =
+                    match extract_auth_headers(&parts, &method, &path, right, &body_sha256_hex) {
+                        Ok(a) => a,
+                        Err(e) => return deny(&method, &path, e),
+                    };
+                match self.authenticate(&areq, true) {
                     Ok(identity) => identity,
                     Err(e) => return deny(&method, &path, e),
                 }
             }
             RouteAuth::Query(right) => {
-                let areq = match extract_auth_query(&req, &method, &path, right) {
+                let areq = match extract_auth_query(&parts, &method, &path, right, &body_sha256_hex)
+                {
                     Ok(a) => a,
                     Err(e) => return deny(&method, &path, e),
                 };
-                match self.authenticate(&areq) {
+                match self.authenticate(&areq, false) {
                     Ok(identity) => identity,
                     Err(e) => return deny(&method, &path, e),
                 }
             }
         };
 
-        // Per-request body cap + rolling quota (bytes for a declared body, else
-        // a request unit). Content-Length is advisory; the cap here rejects an
-        // over-declared upload cheaply — the stream itself is never buffered.
-        let declared = req
-            .headers()
-            .get(hyper::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok());
-        if let Some(n) = declared {
-            if n > self.cfg.max_body_bytes {
-                log::warn!("http: 413 oversize body {n} bytes by {id}");
-                return text(StatusCode::PAYLOAD_TOO_LARGE, "too_large");
-            }
-        }
+        // Rolling per-identity quota on the actual buffered body size.
         let now = (self.now)();
-        if !self.quota.allow(&id, declared.unwrap_or(0), now) {
+        if !self.quota.allow(&id, buffered.len() as u64, now) {
             log::warn!("http: 429 quota exceeded by {id}");
             return text(StatusCode::TOO_MANY_REQUESTS, "quota_exceeded");
         }
 
-        self.forward(req, &path).await
+        self.forward(parts, buffered).await
     }
 
     /// Verify a built request against the shared engine (UNCHANGED `verify()`).
-    fn authenticate(&self, areq: &AuthedRequest) -> Result<String, AuthError> {
+    fn authenticate(&self, areq: &AuthedRequest, single_use: bool) -> Result<String, AuthError> {
         let now = (self.now)();
-        verify(&self.root_pub, &self.nonces, now, areq).map(|id| id.id)
+        verify(&self.root_pub, &self.nonces, now, areq, single_use).map(|id| id.id)
     }
 
-    /// Stream the request to the loopback backend, preserving method, the full
-    /// path+query, and body — no buffering, exactly like `CasProxy`.
-    async fn forward(&self, req: Request<Incoming>, path: &str) -> Response<BoxedBody> {
-        let query = req.uri().query();
-        let pq = match query {
+    /// Forward the buffered request to the loopback backend, preserving method,
+    /// the full path+query, and the (already-read) body. The response body still
+    /// streams straight back, unbuffered.
+    async fn forward(
+        &self,
+        parts: hyper::http::request::Parts,
+        body: Bytes,
+    ) -> Response<BoxedBody> {
+        let path = parts.uri.path();
+        let pq = match parts.uri.query() {
             Some(q) => format!("{path}?{q}"),
             None => path.to_string(),
         };
         let backend_uri = format!("{}{}", self.cfg.backend.trim_end_matches('/'), pq);
-        let (parts, body) = req.into_parts();
-        let boxed: BoxedBody = body
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            .boxed();
-        let mut fwd = Request::builder().method(parts.method).uri(backend_uri);
+        let body_len = body.len();
+        let boxed: BoxedBody = Full::new(body).map_err(|e: Infallible| match e {}).boxed();
+        let mut fwd = Request::builder().method(&parts.method).uri(backend_uri);
         // Forward the app-relevant headers, minus the auth headers (already
-        // consumed) and hop-by-hop headers. Content-Type/Length/Accept survive.
+        // consumed) and hop-by-hop headers. We drop the client's Content-Length /
+        // Transfer-Encoding and set the true buffered length ourselves, so a
+        // lying length can never reach the backend.
         for (name, value) in parts.headers.iter() {
             if is_forwardable(name.as_str()) {
                 fwd = fwd.header(name, value);
             }
         }
+        fwd = fwd.header(hyper::header::CONTENT_LENGTH, body_len);
         let fwd = match fwd.body(boxed) {
             Ok(r) => r,
             Err(e) => {
@@ -458,6 +496,32 @@ impl HttpProxy {
     }
 }
 
+/// Why buffering a request body failed.
+enum BufferError {
+    /// The body exceeded the cap while reading (before it finished).
+    TooLarge,
+    /// The underlying stream errored.
+    Read,
+}
+
+/// Read a request body fully into memory, aborting the instant the accumulated
+/// size exceeds `max`. Never allocates more than `max` + one frame — a lying or
+/// absent Content-Length cannot force an unbounded buffer.
+async fn buffer_capped(body: Incoming, max: u64) -> std::result::Result<Bytes, BufferError> {
+    let mut body = body;
+    let mut acc: Vec<u8> = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| BufferError::Read)?;
+        if let Some(chunk) = frame.data_ref() {
+            if acc.len() as u64 + chunk.len() as u64 > max {
+                return Err(BufferError::TooLarge);
+            }
+            acc.extend_from_slice(chunk);
+        }
+    }
+    Ok(Bytes::from(acc))
+}
+
 /// Auth headers are consumed by the PEP; hop-by-hop headers must not be relayed.
 fn is_forwardable(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -478,44 +542,54 @@ fn is_forwardable(name: &str) -> bool {
     )
 }
 
-fn header<'a>(req: &'a Request<Incoming>, name: &str) -> Option<&'a str> {
-    req.headers().get(name).and_then(|v| v.to_str().ok())
+fn header<'a>(parts: &'a hyper::http::request::Parts, name: &str) -> Option<&'a str> {
+    parts.headers.get(name).and_then(|v| v.to_str().ok())
 }
 
 /// Build an `AuthedRequest` from the `x-dispatch-*` headers.
 fn extract_auth_headers(
-    req: &Request<Incoming>,
+    parts: &hyper::http::request::Parts,
     method: &Method,
     path: &str,
     right: &str,
+    body_sha256_hex: &str,
 ) -> Result<AuthedRequest, AuthError> {
-    let biscuit = header(req, "x-dispatch-biscuit")
+    let biscuit = header(parts, "x-dispatch-biscuit")
         .ok_or_else(|| AuthError::Malformed("missing biscuit".into()))?;
-    let pubkey = header(req, "x-dispatch-pubkey")
+    let pubkey = header(parts, "x-dispatch-pubkey")
         .ok_or_else(|| AuthError::Malformed("missing pubkey".into()))?;
-    let nonce = header(req, "x-dispatch-nonce")
+    let nonce = header(parts, "x-dispatch-nonce")
         .ok_or_else(|| AuthError::Malformed("missing nonce".into()))?;
-    let ts = header(req, "x-dispatch-ts")
+    let ts = header(parts, "x-dispatch-ts")
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| AuthError::Malformed("missing ts".into()))?;
-    let sig =
-        header(req, "x-dispatch-pop").ok_or_else(|| AuthError::Malformed("missing pop".into()))?;
+    let sig = header(parts, "x-dispatch-pop")
+        .ok_or_else(|| AuthError::Malformed("missing pop".into()))?;
     Ok(build_areq(
-        method, path, right, biscuit, pubkey, nonce, ts, sig,
+        method,
+        path,
+        right,
+        body_sha256_hex,
+        biscuit,
+        pubkey,
+        nonce,
+        ts,
+        sig,
     ))
 }
 
 /// Build an `AuthedRequest` from the query string (signed-URL auth). The five
-/// fields are named `biscuit`, `pubkey`, `nonce`, `ts`, `pop`. The PoP signs the
-/// path only (query is unbound), so a signer commits to a specific method+path.
+/// fields are named `biscuit`, `pubkey`, `nonce`, `ts`, `pop`. The PoP binds
+/// method + path + body (empty for a GET/HEAD read); the query is unbound.
 fn extract_auth_query(
-    req: &Request<Incoming>,
+    parts: &hyper::http::request::Parts,
     method: &Method,
     path: &str,
     right: &str,
+    body_sha256_hex: &str,
 ) -> Result<AuthedRequest, AuthError> {
-    let q = req
-        .uri()
+    let q = parts
+        .uri
         .query()
         .ok_or_else(|| AuthError::Malformed("missing query auth".into()))?;
     let mut biscuit = None;
@@ -539,7 +613,15 @@ fn extract_auth_query(
     let ts = ts.ok_or_else(|| AuthError::Malformed("missing ts".into()))?;
     let pop = pop.ok_or_else(|| AuthError::Malformed("missing pop".into()))?;
     Ok(build_areq(
-        method, path, right, &biscuit, &pubkey, &nonce, ts, &pop,
+        method,
+        path,
+        right,
+        body_sha256_hex,
+        &biscuit,
+        &pubkey,
+        &nonce,
+        ts,
+        &pop,
     ))
 }
 
@@ -548,6 +630,7 @@ fn build_areq(
     method: &Method,
     path: &str,
     right: &str,
+    body_sha256_hex: &str,
     biscuit: &str,
     pubkey: &str,
     nonce: &str,
@@ -559,6 +642,7 @@ fn build_areq(
             method: method.to_string(),
             path: path.to_string(),
             right: right.to_string(),
+            body_sha256_hex: body_sha256_hex.to_string(),
         },
         biscuit_b64: biscuit.to_string(),
         pubkey_hex: pubkey.to_string(),
@@ -573,7 +657,7 @@ fn build_areq(
 /// Minimal, dependency-free `application/x-www-form-urlencoded` pair decoding
 /// for the query string. Decodes `%XX` and `+`; a malformed escape yields the
 /// literal bytes, which can never forge a valid PoP (the canonical string is
-/// rebuilt from the path, not the query).
+/// rebuilt from method + path + body hash, not the query).
 fn url_query_pairs(q: &str) -> Vec<(String, String)> {
     q.split('&')
         .filter(|s| !s.is_empty())

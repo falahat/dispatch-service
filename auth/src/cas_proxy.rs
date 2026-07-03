@@ -132,7 +132,8 @@ impl CasProxy {
             Err(e) => return deny(&method, &path, e),
         };
         let now = (self.now)();
-        let identity = match verify(&self.root_pub, &self.nonces, now, &areq) {
+        // CAS is single-use: every blob request consumes its nonce.
+        let identity = match verify(&self.root_pub, &self.nonces, now, &areq, true) {
             Ok(id) => id,
             Err(e) => return deny(&method, &path, e),
         };

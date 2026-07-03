@@ -39,13 +39,21 @@ impl NonceStore {
         })
     }
 
+    /// Check freshness only: the timestamp must be within the window of server
+    /// time, else `Freshness`. Stores nothing — used by signed-URL reads that
+    /// must be reusable until they expire (freshness IS the expiry).
+    pub fn check_freshness(&self, ts_ms: i64, now_ms: i64) -> Result<()> {
+        if (now_ms - ts_ms).abs() > self.window_ms {
+            return Err(AuthError::Freshness);
+        }
+        Ok(())
+    }
+
     /// Check freshness and single-use in one write transaction. A stale/future
     /// ts is `Freshness`; a seen nonce is `Replay`; otherwise the nonce is
     /// recorded and Ok is returned.
     pub fn check_and_store(&self, nonce_b64: &str, ts_ms: i64, now_ms: i64) -> Result<()> {
-        if (now_ms - ts_ms).abs() > self.window_ms {
-            return Err(AuthError::Freshness);
-        }
+        self.check_freshness(ts_ms, now_ms)?;
         let wtx = self
             .db
             .begin_write()

@@ -5,8 +5,9 @@ import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
 
 export default [
-  // Build/tooling configs are not part of the type-checked library sources.
-  { ignores: ['dist/**', 'node_modules/**', '*.config.js', '*.config.ts'] },
+  // Build/tooling scripts + configs are Node-side and not part of the
+  // type-checked, browser-targeted library sources.
+  { ignores: ['dist/**', 'node_modules/**', 'scripts/**', '*.config.js', '*.config.ts'] },
   js.configs.recommended,
   {
     files: ['**/*.ts'],

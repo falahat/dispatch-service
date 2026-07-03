@@ -14,7 +14,12 @@ type SweepResult struct {
 	Recovered    int `json:"recovered"`     // expired leases requeued (presumed crash)
 	Expired      int `json:"expired"`       // expired leases that hit max_attempts -> FAILED
 	GCCandidates int `json:"gc_candidates"` // terminal jobs whose CAS pins are released
+	Pruned       int `json:"pruned"`        // terminal jobs deleted by the retention window (0 = no TTL)
 }
+
+// retentionBatch bounds how many terminal jobs one sweep prunes, so a large
+// backlog drains over several passes without holding a long write lock.
+const retentionBatch = 500
 
 // Sweep runs the timer pass: expired leases are recovered. A silent death is
 // presumed a crash, so lease_expired burns an attempt (attempt+1) — this is what
@@ -69,6 +74,15 @@ func (d *Dispatcher) Sweep() (SweepResult, error) {
 			}
 		}
 
+		// Retention: prune terminal jobs (and their attempts) older than the window.
+		// Off by default (JobRetentionDays 0 = keep forever); touches only this
+		// re-derivable queue history, never domain data.
+		pruned, err := d.pruneRetiredJobs(tx, now)
+		if err != nil {
+			return err
+		}
+		out.Pruned = pruned
+
 		// Informational: terminal jobs have released their CAS pins.
 		if err := tx.QueryRow(
 			`SELECT COUNT(*) FROM jobs WHERE state IN ('SUCCEEDED','FAILED','REJECTED','CANCELLED')`).Scan(&out.GCCandidates); err != nil {
@@ -101,6 +115,46 @@ func (d *Dispatcher) RunSweeper(ctx context.Context) {
 			_, _ = d.Sweep()
 		}
 	}
+}
+
+// pruneRetiredJobs deletes a bounded batch of terminal jobs (and their attempt
+// rows) whose last update is older than the retention window. JobRetentionDays 0
+// keeps everything (no TTL — the default). Terminal = SUCCEEDED/FAILED/REJECTED/
+// CANCELLED only — never PERSISTING (still awaiting the app's ack) or any live
+// state, and never any domain data (transcripts / analysis results live in the
+// app's own store, not here). One bounded batch per sweep drains a large backlog
+// over several passes without holding a long write lock.
+func (d *Dispatcher) pruneRetiredJobs(tx *sql.Tx, now int64) (int, error) {
+	if d.cfg.JobRetentionDays <= 0 {
+		return 0, nil
+	}
+	cutoff := now - int64(d.cfg.JobRetentionDays)*86_400_000
+	rows, err := tx.Query(
+		`SELECT job_id FROM jobs
+		 WHERE state IN ('SUCCEEDED','FAILED','REJECTED','CANCELLED') AND updated_ts < ?
+		 ORDER BY updated_ts LIMIT ?`, cutoff, retentionBatch)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM attempts WHERE job_id=?`, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`DELETE FROM jobs WHERE job_id=?`, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
 }
 
 // PinnedAddresses returns the set of CAS addresses currently pinned by the

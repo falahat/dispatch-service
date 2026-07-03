@@ -21,6 +21,17 @@ type Config struct {
 	RunnerRatePerMin   int    `toml:"runner_rate_per_min"`
 	SweepIntervalS     int    `toml:"sweep_interval_s"`
 
+	// JobRetentionDays prunes TERMINAL jobs (SUCCEEDED/FAILED/REJECTED/CANCELLED) and
+	// their attempt rows once they are older than this many days.
+	//
+	//   0 = NO TTL — keep the queue history FOREVER (this is the default).
+	//
+	// This is OPT-IN and only ever touches the dispatcher's own re-derivable queue
+	// bookkeeping. It NEVER touches domain data: podcast episodes, transcripts, and
+	// antibody analysis results live in each app's own store, not here — nothing in
+	// this DB is a source of record. Set > 0 only to bound this queue DB's growth.
+	JobRetentionDays int `toml:"job_retention_days"`
+
 	Lanes  map[string]LaneConfig `toml:"lanes"`
 	Budget BudgetConfig          `toml:"budget"`
 
@@ -57,6 +68,7 @@ func DefaultConfig() Config {
 		MaxWaitS:           60,
 		RunnerRatePerMin:   240,
 		SweepIntervalS:     5,
+		JobRetentionDays:   0, // 0 = keep terminal queue history forever (no TTL)
 		Lanes:              map[string]LaneConfig{},
 		Budget:             BudgetConfig{CapUSD: "0.00"},
 		DefaultLane:        LaneConfig{Concurrency: 0, PersistingWatermark: 64},
@@ -106,6 +118,9 @@ func (c Config) Validate() error {
 	}
 	if c.HeartbeatIntervalS < 1 {
 		return fmt.Errorf("config: heartbeat_interval_s must be >= 1")
+	}
+	if c.JobRetentionDays < 0 {
+		return fmt.Errorf("config: job_retention_days must be >= 0 (0 = keep forever)")
 	}
 	if c.AppSocket == "" && c.AppListen == "" {
 		return fmt.Errorf("config: one of app_socket / app_listen is required")

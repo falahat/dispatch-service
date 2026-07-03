@@ -1,0 +1,14 @@
+{
+  "note": "easy-podcast biscuit-python mint + plane PoP; verified by the Rust PEP in cross_impl_py_mint.rs. Regenerate via tests/vectors/gen_plane_pop_vector.py.",
+  "issuer_public_hex": "d27d6635a0b41aff57a3c326a8044825e05f04f51a241882b7d5742ca3334cab",
+  "biscuit_b64": "Er4CCtMBCgZwdWJrZXkKQDEyNjZiMDE4OGRjYTdiNGI2ZmM3MDA5YzgyMTgwNzE4NTQyN2ZiNWY3YjA2MmFiYWQ0MmVlYWMyZjc3YjYyYzMKBWF1ZGlvCgRwaW5nCgRzeW5jCgZ1cHNlcnQKA25vdwoBdBgDIgoKCAiACBIDGIEIIgkKBwgEEgMYgggiCQoHCAQSAxiDCCIJCgcIBBIDGIQIIgkKBwgEEgMYhQgyKgooCgIIGxIICIYIEgMIhwgaGAoFCgMIhwgKCQoHEICo2ryyMgoEGgIIAhIkCAASIFCPFSuy_ADp9zvF6EPE8yTfiNtZYPK7jSVfpNM7l6w7GkAL-tjOFkAqUUAY6jVemwhV24nKjTWd-JvI5iAjDdIjiWkH6YeiZjdMvBT_m-JeezSKwV9FppYw2y8olK6a1lwMIiIKICHsppoXGGlN1jt9IWG-Le-TmcutnpBs6Il-cACT9ntz",
+  "pubkey_hex": "1266b0188dca7b4b6fc7009c821807185427fb5f7b062abad42eeac2f77b62c3",
+  "nonce_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "ts_ms": 1700000000000,
+  "pop_b64": "xiDyyZUEyu9UAssc2QdhEChdgZuRxiv+7q529cySGr3CHcsWiIZKFz2+XrUDGxyR5KUDwRdYcNJMhCeskLwlAQ==",
+  "method": "POST",
+  "path": "/sync",
+  "body_b64": "eyJtYW5pZmVzdCI6e319",
+  "right": "sync",
+  "revocation_id": "0bfad8ce16402a514018ea355e9b0855db89ca8d359df89bc8e620230dd223896907e987a266374cbc14ff9be25e7b348ac15f45a69630db2f2894ae9ad65c0c"
+}

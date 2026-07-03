@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -63,6 +64,8 @@ func runCmd(args []string, log *slog.Logger) {
 	lanes := fs.String("lanes", env("LANES", ""), "comma-separated lanes")
 	fs.IntVar(&cfg.Capacity, "capacity", 1, "concurrent capacity")
 	fs.IntVar(&cfg.LeaseWaitS, "wait", 30, "lease long-poll seconds")
+	fs.IntVar(&cfg.MaxJobDurationS, "max-job-seconds", envInt("MAX_JOB_SECONDS", 0),
+		"max wall-clock seconds per job (0 => default 2h; a backstop, NOT the lease TTL)")
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
 	_ = fs.Parse(args)
@@ -137,6 +140,15 @@ func checkCmd(args []string, log *slog.Logger) {
 		os.Exit(1)
 	}
 	fmt.Println("PASS")
+}
+
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func env(k, def string) string {

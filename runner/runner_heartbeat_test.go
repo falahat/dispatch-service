@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/falahat/dispatch-service/dispatcher"
 	"github.com/falahat/dispatch-service/internal/artifact"
 	"github.com/falahat/dispatch-service/internal/wire"
 	"github.com/falahat/dispatch-service/runner"
@@ -252,4 +253,63 @@ func TestRunnerWaitsThroughComputeBusy(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("job did not reach PERSISTING: the runner failed on a busy compute instead of waiting through it")
+}
+
+// TestJobOutlivingLeaseTTLCompletes guards the drain-collapse root cause: a job whose
+// compute runs LONGER than one lease TTL must still complete. The lease TTL is a
+// crash-detection timer the heartbeat renews; it must NOT bound the job's runtime. With
+// the old code (job context deadline = the lease deadline), any op longer than the TTL
+// was cancelled mid-run and failed — so long transcriptions could never finish.
+func TestJobOutlivingLeaseTTLCompletes(t *testing.T) {
+	// A short lease TTL (2s) with a compute that takes ~4s (> 2 TTLs). The heartbeat
+	// (1s) renews the lease; the runner's generous MaxJobDuration keeps the job alive.
+	srv := startDispatcher(t, func(c *dispatcher.Config) { c.LeaseTTLS = 2 })
+	cas := newStubCAS()
+	casSrv := httptest.NewServer(cas.handler())
+	defer casSrv.Close()
+
+	invoked := make(chan struct{})
+	release := make(chan struct{})
+	computeSrv := httptest.NewServer(blockingComputeHandler(invoked, release))
+	defer computeSrv.Close()
+
+	inv := artifact.Invocation{Kind: artifact.InvocationKind, Op: "echo", OpVersion: 1, Params: json.RawMessage(`{}`)}
+	invBytes, _ := json.Marshal(inv)
+	invAddr := cas.put(invBytes)
+
+	app := dialApp(t, srv.AppAddr())
+	app.call("e1", wire.TypeEnqueue, wire.Enqueue{Jobs: []wire.EnqueueJob{
+		{JobKey: "long-k", Lane: "embed", InvocationAddress: invAddr},
+	}})
+
+	rn := runner.New(runner.Config{
+		RunnerID: "Rlong", Node: "n1", Version: "runner/test",
+		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
+		ComputeAddr: strings.TrimPrefix(computeSrv.URL, "http://"),
+		WorkRoot:    t.TempDir(), Lanes: []string{"embed"}, Capacity: 1, LeaseWaitS: 2,
+	}, nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rn.Run(ctx)
+
+	<-invoked                   // compute is running
+	time.Sleep(4 * time.Second) // hold it past two lease TTLs
+	close(release)              // let it finish
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		je := app.call("j1", wire.TypeJobs, map[string]any{"filter": map[string]string{"state": "PERSISTING"}})
+		var jr struct {
+			Jobs []struct {
+				JobID string `json:"job_id"`
+				State string `json:"state"`
+			} `json:"jobs"`
+		}
+		_ = json.Unmarshal(je.Body, &jr)
+		if len(jr.Jobs) == 1 {
+			return // completed despite outliving the lease TTL
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("job outliving the lease TTL did not complete: the runner cancelled it at the lease deadline")
 }

@@ -161,7 +161,7 @@ func (a *appClient) call(id, typ string, body any) wire.Envelope {
 	return env
 }
 
-func startDispatcher(t *testing.T) *dispatcher.Server {
+func startDispatcher(t *testing.T, opts ...func(*dispatcher.Config)) *dispatcher.Server {
 	dir := t.TempDir()
 	store, err := dispatcher.OpenStore(filepath.Join(dir, "d.db"))
 	if err != nil {
@@ -176,6 +176,9 @@ func startDispatcher(t *testing.T) *dispatcher.Server {
 	cfg.SweepIntervalS = 1
 	cfg.HeartbeatIntervalS = 1 // fast heartbeats so tests observe renewal/reconnect quickly
 	cfg.Lanes = map[string]dispatcher.LaneConfig{"embed": {Concurrency: 4, PersistingWatermark: 64}}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
 	if err != nil {
 		t.Fatalf("dispatcher: %v", err)

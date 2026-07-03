@@ -13,17 +13,18 @@ import (
 // and its compute container share the WorkRoot volume and the compute serves on
 // ComputeAddr (INVOKE_ADDR).
 type Config struct {
-	RunnerID       string   // public-key fingerprint (identity)
-	Node           string   // human node name
-	Version        string   // runner version string
-	DispatcherAddr string   // runner surface (PEP in prod, dispatcher directly in tests)
-	CASBaseURL     string   // PEP CAS surface base URL
-	ComputeAddr    string   // paired compute container INVOKE_ADDR
-	WorkRoot       string   // shared workdir volume root
-	Lanes          []string // lanes this runner serves
-	Capacity       int      // concurrent slots (this build serves them sequentially per conn)
-	LeaseWaitS     int      // long-poll wait
-	GPU            string   // optional GPU descriptor for the fleet view
+	RunnerID        string   // public-key fingerprint (identity)
+	Node            string   // human node name
+	Version         string   // runner version string
+	DispatcherAddr  string   // runner surface (PEP in prod, dispatcher directly in tests)
+	CASBaseURL      string   // PEP CAS surface base URL
+	ComputeAddr     string   // paired compute container INVOKE_ADDR
+	WorkRoot        string   // shared workdir volume root
+	Lanes           []string // lanes this runner serves
+	Capacity        int      // concurrent slots (this build serves them sequentially per conn)
+	LeaseWaitS      int      // long-poll wait
+	MaxJobDurationS int      // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
+	GPU             string   // optional GPU descriptor for the fleet view
 }
 
 // Runner is the worker client aggregate.
@@ -97,6 +98,9 @@ func New(cfg Config, signer Signer, wrapper FrameWrapper, log *slog.Logger) *Run
 	}
 	if cfg.Capacity <= 0 {
 		cfg.Capacity = 1
+	}
+	if cfg.MaxJobDurationS <= 0 {
+		cfg.MaxJobDurationS = 7200 // 2h backstop; real cancellation is the heartbeat abandon
 	}
 	return &Runner{
 		cfg:     cfg,

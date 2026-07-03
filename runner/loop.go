@@ -122,7 +122,14 @@ func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, er
 // appropriate terminal verb. It never returns an error; failures are reported to
 // the dispatcher.
 func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Grant) {
-	deadline := time.UnixMilli(g.Lease.DeadlineTS)
+	// The job's execution budget is the runner's MaxJobDuration — NOT the lease
+	// deadline. The lease TTL (g.Lease.DeadlineTS) is a crash-detection timer the
+	// heartbeat renews every interval; using it as the job deadline would cancel any
+	// op longer than one lease TTL (a long transcription) mid-run, failing it and
+	// leaving the compute running an orphan. Cancellation for real arrives out of band
+	// via the heartbeat's abandon directive (markAbandoned); this deadline is only a
+	// generous backstop against a wedged compute.
+	deadline := time.Now().Add(time.Duration(r.cfg.MaxJobDurationS) * time.Second)
 	jobCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})
@@ -171,7 +178,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		Workdir:    workdir,
 		Inputs:     inputs,
 		OutputsDir: "outputs",
-		DeadlineTS: g.Lease.DeadlineTS,
+		DeadlineTS: deadline.UnixMilli(), // the job budget, not the lease TTL
 	})
 	if ierr != nil {
 		// Transport/protocol fault. If we were told to abandon (ctx cancelled),

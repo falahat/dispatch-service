@@ -15,8 +15,8 @@ sweep_interval_s = 5
 #       source of record). Domain data (transcripts, analysis results) lives in the
 #       app's own store and is NEVER touched by this.
 # Set > 0 (e.g. 90) to bound this DB's growth; recent history is always kept for the
-# dead-letter / debugging views.
-job_retention_days = 0
+# dead-letter / debugging views. (Code default is 0/forever; this deployment opts into 90d.)
+job_retention_days = 90
 
 [default_lane]
 concurrency = 0

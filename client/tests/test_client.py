@@ -217,9 +217,7 @@ def test_enqueue_idempotency(dispatcher):
 
 def test_jobs_read(dispatcher):
     with DispatchClient(dispatcher.app_addr) as client:
-        client.enqueue(
-            [{"job_key": "read-1", "lane": "embed", "invocation_address": DUMMY_ADDR}]
-        )
+        client.enqueue([{"job_key": "read-1", "lane": "embed", "invocation_address": DUMMY_ADDR}])
         res = client.jobs()
         keys = {j["job_key"] for j in res["jobs"]}
         assert "read-1" in keys
@@ -237,6 +235,24 @@ def test_fleet_budget_sweep(dispatcher):
         assert isinstance(client.sweep(), dict)
 
 
+def test_stats_drain_snapshot(dispatcher):
+    """The drain-health verb: state counts, windowed events, oldest-queued age."""
+    with DispatchClient(dispatcher.app_addr) as client:
+        client.enqueue([{"job_key": "st-1", "lane": "embed", "invocation_address": DUMMY_ADDR}])
+        view = client.stats()
+        assert view["window_s"] == 900  # server default
+        cells = {(j["lane"], j["state"]): j["count"] for j in view["jobs"]}
+        assert cells[("embed", "QUEUED")] == 1
+        # The enqueue itself is a settled event inside the window.
+        events = {(a["lane"], a["outcome"]): a["count"] for a in view["attempts"]}
+        assert events[("embed", "enqueue")] == 1
+        assert view["recent_failures"] == []  # nothing failing
+        assert view["oldest_queued_age_s"] >= 0
+
+        # A caller-chosen window rides through.
+        assert client.stats(window_s=60)["window_s"] == 60
+
+
 def test_error_reply_raises(dispatcher):
     with DispatchClient(dispatcher.app_addr) as client:
         # A malformed address fails the enqueue with a per-request error.
@@ -250,9 +266,7 @@ def test_error_reply_raises(dispatcher):
 
 def test_completion_flows_and_ack_drains(dispatcher):
     with DispatchClient(dispatcher.app_addr) as client:
-        client.enqueue(
-            [{"job_key": "comp-1", "lane": "embed", "invocation_address": DUMMY_ADDR}]
-        )
+        client.enqueue([{"job_key": "comp-1", "lane": "embed", "invocation_address": DUMMY_ADDR}])
 
         # Push the job to PERSISTING via the raw runner surface.
         runner = RawRunner(dispatcher.runner_addr, ["embed"])

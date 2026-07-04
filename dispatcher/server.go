@@ -18,6 +18,7 @@ const (
 	typeFleetResult  = "fleet_result"
 	typeBudgetResult = "budget_result"
 	typeSweepResult  = "sweep_result"
+	typeStatsResult  = "stats_result"
 )
 
 // Server exposes the dispatcher over two surfaces: the runner surface (framed
@@ -386,6 +387,16 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInternal, Message: err.Error()})
 		}
 		return reply(conn, env.ID, typeSweepResult, res)
+	case wire.TypeStats:
+		req, err := wire.DecodeBody[StatsRequest](env)
+		if err != nil {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
+		}
+		res, err := s.d.Stats(req)
+		if err != nil {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInternal, Message: err.Error()})
+		}
+		return reply(conn, env.ID, typeStatsResult, res)
 	default:
 		return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: "unknown app verb " + env.Type})
 	}

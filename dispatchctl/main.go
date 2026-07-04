@@ -25,6 +25,7 @@ commands:
   job    <job_id>                                         one job's full detail + timeline
   trace  <job_id>                                         render a job's attempt timeline
   fleet                                                   list runners
+  stats  [--window S]                                     drain health: states, settled events, failures
   budget                                                  cost gate snapshot + ledger
   cancel <job_id> [--reason R]                            cancel a non-terminal job
   approve <job_id> --author A [--reason R]                approve a priced job
@@ -82,6 +83,7 @@ var commands = map[string]func(*client, []string) error{
 	"job":     cmdJob,
 	"trace":   cmdTrace,
 	"fleet":   cmdFleet,
+	"stats":   cmdStats,
 	"budget":  cmdBudget,
 	"cancel":  cmdCancel,
 	"approve": cmdApprove,
@@ -181,6 +183,29 @@ func cmdFleet(c *client, args []string) error {
 		return err
 	}
 	fmt.Print(renderFleet(res))
+	return nil
+}
+
+// statsRequest matches the dispatcher's `stats` request body.
+type statsRequest struct {
+	WindowS int `json:"window_s,omitempty"`
+}
+
+func cmdStats(c *client, args []string) error {
+	fs := newFlagSet("stats")
+	window := fs.Int("window", 0, "trailing window in seconds (0 = server default, 15m)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	env, err := c.call(wire.TypeStats, statsRequest{WindowS: *window})
+	if err != nil {
+		return err
+	}
+	v, err := wire.DecodeBody[statsView](env)
+	if err != nil {
+		return err
+	}
+	fmt.Print(renderStats(v))
 	return nil
 }
 

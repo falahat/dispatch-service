@@ -148,9 +148,7 @@ class DispatchClient:
         env = self._request("enqueue", {"jobs": jobs})
         return env["body"]["results"]
 
-    def ack(
-        self, job_id: str, disposition: str, reason: Optional[str] = None
-    ) -> None:
+    def ack(self, job_id: str, disposition: str, reason: Optional[str] = None) -> None:
         """Drain a job from the PERSISTING inbox. ``disposition`` is
         ``"persisted"`` or ``"rejected"``. Idempotent."""
         body: dict[str, Any] = {"job_id": job_id, "disposition": disposition}
@@ -200,6 +198,20 @@ class DispatchClient:
     def sweep(self) -> dict[str, Any]:
         """Run the timer pass on demand; returns the sweep summary."""
         return self._request("sweep", {})["body"]
+
+    def stats(self, window_s: Optional[int] = None) -> dict[str, Any]:
+        """Return the drain-health snapshot: job counts by (lane, state), settled
+        attempt outcomes over the trailing window (server default 15m), the grouped
+        recent failure reasons, and the oldest-QUEUED age in seconds. Read-only —
+        the source for the app's exported drain gauges and the stall alert."""
+        body: dict[str, Any] = {}
+        if window_s is not None:
+            body["window_s"] = window_s
+        view = self._request("stats", body)["body"]
+        # Empty slices marshal as JSON null on the Go side; normalize.
+        for key in ("jobs", "attempts", "recent_failures"):
+            view[key] = view.get(key) or []
+        return view
 
     # --- subscription ---
 

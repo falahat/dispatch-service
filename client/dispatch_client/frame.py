@@ -88,9 +88,7 @@ def decode_envelope(frame: bytes) -> dict[str, Any]:
     return env
 
 
-def write_message(
-    sock: socket.socket, req_id: str, msg_type: str, body: dict[str, Any]
-) -> None:
+def write_message(sock: socket.socket, req_id: str, msg_type: str, body: dict[str, Any]) -> None:
     """Frame and write a typed message."""
     write_frame(sock, encode_envelope(req_id, msg_type, body))
 

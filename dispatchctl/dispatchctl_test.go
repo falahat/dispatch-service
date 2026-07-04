@@ -198,6 +198,56 @@ func TestFleetBudgetSweep(t *testing.T) {
 	}
 }
 
+// TestStats drives the drain-health verb end to end: enqueue two jobs, cancel
+// one, then assert the reply type, the (lane, state) counts, the windowed
+// cancel event, and that the renderer shows the verdict line.
+func TestStats(t *testing.T) {
+	c := dialTest(t, startServer(t))
+	mustEnqueue(t, c, "a", "embed", invAddr("a"))
+	cancelled := mustEnqueue(t, c, "b", "transcribe", invAddr("b"))
+	if _, err := c.call(wire.TypeCancel, wire.Cancel{JobID: cancelled, Reason: "test"}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	env, err := c.call(wire.TypeStats, statsRequest{})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if env.Type != "stats_result" {
+		t.Fatalf("stats reply type %q", env.Type)
+	}
+	v, err := wire.DecodeBody[statsView](env)
+	if err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if v.WindowS != 900 {
+		t.Fatalf("default window = %d, want 900", v.WindowS)
+	}
+	counts := map[string]int{}
+	for _, j := range v.Jobs {
+		counts[j.Lane+"/"+j.State] = j.Count
+	}
+	if counts["embed/QUEUED"] != 1 || counts["transcribe/CANCELLED"] != 1 {
+		t.Fatalf("job counts = %v", counts)
+	}
+	var sawCancel bool
+	for _, a := range v.Attempts {
+		if a.Lane == "transcribe" && a.Outcome == "cancel" && a.Count == 1 {
+			sawCancel = true
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("windowed cancel event missing: %+v", v.Attempts)
+	}
+	if v.OldestQueuedAgeS < 0 {
+		t.Fatalf("oldest queued age = %d", v.OldestQueuedAgeS)
+	}
+	out := renderStats(v)
+	if !strings.Contains(out, "drain (15m):") || !strings.Contains(out, "QUEUED") {
+		t.Fatalf("renderStats output:\n%s", out)
+	}
+}
+
 // TestErrorReplyIsError verifies an `error` reply is surfaced as a Go error
 // (so the CLI exits non-zero) rather than swallowed.
 func TestErrorReplyIsError(t *testing.T) {

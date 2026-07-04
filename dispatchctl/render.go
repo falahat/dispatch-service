@@ -81,6 +81,35 @@ type sweepResult struct {
 	Recovered    int `json:"recovered"`
 	Expired      int `json:"expired"`
 	GCCandidates int `json:"gc_candidates"`
+	Pruned       int `json:"pruned"`
+}
+
+type jobCount struct {
+	Lane  string `json:"lane"`
+	State string `json:"state"`
+	Count int    `json:"count"`
+}
+
+type attemptCount struct {
+	Lane    string `json:"lane"`
+	Outcome string `json:"outcome"`
+	Count   int    `json:"count"`
+}
+
+type failureCount struct {
+	Lane       string `json:"lane"`
+	ErrorClass string `json:"error_class,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Count      int    `json:"count"`
+}
+
+type statsView struct {
+	ServerTS         int64          `json:"server_ts"`
+	WindowS          int            `json:"window_s"`
+	Jobs             []jobCount     `json:"jobs"`
+	Attempts         []attemptCount `json:"attempts"`
+	RecentFailures   []failureCount `json:"recent_failures,omitempty"`
+	OldestQueuedAgeS int64          `json:"oldest_queued_age_s"`
 }
 
 type enqueueResultItem struct {
@@ -286,8 +315,74 @@ func renderBudget(b budgetView) string {
 
 // renderSweep prints the sweep counters.
 func renderSweep(s sweepResult) string {
-	return fmt.Sprintf("recovered %d  expired %d  gc_candidates %d\n",
-		s.Recovered, s.Expired, s.GCCandidates)
+	return fmt.Sprintf("recovered %d  expired %d  gc_candidates %d  pruned %d\n",
+		s.Recovered, s.Expired, s.GCCandidates, s.Pruned)
+}
+
+// renderStats prints the drain-health snapshot: a one-line verdict (the counts
+// that answer "is it draining?"), then the queue by (lane, state), the settled
+// events in the window, and the grouped failure reasons when there are any.
+func renderStats(v statsView) string {
+	var w strings.Builder
+	sum := func(outcome string) int {
+		n := 0
+		for _, a := range v.Attempts {
+			if a.Outcome == outcome {
+				n += a.Count
+			}
+		}
+		return n
+	}
+	oldest := "queue empty"
+	if v.OldestQueuedAgeS > 0 {
+		oldest = "oldest queued " + dur(v.OldestQueuedAgeS)
+	}
+	fmt.Fprintf(&w, "drain (%s): complete=%d fail=%d release=%d expired=%d   %s\n",
+		dur(int64(v.WindowS)), sum("complete"), sum("fail"), sum("release"), sum("lease_expired"), oldest)
+
+	w.WriteString("\njobs\n")
+	if len(v.Jobs) == 0 {
+		w.WriteString("  (none)\n")
+	} else {
+		rows := make([][]string, 0, len(v.Jobs))
+		for _, j := range v.Jobs {
+			rows = append(rows, []string{j.Lane, j.State, strconv.Itoa(j.Count)})
+		}
+		table(&w, []string{"LANE", "STATE", "COUNT"}, rows)
+	}
+
+	w.WriteString("\nsettled in window\n")
+	if len(v.Attempts) == 0 {
+		w.WriteString("  (none)\n")
+	} else {
+		rows := make([][]string, 0, len(v.Attempts))
+		for _, a := range v.Attempts {
+			rows = append(rows, []string{a.Lane, a.Outcome, strconv.Itoa(a.Count)})
+		}
+		table(&w, []string{"LANE", "OUTCOME", "COUNT"}, rows)
+	}
+
+	if len(v.RecentFailures) > 0 {
+		w.WriteString("\nfailures in window\n")
+		rows := make([][]string, 0, len(v.RecentFailures))
+		for _, f := range v.RecentFailures {
+			rows = append(rows, []string{f.Lane, dash(f.ErrorClass), strconv.Itoa(f.Count), dash(f.Reason)})
+		}
+		table(&w, []string{"LANE", "CLASS", "COUNT", "REASON"}, rows)
+	}
+	return w.String()
+}
+
+// dur renders seconds as a compact human duration ("42s" / "13m" / "1.5h").
+func dur(seconds int64) string {
+	s := float64(seconds)
+	if s < 90 {
+		return fmt.Sprintf("%.0fs", s)
+	}
+	if s < 5400 {
+		return fmt.Sprintf("%.0fm", s/60)
+	}
+	return fmt.Sprintf("%.1fh", s/3600)
 }
 
 // renderEnqueue prints the result of a single-job enqueue.

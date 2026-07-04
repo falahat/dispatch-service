@@ -42,6 +42,7 @@ const (
 	TypeFleet         = "fleet"
 	TypeBudget        = "budget"
 	TypeSweep         = "sweep"
+	TypeStats         = "stats"
 	TypeOK            = "ok"
 	TypeError         = "error"
 )

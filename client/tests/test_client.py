@@ -318,6 +318,26 @@ def test_completion_flows_and_ack_drains(dispatcher):
         assert all(c["job_id"] != job_id for c in redelivered)
 
 
+def test_request_timeout_surfaces_instead_of_hanging():
+    """A wedged server (accepts, never replies) must raise within the timeout, not hang.
+
+    This is what lets a health poller call the app surface from a supervised loop: the
+    read deadline turns a hung dispatcher into an error the caller can degrade on."""
+    wedge = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    wedge.bind(("127.0.0.1", 0))
+    wedge.listen(2)  # both attempts (the client retries once on a fresh connection)
+    port = wedge.getsockname()[1]
+    try:
+        with DispatchClient(f"127.0.0.1:{port}", timeout=0.5) as client:
+            start = time.time()
+            with pytest.raises(OSError):
+                client.stats()
+            # Two bounded attempts, not an unbounded block.
+            assert time.time() - start < 5.0
+    finally:
+        wedge.close()
+
+
 def test_subscription_takeover(dispatcher):
     """Two subscribe connections: the first receives a takeover frame."""
     host, port = dispatcher.app_addr.split(":")

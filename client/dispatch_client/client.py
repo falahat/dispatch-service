@@ -56,10 +56,14 @@ def _parse_address(address: str) -> tuple[int, Any]:
         raise ValueError(f"invalid port in address {address!r}") from e
 
 
-def _connect(address: str) -> socket.socket:
+def _connect(address: str, timeout: Optional[float] = None) -> socket.socket:
+    """Open a connected socket. ``timeout`` (set BEFORE connect) bounds the connect and
+    every subsequent read/write; ``None`` keeps the socket fully blocking."""
     family, target = _parse_address(address)
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
+        if timeout is not None:
+            sock.settimeout(timeout)
         if family == socket.AF_INET:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sock.connect(target)
@@ -75,10 +79,16 @@ class DispatchClient:
     ``address`` is ``"unix:/path/sock"`` or ``"host:port"``. Connections are
     opened lazily on first use. Not every method needs a connection up front, so
     constructing a client never touches the network.
+
+    ``timeout`` bounds the REQUEST/REPLY connection only (connect + each read), so a
+    wedged dispatcher surfaces as an ``OSError`` instead of hanging the caller. The
+    subscription connection ignores it — a push stream legitimately blocks forever.
+    ``None`` (the default) keeps today's fully-blocking behaviour for long-lived clients.
     """
 
-    def __init__(self, address: str):
+    def __init__(self, address: str, *, timeout: Optional[float] = None):
         self._address = address
+        self._timeout = timeout
         self._req_lock = threading.Lock()
         self._req_sock: Optional[socket.socket] = None
         self._ids = itertools.count(1)
@@ -95,7 +105,7 @@ class DispatchClient:
 
     def _ensure_req_sock(self) -> socket.socket:
         if self._req_sock is None:
-            self._req_sock = _connect(self._address)
+            self._req_sock = _connect(self._address, self._timeout)
         return self._req_sock
 
     def _drop_req_sock(self) -> None:

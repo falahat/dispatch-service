@@ -29,7 +29,7 @@ volumes:
 services:
   # Content-addressable byte store (adopted). Only the PEP may reach it.
   cas:
-    image: buchgr/bazel-remote-cache:latest
+    image: buchgr/bazel-remote-cache@sha256:70d9faa54f53e7673ce96dbefae3c8c0c47f343c210ecc948d088604dbebe0d4
     command: ["--dir=/data", "--max_size=64", "--http_address=0.0.0.0:8080"]
     networks: [backplane]
     volumes:

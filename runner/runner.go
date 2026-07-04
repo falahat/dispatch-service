@@ -38,7 +38,9 @@ type Runner struct {
 	mu         sync.Mutex
 	current    *liveJob
 	draining   bool
-	leaseAfter int64 // ms; do not lease before this (throttle)
+	leaseAfter int64  // ms; do not lease before this (throttle)
+	gpu        string // live GPU descriptor (compute-reported; seeded from cfg.GPU)
+	vramFreeMB *int   // live free VRAM (MB), compute-reported; nil until the first probe
 }
 
 type liveJob struct {
@@ -74,17 +76,40 @@ func (r *Runner) setLeaseAfter(ts int64) {
 }
 
 // currentStatus builds the heartbeat status and the current lease id (empty if
-// idle).
+// idle). GPU + free VRAM are the last values refreshGPU read from the paired
+// compute (seeded from cfg.GPU until the first probe).
 func (r *Runner) currentStatus() (wire.HeartbeatStatus, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := wire.HeartbeatStatus{Node: r.cfg.Node, Lanes: r.cfg.Lanes, Capacity: r.cfg.Capacity, GPU: r.cfg.GPU}
+	st := wire.HeartbeatStatus{
+		Node: r.cfg.Node, Lanes: r.cfg.Lanes, Capacity: r.cfg.Capacity,
+		GPU: r.gpu, VRAMFreeMB: r.vramFreeMB,
+	}
 	lease := ""
 	if r.current != nil {
 		st.CurrentJobID = r.current.jobID
 		lease = r.current.leaseID
 	}
 	return st, lease
+}
+
+// refreshGPU folds the paired compute's live GPU descriptor + free VRAM into the
+// heartbeat status. The runner container has NO GPU — its compute pair does — so the
+// compute's /healthz is the fleet's only VRAM/GPU truth. Best-effort: a probe failure
+// keeps the last-known values, so a transient blip never flickers the fleet row to CPU.
+func (r *Runner) refreshGPU(ctx context.Context) {
+	h, err := r.invoke.Healthz(ctx)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	if h.GPU != "" {
+		r.gpu = h.GPU
+	}
+	if h.VRAMFreeMB != nil {
+		r.vramFreeMB = h.VRAMFreeMB
+	}
+	r.mu.Unlock()
 }
 
 // New builds a runner. wrapper may be nil (direct/trusted mode); signer may be
@@ -108,6 +133,7 @@ func New(cfg Config, signer Signer, wrapper FrameWrapper, log *slog.Logger) *Run
 		invoke:  NewInvokeClient(cfg.ComputeAddr),
 		log:     log,
 		wrapper: wrapper,
+		gpu:     cfg.GPU, // compute-reported GPU overrides this on the first heartbeat
 	}
 }
 

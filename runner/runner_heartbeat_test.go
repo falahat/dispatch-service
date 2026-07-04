@@ -176,6 +176,68 @@ func TestHeartbeatReconnectsAfterConnectionDrop(t *testing.T) {
 	}
 }
 
+// gpuComputeHandler serves the invoke protocol with a /healthz that reports a GPU
+// descriptor + free VRAM — the compute is the only process with the GPU, so this is
+// exactly what the runner must forward into its heartbeat.
+func gpuComputeHandler(gpu string, vramFreeMB int) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ready": true, "op": "echo", "op_version": 1,
+			"gpu": gpu, "vram_free_mb": vramFreeMB,
+		})
+	})
+	return mux
+}
+
+// TestHeartbeatReportsComputeGPU proves the runner forwards its compute pair's live
+// GPU descriptor + free VRAM into the fleet row. The runner container has no GPU of its
+// own, so without this the fleet view shows a GPU node as "cpu / 0 MB" (the bug this
+// fixes: a 4090 node rendered as CPU).
+func TestHeartbeatReportsComputeGPU(t *testing.T) {
+	srv := startDispatcher(t)
+	cas := newStubCAS()
+	casSrv := httptest.NewServer(cas.handler())
+	defer casSrv.Close()
+	computeSrv := httptest.NewServer(gpuComputeHandler("NVIDIA GeForce RTX 4090", 22528))
+	defer computeSrv.Close()
+
+	rn := runner.New(runner.Config{
+		RunnerID: "Rgpu", Node: "n1", Version: "runner/test",
+		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
+		ComputeAddr: strings.TrimPrefix(computeSrv.URL, "http://"),
+		WorkRoot:    t.TempDir(), Lanes: []string{"embed"}, Capacity: 1, LeaseWaitS: 2,
+	}, nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rn.Run(ctx)
+
+	app := dialApp(t, srv.AppAddr())
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		fe := app.call("f1", wire.TypeFleet, map[string]any{})
+		var fr struct {
+			Runners []struct {
+				RunnerID   string `json:"runner_id"`
+				GPU        string `json:"gpu"`
+				VRAMFreeMB int    `json:"vram_free_mb"`
+			} `json:"runners"`
+		}
+		_ = json.Unmarshal(fe.Body, &fr)
+		for _, row := range fr.Runners {
+			if row.RunnerID != "Rgpu" || row.GPU == "" {
+				continue
+			}
+			if row.GPU != "NVIDIA GeForce RTX 4090" || row.VRAMFreeMB != 22528 {
+				t.Fatalf("fleet row has wrong GPU telemetry: gpu=%q vram=%d", row.GPU, row.VRAMFreeMB)
+			}
+			return // the compute's GPU reached the fleet row via the heartbeat
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("runner never reported its compute's GPU into the fleet row (fleet would show cpu/0)")
+}
+
 // busyThenOKComputeHandler serves the invoke protocol, returning 409 (busy) for the
 // first busyTimes invokes and succeeding after — to model a single-flight compute
 // briefly occupied by an orphaned run.

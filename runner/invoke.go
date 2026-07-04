@@ -43,11 +43,15 @@ func NewInvokeClient(addr string) *InvokeClient {
 	return &InvokeClient{baseURL: "http://" + addr, hc: &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}}
 }
 
-// Health is the /healthz response.
+// Health is the /healthz response. GPU + VRAMFreeMB are the compute host's live
+// GPU telemetry (the runner container has none, so the compute is the fleet's only
+// VRAM/GPU truth); both are absent on a CPU compute.
 type Health struct {
-	Ready     bool   `json:"ready"`
-	Op        string `json:"op"`
-	OpVersion int    `json:"op_version"`
+	Ready      bool   `json:"ready"`
+	Op         string `json:"op"`
+	OpVersion  int    `json:"op_version"`
+	GPU        string `json:"gpu,omitempty"`
+	VRAMFreeMB *int   `json:"vram_free_mb,omitempty"`
 }
 
 // Healthz probes readiness.

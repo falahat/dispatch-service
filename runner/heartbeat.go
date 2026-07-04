@@ -50,6 +50,9 @@ func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval
 // means the connection is dead (the caller reconnects); a protocol-level
 // rejection or decode error is logged but is not a dead connection.
 func (r *Runner) beat(dc *dispatcherConn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	r.refreshGPU(ctx) // fold in the compute's live GPU/VRAM before we send
+	cancel()
 	status, lease := r.currentStatus()
 	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease})
 	if err != nil {

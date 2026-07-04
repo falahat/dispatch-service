@@ -107,7 +107,7 @@ auth    = "passthrough"    # no `right`
 | `routes` | top level | the array of route entries below. |
 | `methods` | route | HTTP methods this route serves, e.g. `["GET"]`, `["POST","PUT"]`. Non-empty. |
 | `path` | route | exact-path matcher. Exactly one of `path` / `prefix`. Must start with `/`. |
-| `prefix` | route | path-prefix matcher on a **segment boundary**: `/audio` matches `/audio` and `/audio/x`, never `/audioX`. Exactly one of `path` / `prefix`. |
+| `prefix` | route | path-prefix matcher on a **segment boundary**: `/audio` matches `/audio` and `/audio/x`, never `/audioX`. Exactly one of `path` / `prefix`. `prefix = "/"` is **rejected at boot** — a catch-all is inexpressible; publish the root with `path = "/"` and name each path. |
 | `auth` | route | `header` (single-use, any method), `query` (freshness-only, GET/HEAD only), or `passthrough`. |
 | `right` | route | the required capability for `header` / `query`. Omitted (and rejected) for `passthrough`. |
 
@@ -131,10 +131,10 @@ it matched says so.
   path + query preserved, the true buffered length set, and the `x-dispatch-*` /
   hop-by-hop headers stripped. The response body streams straight back.
 
-A malformed route table (both `path` and `prefix`, neither, an authed route with no
-`right`, a passthrough with a `right`, an unknown `auth`, a bad method, or a `query`
-route on a non-GET/HEAD method) is a **boot failure** — never a request-time
-surprise.
+A malformed route table (both `path` and `prefix`, neither, a `prefix = "/"`
+catch-all, an authed route with no `right`, a passthrough with a `right`, an unknown
+`auth`, a bad method, or a `query` route on a non-GET/HEAD method) is a **boot
+failure** — never a request-time surprise.
 
 ## Credential revocation (deny-list)
 

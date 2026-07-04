@@ -1140,6 +1140,22 @@ auth = "passthrough"
 }
 
 #[test]
+fn route_table_rejects_root_prefix() {
+    // `prefix = "/"` reads as a default-open catch-all but matches only the bare
+    // root under segment-boundary matching (the 2026-07 white-page outage). It
+    // must be inexpressible; the root is published with `path = "/"`.
+    let toml = r#"
+backend = "http://127.0.0.1:1"
+[[routes]]
+methods = ["GET"]
+prefix = "/"
+auth = "passthrough"
+"#;
+    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+    assert!(spec.resolve().is_err(), "prefix \"/\" must be rejected");
+}
+
+#[test]
 fn route_table_rejects_authed_route_without_right() {
     let toml = r#"
 backend = "http://127.0.0.1:1"

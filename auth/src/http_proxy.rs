@@ -233,6 +233,16 @@ impl RouteTableSpec {
                     where_()
                 )));
             }
+            // A default-open catch-all must be inexpressible: under segment-boundary
+            // matching `prefix = "/"` matches only the bare root while READING as
+            // "everything" — the config that means it wants `path = "/"`, and every
+            // published path named explicitly.
+            if matches!(&matcher, PathMatcher::Prefix(p) if p == "/") {
+                return Err(RouteTableError(format!(
+                    "{}: `prefix = \"/\"` is rejected (it matches only \"/\" and reads as a catch-all); use `path = \"/\"` and name each published path",
+                    where_()
+                )));
+            }
             let mut methods = Vec::with_capacity(spec.methods.len());
             for m in &spec.methods {
                 let parsed = Method::from_bytes(m.as_bytes())

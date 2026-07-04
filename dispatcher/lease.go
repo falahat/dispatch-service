@@ -180,6 +180,7 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 			Lane:              job.Lane,
 			InvocationAddress: artifact.Address(job.InvocationAddress),
 			Attempt:           job.Attempt,
+			ExpectedWallS:     job.Policy.ExpectedWallS, // sizes the runner's per-job budget
 		}
 		if job.BatchScale != "" {
 			gj.Hints = &wire.GrantHints{BatchScale: job.BatchScale}

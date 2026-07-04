@@ -238,6 +238,67 @@ func TestHeartbeatReportsComputeGPU(t *testing.T) {
 	t.Fatal("runner never reported its compute's GPU into the fleet row (fleet would show cpu/0)")
 }
 
+// TestJobBudgetFromExpectedWall proves a job's declared expected_wall_s sizes the runner's
+// execution budget: the invoke deadline is a generous multiple of the estimate, NOT the flat
+// 2h MaxJobDuration backstop. This makes per-job budgets explicit — a wedged short job is
+// caught in minutes, not hours (the drain-collapse follow-up).
+func TestJobBudgetFromExpectedWall(t *testing.T) {
+	srv := startDispatcher(t)
+	cas := newStubCAS()
+	casSrv := httptest.NewServer(cas.handler())
+	defer casSrv.Close()
+
+	gotDeadline := make(chan int64, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ready": true, "op": "echo", "op_version": 1})
+	})
+	var once sync.Once
+	mux.HandleFunc("/invoke", func(w http.ResponseWriter, r *http.Request) {
+		var req runner.InvokeRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		once.Do(func() { gotDeadline <- req.DeadlineTS })
+		_ = os.MkdirAll(filepath.Join(req.Workdir, req.OutputsDir), 0o755)
+		_ = json.NewEncoder(w).Encode(map[string]any{"outputs": map[string]string{}, "metrics": map[string]int64{}})
+	})
+	computeSrv := httptest.NewServer(mux)
+	defer computeSrv.Close()
+
+	inv := artifact.Invocation{Kind: artifact.InvocationKind, Op: "echo", OpVersion: 1, Params: json.RawMessage(`{}`)}
+	invBytes, _ := json.Marshal(inv)
+	invAddr := cas.put(invBytes)
+
+	expectedWall := 300 // 5 min estimate -> a 20 min budget (x4), far below the 2h backstop
+	app := dialApp(t, srv.AppAddr())
+	app.call("e1", wire.TypeEnqueue, wire.Enqueue{Jobs: []wire.EnqueueJob{
+		{JobKey: "bud-k", Lane: "embed", InvocationAddress: invAddr, Policy: &wire.Policy{ExpectedWallS: &expectedWall}},
+	}})
+
+	rn := runner.New(runner.Config{
+		RunnerID: "Rbud", Node: "n1", Version: "runner/test",
+		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
+		ComputeAddr: strings.TrimPrefix(computeSrv.URL, "http://"),
+		WorkRoot:    t.TempDir(), Lanes: []string{"embed"}, Capacity: 1, LeaseWaitS: 2,
+	}, nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rn.Run(ctx)
+
+	var deadlineTS int64
+	select {
+	case deadlineTS = <-gotDeadline:
+	case <-time.After(15 * time.Second):
+		t.Fatal("compute was never invoked")
+	}
+
+	// budget = expected_wall_s * 4 = 1200s out — well under the flat 7200s backstop, proving
+	// the per-job estimate (not MaxJobDuration) bounded the runtime.
+	budget := time.Until(time.UnixMilli(deadlineTS))
+	if budget < 18*time.Minute || budget > 22*time.Minute {
+		t.Fatalf("job budget %v; want ~20m (expected_wall_s 300 x4), not the 2h backstop", budget)
+	}
+}
+
 // busyThenOKComputeHandler serves the invoke protocol, returning 409 (busy) for the
 // first busyTimes invokes and succeeding after — to model a single-flight compute
 // briefly occupied by an orphaned run.

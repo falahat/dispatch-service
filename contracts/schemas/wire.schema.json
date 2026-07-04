@@ -100,6 +100,7 @@
             "lane": { "$ref": "#/$defs/lane" },
             "invocation_address": { "$ref": "#/$defs/address" },
             "attempt": { "$ref": "#/$defs/attempt" },
+            "expected_wall_s": { "type": "integer", "minimum": 1, "$comment": "sizes the runner's per-job budget" },
             "hints": {
               "type": "object",
               "additionalProperties": false,

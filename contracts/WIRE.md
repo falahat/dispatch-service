@@ -63,7 +63,7 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 | Verb | Body → Reply | Semantics |
 |---|---|---|
 | `hello` | `{contract:"0.1", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
-| `lease` | `{lanes[], wait_s}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds) until a job is runnable. Atomic claim: oldest runnable job in a requested lane, `next_attempt_at ≤ now`, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `job = {job_id, job_key, lane, invocation_address, attempt, hints{batch_scale?, ...}}`. |
+| `lease` | `{lanes[], wait_s}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds) until a job is runnable. Atomic claim: oldest runnable job in a requested lane, `next_attempt_at ≤ now`, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}}`. |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
 | `fail` | `{lease_id, job_id, attempt, error_class, message ≤ 4 KiB}` → `ok` | compute failed. Attempt burned; the job's declared policy maps `error_class` → retriable (backoff) or terminal. Idempotent per `(job_id, attempt)`. |
@@ -106,7 +106,9 @@ policy: {
   max_attempts:  1..10   (default 3),
   backoff_class: quick | standard | long   (default standard),
   error_class_overrides?: { <error_class>: terminal | retriable },
-  expected_wall_s?: int,        # pace/overrun flagging
+  expected_wall_s?: int,        # per-job wall budget: the runner bounds a job's runtime at a
+                                # generous multiple of this (a tighter backstop than the flat
+                                # MaxJobDuration); rides the grant to the runner
   priority?: 0..9 (default 5),  # lower first within a lane
   release_cap?: 1..20 (default 5)
 }

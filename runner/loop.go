@@ -118,18 +118,49 @@ func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, er
 	}
 }
 
+// jobBudgetMultiple scales a job's expected wall into its execution budget: the runner
+// gives up on the compute only once a job runs this many times longer than the app
+// expected, so ordinary variance (a slow disk, a cold model, a busy GPU) never trips it —
+// only a genuinely wedged compute does.
+const jobBudgetMultiple = 4
+
+// jobBudgetFloor keeps a small or under-estimated expected wall from producing a
+// dangerously tight budget (killing a legitimate job is the failure we most want to avoid).
+const jobBudgetFloor = 2 * time.Minute
+
+// jobBudget is how long a job may run before the runner treats its compute as wedged and
+// gives up. A job that declares an expected wall gets a per-job budget — a generous
+// multiple of that estimate, floored, and capped by the MaxJobDuration backstop; a job
+// with no estimate falls back to the flat backstop. This is a backstop against a hung
+// compute, never the normal completion path (which is the compute returning, or an
+// out-of-band abandon directive).
+func (r *Runner) jobBudget(g *wire.Grant) time.Duration {
+	backstop := time.Duration(r.cfg.MaxJobDurationS) * time.Second
+	if g.Job.ExpectedWallS <= 0 {
+		return backstop
+	}
+	budget := time.Duration(g.Job.ExpectedWallS*jobBudgetMultiple) * time.Second
+	if budget < jobBudgetFloor {
+		budget = jobBudgetFloor
+	}
+	if budget > backstop {
+		budget = backstop
+	}
+	return budget
+}
+
 // processJob executes one granted job through its full lifecycle and reports the
 // appropriate terminal verb. It never returns an error; failures are reported to
 // the dispatcher.
 func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Grant) {
-	// The job's execution budget is the runner's MaxJobDuration — NOT the lease
-	// deadline. The lease TTL (g.Lease.DeadlineTS) is a crash-detection timer the
-	// heartbeat renews every interval; using it as the job deadline would cancel any
-	// op longer than one lease TTL (a long transcription) mid-run, failing it and
-	// leaving the compute running an orphan. Cancellation for real arrives out of band
-	// via the heartbeat's abandon directive (markAbandoned); this deadline is only a
-	// generous backstop against a wedged compute.
-	deadline := time.Now().Add(time.Duration(r.cfg.MaxJobDurationS) * time.Second)
+	// The job's execution budget is per-job (jobBudget) — NOT the lease deadline. The
+	// lease TTL (g.Lease.DeadlineTS) is a crash-detection timer the heartbeat renews
+	// every interval; using it as the job deadline would cancel any op longer than one
+	// lease TTL (a long transcription) mid-run, failing it and leaving the compute
+	// running an orphan. Cancellation for real arrives out of band via the heartbeat's
+	// abandon directive (markAbandoned); this deadline is only a backstop against a
+	// wedged compute.
+	deadline := time.Now().Add(r.jobBudget(g))
 	jobCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})

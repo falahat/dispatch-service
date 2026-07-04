@@ -81,6 +81,29 @@ func sampleResult(inv artifact.Address) artifact.ActionResult {
 	}
 }
 
+func TestGrantCarriesExpectedWall(t *testing.T) {
+	// A job's expected_wall_s must ride the grant so the runner can size its per-job
+	// budget from it (otherwise the field is stored but inert). A job without one carries 0.
+	d, _ := newTestDispatcher(t)
+	wall := 300
+	enqueueOne(t, d, "kw", "embed", invAddr("a"), &wire.Policy{ExpectedWallS: &wall})
+	enqueueOne(t, d, "kn", "embed", invAddr("b"), nil)
+	hello(t, d, "R1", "embed")
+
+	g1, _ := leaseOne(t, d, "R1", "embed")
+	g2, _ := leaseOne(t, d, "R1", "embed")
+	if g1 == nil || g2 == nil {
+		t.Fatal("expected two grants")
+	}
+	// Oldest-first: kw (the budgeted job) is granted before kn.
+	if g1.Job.ExpectedWallS != 300 {
+		t.Fatalf("grant expected_wall_s = %d, want 300", g1.Job.ExpectedWallS)
+	}
+	if g2.Job.ExpectedWallS != 0 {
+		t.Fatalf("unbudgeted grant expected_wall_s = %d, want 0", g2.Job.ExpectedWallS)
+	}
+}
+
 func TestEnqueueIdempotency(t *testing.T) {
 	d, _ := newTestDispatcher(t)
 	inv := invAddr("a")

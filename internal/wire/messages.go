@@ -164,6 +164,7 @@ type GrantJob struct {
 	Lane              string           `json:"lane"`
 	InvocationAddress artifact.Address `json:"invocation_address"`
 	Attempt           int              `json:"attempt"`
+	ExpectedWallS     int              `json:"expected_wall_s,omitempty"` // 0 = unset; sizes the runner's job budget
 	Hints             *GrantHints      `json:"hints,omitempty"`
 }
 

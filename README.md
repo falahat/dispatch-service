@@ -8,13 +8,15 @@ pure policy math is [dispatch-kit](../dispatch-kit).
 
 ## Status
 
-The **plane is built and verified**: dispatcher, runner, and the Rust PEP/PDP +
-signer, plus the Python client, `dispatchctl`, the echo-compute reference image,
-and the compose/egress-jail topology. Tested at every layer — unit suites,
-component integration, a **cross-language auth E2E** (Go runner ⇄ Rust PEP ⇄
-dispatcher + CAS), and a **SIGKILL crash-injection** proving exactly-once recovery.
-What remains is the **cutover** of the two live apps and the on-hardware deploy —
-scoped file-by-file in [`docs/CUTOVER.md`](docs/CUTOVER.md).
+The plane is **live in production for both apps**: easy-podcast (shared drain, GPU
+transcribe/embed) and antibody-analysis (its own isolated plane instance) each run this
+dispatcher + runner + Rust PEP/PDP + signer from SHA-tagged images, deployed per
+easy-podcast's `docs/RUNBOOK.md`. Tested at every layer — unit suites, component
+integration, a **cross-language auth E2E** (Go runner ⇄ Rust PEP ⇄ dispatcher + CAS), a
+**SIGKILL crash-injection** proving exactly-once recovery, and hand-written adversarial
+suites per auth boundary. Drain health is a first-class read: the `stats` verb
+(`dispatchctl stats`, shipped inside the dispatcher image) feeds each app's gauges and
+stall alerts. The app-cutover history lives in [`docs/CUTOVER.md`](docs/CUTOVER.md).
 
 ## Layout
 

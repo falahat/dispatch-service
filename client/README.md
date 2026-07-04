@@ -28,6 +28,11 @@ view = client.jobs(filter={"state": "PERSISTING"})     # read view
 client.approve(job_id, author="me", reason="ok")        # priced-job gate
 client.cancel(job_id, reason="stale")
 snap = client.fleet(); bud = client.budget(); sw = client.sweep()
+drain = client.stats()                                  # drain health: states, windowed
+                                                        # complete/fail, failure reasons
+
+# A caller that must never hang on a wedged dispatcher (health pollers):
+poller = DispatchClient("unix:/run/dispatch.sock", timeout=5.0)
 
 # Consume completions (blocking generator). Ack each to drain PERSISTING.
 for completion in client.completions():

@@ -80,7 +80,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 | `cancel` | `{job_id, reason}` → `ok` | any non-terminal → `CANCELLED`. `RUNNING` → the runner learns via an `abandon` directive; `PERSISTING` → removed from the inbox; CAS pins released. |
 | `jobs` | `{filter?: {state?, lane?, job_key_prefix?}, page?}` → `{jobs[], next_page?}` | read view. `job` rows include the full attempt/release timeline (the dead-letter view is `jobs{state: FAILED}`). |
 | `fleet` / `budget` | `{}` → snapshots | fleet: per-runner health, lanes, quarantine state, recent RTF. budget: cap, reserved, spent, per-job ledger. |
-| `sweep` | `{}` → `{recovered, expired, gc_candidates}` | runs the timer pass on demand (tests / `dispatchctl`). |
+| `stats` | `{window_s?}` → `{server_ts, window_s, jobs[]: {lane, state, count}, attempts[]: {lane, outcome, count}, recent_failures[]: {lane, error_class?, reason?, count}, oldest_queued_age_s}` | the drain-health snapshot (read-only). `attempts` counts settled events (`ended_ts` set) within the trailing window (default 900s, capped 7d) — in-flight `claimed` rows are excluded; `recent_failures` groups `fail` rows by (lane, class, reason), worst first, top 10. Activity ≠ progress: these counts are what the 2026-07 drain-collapse hid. |
+| `sweep` | `{}` → `{recovered, expired, gc_candidates, pruned}` | runs the timer pass on demand (tests / `dispatchctl`); `pruned` counts terminal jobs deleted by the retention window (0 when no TTL is set). |
 
 ## Server rules (cross-cutting)
 

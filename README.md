@@ -3,8 +3,7 @@
 The shared **dispatch plane**: one durable, co-located work service (the **dispatcher**) and
 its paired **runner** image, spoken to over frozen, language-neutral contracts. The design
 reference is easy-podcast's [`docs/DISPATCH_PLANE.md`](../transcription/easy-podcast/docs/DISPATCH_PLANE.md);
-this repo is its implementation home. Auth is [trust-core](../trust-core) (Biscuit + PoP);
-pure policy math is [dispatch-kit](../dispatch-kit).
+this repo is its implementation home. Auth is [trust-core](../trust-core) (Biscuit + PoP).
 
 ## Status
 
@@ -16,13 +15,12 @@ integration, a **cross-language auth E2E** (Go runner ⇄ Rust PEP ⇄ dispatche
 **SIGKILL crash-injection** proving exactly-once recovery, and hand-written adversarial
 suites per auth boundary. Drain health is a first-class read: the `stats` verb
 (`dispatchctl stats`, shipped inside the dispatcher image) feeds each app's gauges and
-stall alerts. The app-cutover history lives in [`docs/CUTOVER.md`](docs/CUTOVER.md).
+stall alerts.
 
 ## Layout
 
 | Path | What | Language |
 |---|---|---|
-| [`PLAN.md`](PLAN.md) | the implementation plan: parallel tracks, dependencies, per-task definition-of-done | — |
 | `contracts/` | **The frozen v0 contracts** — normative specs + JSON Schemas + the state machine as data. Everything below implements these; nothing implements prose. | data |
 | `dispatcher/` | the work service: durable queue (SQLite WAL), leases, retries, cost admission, fleet; the pure decision rules as an internal package | **Go** (born) |
 | `runner/` | the shared worker client image; drives compute containers over the invoke protocol | **Go** (born) |
@@ -32,9 +30,6 @@ stall alerts. The app-cutover history lives in [`docs/CUTOVER.md`](docs/CUTOVER.
 | `tests/` | unit (per package) · integration (compose) · E2E (full job flow + crash injection) · adversarial (hand-written attacks per boundary) | protected |
 
 Every component is **born in its end-state language** — no interim Python, no port phase.
-The existing Python `dispatch-kit` / `trust-core` / easy-podcast coordinator are the
-behavioural *reference* (what the Go/Rust code must do), retired once the migration deletes
-their last consumer.
 
 ## Stack (decided)
 
@@ -52,9 +47,6 @@ their last consumer.
 - **Cost gate** (reserve-on-approval, `$0` fail-closed default) is **in v0** — inert until
   cloud is enabled.
 - **Config:** one `plane.toml` per stack, read at boot; change = restart (downtime is free).
-- **Signer cutover preserves the existing issuer key + pairings** (same secrets-volume
-  format — re-keying would force re-enrolling every device for no gain).
-- **First cutover: easy-podcast** (the reference, the live fleet, the daily-driver data).
 
 ## Rules for implementers (human or agent)
 

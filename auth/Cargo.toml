@@ -29,7 +29,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
 redb = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 base64 = "0.22"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

@@ -9,16 +9,22 @@
 [advisories]
 version = 2
 yanked = "deny"
-# One documented exception, justified by UNREACHABILITY (not convenience). RUSTSEC-2023-0071
-# (the "Marvin" constant-time failure in the `rsa` crate) has NO upstream fix. `rsa` is pulled
-# ONLY transitively by jsonwebtoken's `rust_crypto` provider, which bundles every algorithm
-# (rsa/p256/p384/hmac/ed25519) with no per-algorithm feature to exclude RSA. This crate NEVER
-# signs or verifies RSA — the entire auth surface is EdDSA (Ed25519): DPoP proofs and Biscuit
-# PoP — so the vulnerable RSA timing path is linked but never executed (no RSA key exists to
-# reach it). The permanent elimination is an owner call: a no-RSA EdDSA JOSE path or a
-# jsonwebtoken that exposes granular algorithm features. REACHABLE advisories are never ignored.
+# One documented exception, justified by UNREACHABILITY — and kept only because every
+# elimination path is verified WORSE. RUSTSEC-2023-0071 (the "Marvin" constant-time failure in
+# the `rsa` crate) has NO upstream fix. `rsa` is linked transitively by jsonwebtoken 10.4.0 (the
+# LATEST release): its CryptoProvider installs only when the `rust_crypto` (pure-Rust) or
+# `aws_lc_rs` feature is on — the per-algorithm sub-features alone leave no provider and PANIC at
+# verify (tested) — and `rust_crypto` unavoidably pulls rsa/p256/p384/hmac. The alternatives were
+# tried and rejected: `aws_lc_rs` needs a C toolchain (breaks the pure-Rust build + local dev);
+# hand-rolling the JWS verify / a custom provider replaces an audited verifier with bespoke
+# security-critical crypto — trading a proven-unreachable, unfixed advisory for the risk of a
+# REACHABLE hand-rolled bug, the wrong trade for the PEP. rsa is never invoked: verification is
+# pinned to `Algorithm::EdDSA` + OKP-only keys (dpop.rs), guarded by the alg-confusion tests
+# (`alg_confusion_rs256_is_401` / `_hs256` / `alg_none_proof_is_401` in tests/http_proxy.rs) —
+# admitting RS256 would make rsa reachable AND fail those tests. Revisit if jsonwebtoken ever
+# ships a provider without rsa. REACHABLE advisories are never ignored.
 ignore = [
-  { id = "RUSTSEC-2023-0071", reason = "rsa is transitive via jsonwebtoken's rust_crypto backend; this crate is EdDSA-only so the RSA timing path is unreachable dead code. No upstream fix exists." },
+  { id = "RUSTSEC-2023-0071", reason = "rsa is linked via jsonwebtoken's required rust_crypto provider (no rsa-free provider exists on the latest release); the PEP is EdDSA-only + alg-confusion-guarded, so the RSA path is unreachable dead code. No upstream fix exists; every elimination path is worse (see comment)." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a COMPILE-TIME-only proc-macro helper of biscuit-quote (biscuit-auth 5's macro crate) — it is not linked into the shipped PEP/signer binary. This is an unmaintained-status advisory (not a vulnerability), transitive via our audited biscuit-auth, with no safe upgrade. Drops out when biscuit-auth moves biscuit-quote off it." },
 ]
 

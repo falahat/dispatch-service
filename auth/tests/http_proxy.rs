@@ -960,6 +960,41 @@ async fn alg_confusion_hs256_is_401() {
 }
 
 #[tokio::test]
+async fn alg_confusion_rs256_is_401() {
+    // alg=RS256 must be rejected by the EdDSA-only allowlist BEFORE any RSA code runs.
+    // This is the guard that keeps the linked-but-unused `rsa` crate unreachable
+    // (RUSTSEC-2023-0071, see auth/deny.toml): jsonwebtoken's `rust_crypto` provider
+    // unavoidably links `rsa`, so admitting RS256 to the allowlist would make that
+    // (unfixed-upstream) advisory reachable — and would fail this test.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let header = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "RS256",
+        "jwk": { "kty": "OKP", "crv": "Ed25519", "x": b64url(sk.verifying_key().to_bytes()) },
+    });
+    let claims = dpop_claims("POST", "/upsert", &cred, b"x", NOW_S, &jti());
+    let h = b64url(serde_json::to_vec(&header).unwrap());
+    let p = b64url(serde_json::to_vec(&claims).unwrap());
+    let pr = format!("{h}.{p}.{}", b64url([0u8; 32]));
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "alg=RS256 must be rejected (keeps rsa unreachable): {}",
+        r.body
+    );
+}
+
+#[tokio::test]
 async fn wrong_typ_is_401() {
     // typ must be dpop+jwt (RFC 9449). A plain jwt typ is rejected.
     let backend = start_echo().await;

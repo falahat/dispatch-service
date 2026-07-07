@@ -22,9 +22,14 @@ biscuit-auth = "5"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 # RFC 9449 DPoP proof (JWT) verification for the HTTP surface — a maintained JOSE
 # parser/verifier so the browser-facing proof is library-produced/consumed, not a
-# hand-rolled canonical held equal across three languages by cross-impl tests. The
-# `rust_crypto` provider (RustCrypto EdDSA) keeps this pure Rust — no ring/aws-lc C
-# toolchain — so it builds where the rest of the crate does. The runner surfaces
+# hand-rolled canonical held equal across three languages by cross-impl tests.
+# `rust_crypto` is REQUIRED, not just an umbrella: jsonwebtoken 10.x installs its
+# CryptoProvider only when `rust_crypto` (pure Rust) or `aws_lc_rs` (a C toolchain we
+# reject — it breaks the pure-Rust build + local dev) is enabled; the per-algorithm
+# sub-features alone leave NO provider and panic at verify. `rust_crypto` unavoidably
+# links `rsa` (RUSTSEC-2023-0071, unfixed upstream) — but it is UNREACHABLE: verification
+# is pinned to `Algorithm::EdDSA` + OKP-only keys (dpop.rs), so no RSA op is ever invoked,
+# and the alg-confusion rejection test is the guard that keeps it so. The runner surfaces
 # (cas/v0, dispatch/v0) keep the bespoke PoP.
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"

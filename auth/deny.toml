@@ -1,0 +1,48 @@
+# cargo-deny policy for the dispatch plane's auth crate — the single Biscuit + PoP + DPoP
+# verifier and credential signer. Enforced by .github/workflows/cargo-deny.yml on every push/PR
+# (and locally via `cargo deny check`). Four fail-closed gates:
+#   advisories — any RustSec advisory (vuln/yanked) in the LOCKED graph fails the build.
+#   bans       — wildcard version requirements are a supply-chain hole; duplicates are surfaced.
+#   licenses   — an EXACT permissive allowlist; an unlisted/unknown license fails.
+#   sources    — crates may come ONLY from crates.io; no arbitrary git/other registry.
+
+[advisories]
+version = 2
+yanked = "deny"
+# One documented exception, justified by UNREACHABILITY (not convenience). RUSTSEC-2023-0071
+# (the "Marvin" constant-time failure in the `rsa` crate) has NO upstream fix. `rsa` is pulled
+# ONLY transitively by jsonwebtoken's `rust_crypto` provider, which bundles every algorithm
+# (rsa/p256/p384/hmac/ed25519) with no per-algorithm feature to exclude RSA. This crate NEVER
+# signs or verifies RSA — the entire auth surface is EdDSA (Ed25519): DPoP proofs and Biscuit
+# PoP — so the vulnerable RSA timing path is linked but never executed (no RSA key exists to
+# reach it). The permanent elimination is an owner call: a no-RSA EdDSA JOSE path or a
+# jsonwebtoken that exposes granular algorithm features. REACHABLE advisories are never ignored.
+ignore = [
+  { id = "RUSTSEC-2023-0071", reason = "rsa is transitive via jsonwebtoken's rust_crypto backend; this crate is EdDSA-only so the RSA timing path is unreachable dead code. No upstream fix exists." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a COMPILE-TIME-only proc-macro helper of biscuit-quote (biscuit-auth 5's macro crate) — it is not linked into the shipped PEP/signer binary. This is an unmaintained-status advisory (not a vulnerability), transitive via our audited biscuit-auth, with no safe upgrade. Drops out when biscuit-auth moves biscuit-quote off it." },
+]
+
+[bans]
+multiple-versions = "warn" # duplicate transitive versions: surface, don't hard-fail
+wildcards = "deny"         # a `*` version requirement is an open supply-chain door
+
+[licenses]
+version = 2
+# The EXACT license set present in the locked tree (from `cargo deny list`) — all permissive.
+# A newly introduced license fails the gate so it is adopted consciously, never by drift.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-1-Clause",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Unlicense",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

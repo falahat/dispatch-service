@@ -1,0 +1,52 @@
+# Dependabot — the automatic half of the supply-chain posture across all four of the plane's
+# ecosystems + the Docker base images + the CI actions themselves. It opens an upgrade PR per
+# new release, and (with the repo's Dependabot security alerts enabled) flags a disclosed vuln
+# in any pinned version immediately. osv-scanner / cargo-deny / govulncheck then re-check every
+# PR fail-closed. Minor+patch bumps are grouped to cut noise; majors arrive individually.
+version: 2
+updates:
+  # Rust — the auth crate (PEP + signer).
+  - package-ecosystem: "cargo"
+    directory: "/auth"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  # Go — the dispatcher/runner (root module) and the smokescreen egress guard.
+  - package-ecosystem: "gomod"
+    directories: ["/", "/deploy/smokescreen"]
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  # JS — the browser DPoP/PoP client.
+  - package-ecosystem: "npm"
+    directory: "/client-web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  # Python — the plane/CAS client.
+  - package-ecosystem: "pip"
+    directory: "/client"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+  # Docker base images — keep the digest-pinned FROM lines current (a pin freezes the base at
+  # a point in time; this is what re-bumps it when the base ships a security update).
+  - package-ecosystem: "docker"
+    directories: ["/auth", "/compute/echo", "/deploy/smokescreen", "/dispatcher", "/runner"]
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+  # The CI actions are themselves executable supply chain — keep their pinned refs current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

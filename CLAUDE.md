@@ -37,7 +37,14 @@ bar is clean, elegant, readable code + utmost security and privacy.
   float `@latest` on smokescreen — the old tag ships reachable vulns (GO-2025-3503, an
   HTTP-proxy bypass). Pin a scanned master commit; `deny_ranges` blocks
   metadata/CGNAT/loopback/link-local on the resolved IP at CONNECT, every redirect hop.
-  Bump deliberately: bump → `govulncheck` → rebuild.
+  Bump deliberately: bump → `govulncheck` → rebuild (govulncheck also runs as a CI gate).
+- Supply chain is gated automatically (`.github/workflows/`, fail-closed on push/PR + weekly):
+  `osv-scanner` checks every committed lockfile (`Cargo.lock`, both `go.sum`,
+  `client-web/package-lock.json`, `client/uv.lock`) against OSV; `cargo-deny` vets the auth
+  crate — advisories/bans/licenses/sources per `auth/deny.toml` (two ignores, both documented
+  and justified by unreachability); `govulncheck` covers both Go modules by reachability. Base
+  images are digest-pinned; Dependabot opens the upgrade PRs these gates re-check. Lockfiles
+  are committed — installs are deterministic (`--locked` / `npm ci` / `uv sync --frozen`).
 - Secrets never enter git, logs, or command output. If a secret lands in a transcript,
   disclose it immediately and offer rotation.
 - Never assert Tailscale/GCP console state (ACLs, key properties, quotas) from a code

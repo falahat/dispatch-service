@@ -1,0 +1,25 @@
+# Rust supply-chain vetting for the auth crate (the shared PEP + credential signer). Runs
+# cargo-deny's four gates per auth/deny.toml — advisories (RustSec vuln/yanked), bans (wildcard
+# reqs, duplicates), licenses (exact permissive allowlist), sources (crates.io only) —
+# fail-closed on every push/PR touching auth/ and weekly (an advisory can land after merge).
+# The two advisory ignores in deny.toml are documented and justified by unreachability.
+name: cargo-deny
+on:
+  push:
+    branches: [main]
+    paths: ["auth/**"]
+  pull_request:
+    branches: [main]
+    paths: ["auth/**"]
+  schedule:
+    - cron: "30 12 * * 1"
+permissions:
+  contents: read
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: auth/Cargo.toml

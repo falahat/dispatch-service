@@ -28,7 +28,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 # (cas/v0, dispatch/v0) keep the bespoke PoP.
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
-redb = "2"
+redb = "4"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"

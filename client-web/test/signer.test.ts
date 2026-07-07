@@ -1,59 +1,154 @@
-// Unit tests for the browser signer. These prove the signer is self-consistent
-// and, crucially, that its ENCODINGS match the plane's Rust verifier byte-for-
-// byte: the exact canonical string, the empty-body hash constant, the STANDARD
-// (padded) base64 variant for the PoP, and the pairing MAC (asserted against a
-// value produced by easy-podcast's PyNaCl `pairing_mac`).
+// Unit tests for the browser signer. They prove the DPoP proof the phone signs is a
+// well-formed RFC 9449 proof JWT whose signature verifies against its embedded jwk, and
+// whose claims bind the method / URI / biscuit / body exactly as the plane's Rust PEP
+// (`auth/src/dpop.rs`) checks. Cross-language agreement with the PEP is proven separately
+// (a `jose`-signed proof and a PyJWT-signed proof both verify under `jsonwebtoken`); here
+// we pin the browser signer's own shape + bindings. The pairing MAC is asserted against a
+// value produced by easy-podcast's PyNaCl `pairing_mac`.
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { EmbeddedJWK, jwtVerify, type JWTVerifyResult } from 'jose';
 import {
-  EMPTY_BODY_SHA256_HEX,
+  buildDpopProof,
+  dpopHeaders,
+  dpopQuery,
   generateIdentity,
-  httpCanonical,
   identityFromSeed,
   pairingMac,
-  sha256Hex,
-  signQueryParams,
-  signRequest,
   sodiumReady,
-  type Identity,
 } from '../src/index.js';
-import type { Sodium } from '../src/sodium.js';
-import { fromStandardBase64, utf8 } from '../src/sodium.js';
-
-let sodium: Sodium;
 
 beforeAll(async () => {
-  sodium = await sodiumReady();
+  await sodiumReady();
 });
 
 /** A fixed 32-byte seed → a deterministic identity, for reproducible assertions. */
 const SEED = new Uint8Array(Array.from({ length: 32 }, (_, i) => i));
 
-describe('canonical string', () => {
-  it('is the exact plane form, single-spaced and http/v0-tagged', () => {
-    const s = httpCanonical('post', '/upsert', 'ff'.repeat(32), 'N0nce+/', 1700000000000);
-    expect(s).toBe(`http/v0 POST /upsert ${'ff'.repeat(32)} N0nce+/ 1700000000000`);
+const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function base64url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** base64url(sha256(data)) — the value the `ath` + `content-digest` claims carry. */
+async function sha256Base64Url(data: Uint8Array): Promise<string> {
+  const buffer = new ArrayBuffer(data.byteLength);
+  new Uint8Array(buffer).set(data);
+  return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', buffer)));
+}
+
+/** Verify a proof the way the PEP does: against the key embedded in its own header. */
+function verifyProof(proof: string): Promise<JWTVerifyResult> {
+  return jwtVerify(proof, EmbeddedJWK, { algorithms: ['EdDSA'] });
+}
+
+describe('DPoP proof', () => {
+  it('is a dpop+jwt whose signature verifies against its embedded Ed25519 jwk', async () => {
+    const id = await identityFromSeed(SEED);
+    const proof = await buildDpopProof(id, {
+      method: 'POST',
+      htu: 'https://h.test/upsert',
+      biscuit: 'BISC',
+      body: utf8('{"k":"v"}'),
+    });
+    const { payload, protectedHeader } = await verifyProof(proof);
+    expect(protectedHeader.typ).toBe('dpop+jwt');
+    expect(protectedHeader.alg).toBe('EdDSA');
+    const jwk = protectedHeader.jwk as { kty: string; crv: string; x: string };
+    expect(jwk.kty).toBe('OKP');
+    expect(jwk.crv).toBe('Ed25519');
+    expect(jwk.x).toBe(base64url(id.publicKey)); // advertises the phone's public key
+    expect(payload.htm).toBe('POST');
+    expect(payload.htu).toBe('https://h.test/upsert');
+    expect(typeof payload.iat).toBe('number');
+    expect(typeof payload.jti).toBe('string');
   });
 
-  it('uppercases the method and never touches the path', () => {
-    const s = httpCanonical('get', '/audio/ep 42', EMPTY_BODY_SHA256_HEX, 'x', 1);
-    expect(s).toBe(`http/v0 GET /audio/ep 42 ${EMPTY_BODY_SHA256_HEX} x 1`);
+  it('binds the biscuit via ath and the body via content-digest', async () => {
+    const id = await identityFromSeed(SEED);
+    const body = utf8('the-body');
+    const { payload } = await verifyProof(
+      await buildDpopProof(id, { method: 'POST', htu: 'https://h/x', biscuit: 'BISCUIT', body }),
+    );
+    expect(payload.ath).toBe(await sha256Base64Url(utf8('BISCUIT')));
+    expect(payload['content-digest']).toBe(await sha256Base64Url(body));
+  });
+
+  it('uppercases the method into htm', async () => {
+    const id = await identityFromSeed(SEED);
+    const { payload } = await verifyProof(
+      await buildDpopProof(id, { method: 'get', htu: 'https://h/a', biscuit: 'B' }),
+    );
+    expect(payload.htm).toBe('GET');
+  });
+
+  it('uses the empty-body digest for a bodyless request', async () => {
+    const id = await identityFromSeed(SEED);
+    const { payload } = await verifyProof(
+      await buildDpopProof(id, { method: 'POST', htu: 'https://h/ping', biscuit: 'B' }),
+    );
+    expect(payload['content-digest']).toBe(await sha256Base64Url(new Uint8Array(0)));
+  });
+
+  it('emits a fresh jti on each call', async () => {
+    const id = await identityFromSeed(SEED);
+    const a = await verifyProof(
+      await buildDpopProof(id, { method: 'POST', htu: 'https://h/x', biscuit: 'B' }),
+    );
+    const b = await verifyProof(
+      await buildDpopProof(id, { method: 'POST', htu: 'https://h/x', biscuit: 'B' }),
+    );
+    expect(a.payload.jti).not.toBe(b.payload.jti);
+  });
+
+  it('rejects a tampered proof (the signature no longer verifies)', async () => {
+    const id = await identityFromSeed(SEED);
+    const proof = await buildDpopProof(id, {
+      method: 'POST',
+      htu: 'https://h/x',
+      biscuit: 'B',
+      body: utf8('a'),
+    });
+    // Flip the first char of the payload segment; the signature must fail.
+    const parts = proof.split('.');
+    const payloadSeg = parts[1] ?? '';
+    parts[1] = (payloadSeg.startsWith('A') ? 'B' : 'A') + payloadSeg.slice(1);
+    await expect(verifyProof(parts.join('.'))).rejects.toThrow();
   });
 });
 
-describe('empty-body hash', () => {
-  it('matches the pinned sha256hex("") constant', () => {
-    expect(sha256Hex(sodium, new Uint8Array(0))).toBe(EMPTY_BODY_SHA256_HEX);
-    expect(EMPTY_BODY_SHA256_HEX).toBe(
-      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-    );
+describe('dpopHeaders (header auth)', () => {
+  it('carries the biscuit in Authorization and a bound proof in DPoP', async () => {
+    const id = await identityFromSeed(SEED);
+    const { authorization, dpop } = await dpopHeaders(id, {
+      method: 'POST',
+      htu: 'https://h/upsert',
+      biscuit: 'BISCUIT',
+      body: utf8('x'),
+    });
+    expect(authorization).toBe('DPoP BISCUIT');
+    const { payload } = await verifyProof(dpop);
+    expect(payload.ath).toBe(await sha256Base64Url(utf8('BISCUIT')));
+    expect(payload['content-digest']).toBe(await sha256Base64Url(utf8('x')));
   });
+});
 
-  it('hashes a non-empty body to lowercase hex', () => {
-    // Known SHA-256 of "abc".
-    expect(sha256Hex(sodium, utf8('abc'))).toBe(
-      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
-    );
+describe('dpopQuery (query auth)', () => {
+  it('carries the biscuit + a bodyless proof for a signed URL', async () => {
+    const id = await identityFromSeed(SEED);
+    const { biscuit, dpop } = await dpopQuery(id, {
+      method: 'GET',
+      htu: 'https://h/audio',
+      biscuit: 'BISCUIT',
+    });
+    expect(biscuit).toBe('BISCUIT');
+    const { payload } = await verifyProof(dpop);
+    expect(payload.htm).toBe('GET');
+    expect(payload.htu).toBe('https://h/audio');
+    expect(payload['content-digest']).toBe(await sha256Base64Url(new Uint8Array(0)));
   });
 });
 
@@ -75,116 +170,6 @@ describe('identity', () => {
     const a = await generateIdentity();
     const b = await generateIdentity();
     expect(a.publicKeyHex).not.toBe(b.publicKeyHex);
-  });
-});
-
-/** Verify a PoP against a canonical string using libsodium directly (the same
- * primitive the Rust `verify_pop` uses under the hood). */
-function popVerifies(id: Identity, canonical: string, popB64: string): boolean {
-  const sig = fromStandardBase64(sodium, popB64);
-  return sodium.crypto_sign_verify_detached(sig, utf8(canonical), id.publicKey);
-}
-
-describe('signRequest (header auth)', () => {
-  it('round-trips: the PoP verifies over the rebuilt canonical', async () => {
-    const id = await identityFromSeed(SEED);
-    const body = utf8('{"k":"v"}');
-    const h = await signRequest(id, 'BISCUIT', { method: 'POST', path: '/upsert', body });
-    expect(h['x-dispatch-biscuit']).toBe('BISCUIT');
-    expect(h['x-dispatch-pubkey']).toBe(id.publicKeyHex);
-    const canonical = httpCanonical(
-      'POST',
-      '/upsert',
-      sha256Hex(sodium, body),
-      h['x-dispatch-nonce'],
-      Number(h['x-dispatch-ts']),
-    );
-    expect(popVerifies(id, canonical, h['x-dispatch-pop'])).toBe(true);
-  });
-
-  it('binds the body: a PoP for one body fails over another', async () => {
-    const id = await identityFromSeed(SEED);
-    const h = await signRequest(id, 'B', { method: 'POST', path: '/upsert', body: utf8('A') });
-    const wrong = httpCanonical(
-      'POST',
-      '/upsert',
-      sha256Hex(sodium, utf8('B')), // hash of a DIFFERENT body
-      h['x-dispatch-nonce'],
-      Number(h['x-dispatch-ts']),
-    );
-    expect(popVerifies(id, wrong, h['x-dispatch-pop'])).toBe(false);
-  });
-
-  it('uses the empty-body hash for a bodyless request', async () => {
-    const id = await identityFromSeed(SEED);
-    const h = await signRequest(id, 'B', { method: 'POST', path: '/ping' });
-    const canonical = httpCanonical(
-      'POST',
-      '/ping',
-      EMPTY_BODY_SHA256_HEX,
-      h['x-dispatch-nonce'],
-      Number(h['x-dispatch-ts']),
-    );
-    expect(popVerifies(id, canonical, h['x-dispatch-pop'])).toBe(true);
-  });
-
-  it('emits a fresh nonce on each call', async () => {
-    const id = await identityFromSeed(SEED);
-    const a = await signRequest(id, 'B', { method: 'POST', path: '/x' });
-    const b = await signRequest(id, 'B', { method: 'POST', path: '/x' });
-    expect(a['x-dispatch-nonce']).not.toBe(b['x-dispatch-nonce']);
-  });
-
-  it('honours overrides for a reproducible signature (Ed25519 is deterministic)', async () => {
-    const id = await identityFromSeed(SEED);
-    const o = { nonce: 'fixed-nonce', ts: 1700000000000 };
-    const a = await signRequest(id, 'B', { method: 'POST', path: '/x' }, o);
-    const b = await signRequest(id, 'B', { method: 'POST', path: '/x' }, o);
-    expect(a['x-dispatch-pop']).toBe(b['x-dispatch-pop']);
-  });
-});
-
-describe('signQueryParams (query auth)', () => {
-  it('round-trips over the empty-body canonical', async () => {
-    const id = await identityFromSeed(SEED);
-    const p = await signQueryParams(id, 'BISCUIT', { method: 'GET', path: '/audio' });
-    expect(p.biscuit).toBe('BISCUIT');
-    expect(p.pubkey).toBe(id.publicKeyHex);
-    const canonical = httpCanonical('GET', '/audio', EMPTY_BODY_SHA256_HEX, p.nonce, Number(p.ts));
-    expect(popVerifies(id, canonical, p.pop)).toBe(true);
-  });
-});
-
-describe('base64 variant (pop encoding)', () => {
-  it('emits STANDARD (padded) base64, decodable as ORIGINAL', async () => {
-    const id = await identityFromSeed(SEED);
-    const h = await signRequest(id, 'B', { method: 'POST', path: '/x' });
-    const pop = h['x-dispatch-pop'];
-    // A 64-byte Ed25519 signature → 88 standard-base64 chars incl. padding.
-    expect(pop.length).toBe(88);
-    expect(pop.endsWith('=')).toBe(true);
-    // Decodes under the ORIGINAL (standard) variant to exactly 64 bytes.
-    expect(fromStandardBase64(sodium, pop).length).toBe(64);
-    // It must NOT be the url-safe variant: url-safe alphabet never contains
-    // '+' or '/', but if this pop happens to have neither we skip that check —
-    // padding + length above already pins the STANDARD variant.
-  });
-
-  it('produces a pop that fails to decode as strict URLSAFE when it contains + or /', async () => {
-    // Find a signature that actually exercises the standard-only alphabet so the
-    // variant distinction is observable, then prove url-safe strict decode rejects it.
-    let popWithSpecial: string | undefined;
-    for (let i = 0; i < 50 && popWithSpecial === undefined; i++) {
-      const id = await generateIdentity();
-      const h = await signRequest(id, 'B', { method: 'POST', path: '/x' });
-      if (h['x-dispatch-pop'].includes('+') || h['x-dispatch-pop'].includes('/')) {
-        popWithSpecial = h['x-dispatch-pop'];
-      }
-    }
-    expect(popWithSpecial, 'expected a standard-base64 pop with + or /').toBeDefined();
-    expect(() =>
-      sodium.from_base64(popWithSpecial as string, sodium.base64_variants.URLSAFE),
-    ).toThrow();
   });
 });
 

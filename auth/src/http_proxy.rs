@@ -1,43 +1,48 @@
 //! The generic HTTP enforcement proxy: it fronts an arbitrary loopback HTTP
 //! backend (an app's Flask/FastAPI server) and, per a static per-app route
-//! table, enforces Biscuit + PoP on each request before forwarding it. The
-//! backend sees only pre-authenticated loopback traffic and holds no auth
+//! table, enforces Biscuit + a DPoP proof on each request before forwarding it.
+//! The backend sees only pre-authenticated loopback traffic and holds no auth
 //! crypto — like `CasProxy`, but the capability for each (method, path) is named
 //! by the route table rather than a fixed CAS convention.
 //!
-//! The PoP binds method + path + the FULL request body:
-//!   `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`
-//! On an authed route the PEP buffers the body under a HARD cap (413 if the cap
-//! is hit WHILE reading — the advisory Content-Length is never trusted), hashes
-//! it, verifies, then forwards the buffered bytes. We do NOT trust the transport
-//! to protect the body. This is the small app-JSON surface; large blobs stay on
-//! the streaming CAS. Response bodies still stream straight back, unbuffered.
+//! The per-request proof is an RFC 9449 **DPoP proof JWT** (see [`crate::dpop`]),
+//! which binds method + URI + the presented Biscuit + the FULL request body (a
+//! `content-digest` claim). On an authed route the PEP buffers the body under a
+//! HARD cap (413 if the cap is hit WHILE reading — the advisory Content-Length is
+//! never trusted), hashes it, verifies the proof against the hash, then forwards
+//! the buffered bytes. We do NOT trust the transport to protect the body. This is
+//! the small app-JSON surface; large blobs stay on the streaming CAS. Response
+//! bodies still stream straight back, unbuffered.
+//!
+//! The `htu` the proof must match is rebuilt by the PEP from its CONFIGURED public
+//! origin plus the request path — never from a client `Host`/`X-Forwarded-*`
+//! header (TLS terminates at the Serve edge, so those are untrusted here).
 //!
 //! Three auth modes per route.
 //!
-//! `Header(right)`: the five PoP fields ride in `x-dispatch-*` headers — the
-//! standard authed (mutating) API call. SINGLE-USE: the nonce is consumed, so an
-//! exact replay is rejected.
+//! `Header(right)`: the Biscuit rides in `Authorization: DPoP <biscuit>` and the
+//! proof in the `DPoP:` header — the standard authed (mutating) API call.
+//! SINGLE-USE: the proof `jti` is consumed, so an exact replay is rejected.
 //!
-//! `Query(right)`: the same five fields ride in the query string, for signed-URL
-//! GET/HEAD reads (`GET /audio?...&pop=...`). Method + path are bound (the body
-//! is empty → `sha256hex(b"")`); the query is NOT bound (the auth fields cannot
-//! sign themselves). FRESHNESS-ONLY: the ts must be within the window (so the URL
-//! EXPIRES) but the nonce is not stored, so a browser reusing one signed URL
-//! across range requests / retries is not replay-rejected. Query-auth is
-//! restricted to idempotent GET/HEAD at route-table boot time.
+//! `Query(right)`: the Biscuit + proof ride in the `biscuit` / `dpop` query params,
+//! for signed-URL GET/HEAD reads (`GET /audio?...&dpop=...`) where a browser
+//! `<audio>`/`<img>` can't set headers. The proof binds an empty body; its `htu`
+//! is the path (no query), so the auth params don't sign themselves. FRESHNESS-ONLY:
+//! the `iat` must be within the window (so the URL EXPIRES) but the `jti` is not
+//! stored, so a browser reusing one signed URL across range requests / retries is
+//! not replay-rejected. Query-auth is restricted to idempotent GET/HEAD at
+//! route-table boot time.
 //!
 //! `Passthrough`: forwarded unauthenticated (app-shell GET, the enrollment
 //! redeem endpoint). A passthrough route can never satisfy an authed route:
 //! routing is decided once, before auth, by longest-match, so a request is
 //! authed iff the route it matched says so.
 
-use crate::cred::{verify, AuthedRequest};
+use crate::cred::{verify_http_dpop, DpopHttpRequest};
 use crate::error::AuthError;
 use crate::nonce::NonceStore;
 use crate::quota::Quota;
 use crate::revocation::RevocationStore;
-use crate::Op;
 use biscuit_auth::PublicKey;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
@@ -182,6 +187,11 @@ pub struct RouteSpec {
 /// Serde shape for a whole route-table file.
 #[derive(Debug, Deserialize)]
 pub struct RouteTableSpec {
+    /// The PEP's public origin (scheme + host, no path), e.g.
+    /// `https://easypod.tail46021f.ts.net`. REQUIRED: the DPoP `htu` a proof must
+    /// match is rebuilt from this + the request path, so it is a trusted config
+    /// value, never a client header. A missing origin fails at boot.
+    pub origin: String,
     /// Loopback backend base URL, e.g. `http://127.0.0.1:5000`.
     pub backend: String,
     /// Ordered routes (order is irrelevant to matching — longest match wins).
@@ -207,6 +217,17 @@ impl RouteTableSpec {
     /// Validate + resolve a spec into an `HttpConfig`. Rejects an ambiguous or
     /// incomplete route so a misconfiguration fails at boot, not in the path.
     pub fn resolve(self) -> std::result::Result<HttpConfig, RouteTableError> {
+        // The public origin the DPoP `htu` is rebuilt from must be a real
+        // scheme+authority; a bare host or an empty value would make every proof's
+        // `htu` unverifiable. Trailing slash is trimmed so `<origin><path>` never
+        // doubles it (`location.origin` never has one).
+        let origin = self.origin.trim_end_matches('/').to_string();
+        if origin.is_empty() || !origin.contains("://") {
+            return Err(RouteTableError(format!(
+                "origin must be a scheme+host like https://host.example (got {:?})",
+                self.origin
+            )));
+        }
         let mut routes = Vec::with_capacity(self.routes.len());
         for (i, spec) in self.routes.into_iter().enumerate() {
             let where_ = || format!("route[{i}]");
@@ -292,6 +313,7 @@ impl RouteTableSpec {
             });
         }
         Ok(HttpConfig {
+            origin,
             backend: self.backend,
             table: RouteTable::new(routes),
             max_body_bytes: self.max_body_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES),
@@ -311,9 +333,11 @@ fn require_right(
     }
 }
 
-/// Configuration for the HTTP proxy: one loopback backend plus its route table.
+/// Configuration for the HTTP proxy: the public origin (for DPoP `htu`), one
+/// loopback backend, and the route table.
 #[derive(Clone)]
 pub struct HttpConfig {
+    pub origin: String,
     pub backend: String,
     pub table: RouteTable,
     pub max_body_bytes: u64,
@@ -410,7 +434,13 @@ impl HttpProxy {
             }
             Err(BufferError::Read) => return text(StatusCode::BAD_REQUEST, "body_read"),
         };
-        let body_sha256_hex = hex::encode(Sha256::digest(&buffered));
+        let body_sha256: [u8; 32] = Sha256::digest(&buffered).into();
+
+        // The DPoP `htu` a proof must match: the PEP's CONFIGURED public origin +
+        // the request path (no query). Rebuilt here, NEVER taken from a client
+        // Host/X-Forwarded header — TLS terminates at the Serve edge, so those are
+        // untrusted at this hop.
+        let htu = format!("{}{}", self.cfg.origin, path);
 
         // Enforce, if the route demands it. On success we hold the identity for
         // quota accounting; passthrough attributes to a fixed anonymous bucket.
@@ -421,23 +451,21 @@ impl HttpProxy {
         let (id, verified): (String, Option<String>) = match &auth {
             RouteAuth::Passthrough => ("anon".to_string(), None),
             RouteAuth::Header(right) => {
-                let areq =
-                    match extract_auth_headers(&parts, &method, &path, right, &body_sha256_hex) {
-                        Ok(a) => a,
-                        Err(e) => return deny(&method, &path, e),
-                    };
-                match self.authenticate(&areq, true) {
+                let dreq = match extract_dpop_headers(&parts, &method, &htu, right, body_sha256) {
+                    Ok(d) => d,
+                    Err(e) => return deny(&method, &path, e),
+                };
+                match self.authenticate(&dreq, true) {
                     Ok(identity) => (identity.clone(), Some(identity)),
                     Err(e) => return deny(&method, &path, e),
                 }
             }
             RouteAuth::Query(right) => {
-                let areq = match extract_auth_query(&parts, &method, &path, right, &body_sha256_hex)
-                {
-                    Ok(a) => a,
+                let dreq = match extract_dpop_query(&parts, &method, &htu, right, body_sha256) {
+                    Ok(d) => d,
                     Err(e) => return deny(&method, &path, e),
                 };
-                match self.authenticate(&areq, false) {
+                match self.authenticate(&dreq, false) {
                     Ok(identity) => (identity.clone(), Some(identity)),
                     Err(e) => return deny(&method, &path, e),
                 }
@@ -454,15 +482,15 @@ impl HttpProxy {
         self.forward(parts, buffered, verified.as_deref()).await
     }
 
-    /// Verify a built request against the shared engine (UNCHANGED `verify()`).
-    fn authenticate(&self, areq: &AuthedRequest, single_use: bool) -> Result<String, AuthError> {
+    /// Verify a built DPoP request against the shared engine (`verify_http_dpop`).
+    fn authenticate(&self, dreq: &DpopHttpRequest, single_use: bool) -> Result<String, AuthError> {
         let now = (self.now)();
-        verify(
+        verify_http_dpop(
             &self.root_pub,
             &self.nonces,
             &self.revocations,
             now,
-            areq,
+            dreq,
             single_use,
         )
         .map(|id| id.id)
@@ -562,6 +590,9 @@ async fn buffer_capped(body: Incoming, max: u64) -> std::result::Result<Bytes, B
 /// Auth headers are consumed by the PEP; hop-by-hop headers must not be relayed.
 fn is_forwardable(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
+    // Every client `x-dispatch-*` is stripped so the backend can't be handed a
+    // forged identity — the PEP injects the ONE `x-dispatch-identity` it verified
+    // (in `forward`, after this filter).
     if lower.starts_with("x-dispatch-") {
         return false;
     }
@@ -576,6 +607,10 @@ fn is_forwardable(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "host"
+            // The DPoP credential (`Authorization: DPoP <biscuit>`) and proof (`DPoP:`)
+            // are consumed here — they never reach the backend, which holds no auth crypto.
+            | "authorization"
+            | "dpop"
             // The PEP re-buffers the body and sets the authoritative Content-Length itself
             // (see `forward`). Relaying the client's would emit a DUPLICATE Content-Length: a
             // strict backend parser (httptools/uvicorn) rejects that as a malformed request,
@@ -588,112 +623,73 @@ fn header<'a>(parts: &'a hyper::http::request::Parts, name: &str) -> Option<&'a 
     parts.headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-/// Build an `AuthedRequest` from the `x-dispatch-*` headers.
-fn extract_auth_headers(
+/// Assemble a `DpopHttpRequest` for a header-auth call: the Biscuit rides in
+/// `Authorization: DPoP <biscuit>` and the proof JWT in the `DPoP:` header.
+fn extract_dpop_headers(
     parts: &hyper::http::request::Parts,
     method: &Method,
-    path: &str,
+    htu: &str,
     right: &str,
-    body_sha256_hex: &str,
-) -> Result<AuthedRequest, AuthError> {
-    let biscuit = header(parts, "x-dispatch-biscuit")
-        .ok_or_else(|| AuthError::Malformed("missing biscuit".into()))?;
-    let pubkey = header(parts, "x-dispatch-pubkey")
-        .ok_or_else(|| AuthError::Malformed("missing pubkey".into()))?;
-    let nonce = header(parts, "x-dispatch-nonce")
-        .ok_or_else(|| AuthError::Malformed("missing nonce".into()))?;
-    let ts = header(parts, "x-dispatch-ts")
-        .and_then(|s| s.parse::<i64>().ok())
-        .ok_or_else(|| AuthError::Malformed("missing ts".into()))?;
-    let sig = header(parts, "x-dispatch-pop")
-        .ok_or_else(|| AuthError::Malformed("missing pop".into()))?;
-    Ok(build_areq(
-        method,
-        path,
-        right,
-        body_sha256_hex,
-        biscuit,
-        pubkey,
-        nonce,
-        ts,
-        sig,
-    ))
+    body_sha256: [u8; 32],
+) -> Result<DpopHttpRequest, AuthError> {
+    let authz = header(parts, "authorization")
+        .ok_or_else(|| AuthError::Malformed("missing authorization".into()))?;
+    let biscuit = dpop_scheme_token(authz)
+        .ok_or_else(|| AuthError::Malformed("authorization is not `DPoP <biscuit>`".into()))?;
+    let proof =
+        header(parts, "dpop").ok_or_else(|| AuthError::Malformed("missing dpop proof".into()))?;
+    Ok(DpopHttpRequest {
+        method: method.to_string(),
+        htu: htu.to_string(),
+        right: right.to_string(),
+        biscuit_b64: biscuit.to_string(),
+        proof_jwt: proof.to_string(),
+        body_sha256,
+    })
 }
 
-/// Build an `AuthedRequest` from the query string (signed-URL auth). The five
-/// fields are named `biscuit`, `pubkey`, `nonce`, `ts`, `pop`. The PoP binds
-/// method + path + body (empty for a GET/HEAD read); the query is unbound.
-fn extract_auth_query(
+/// Assemble a `DpopHttpRequest` for a signed-URL read: the Biscuit + proof ride in
+/// the `biscuit` / `dpop` query params (a browser `<audio>`/`<img>` can't set
+/// headers). The proof's `htu` is the path only, so the query — which carries the
+/// auth — is not part of what the proof signs.
+fn extract_dpop_query(
     parts: &hyper::http::request::Parts,
     method: &Method,
-    path: &str,
+    htu: &str,
     right: &str,
-    body_sha256_hex: &str,
-) -> Result<AuthedRequest, AuthError> {
+    body_sha256: [u8; 32],
+) -> Result<DpopHttpRequest, AuthError> {
     let q = parts
         .uri
         .query()
         .ok_or_else(|| AuthError::Malformed("missing query auth".into()))?;
     let mut biscuit = None;
-    let mut pubkey = None;
-    let mut nonce = None;
-    let mut ts = None;
-    let mut pop = None;
+    let mut proof = None;
     for (k, v) in url_query_pairs(q) {
         match k.as_str() {
             "biscuit" => biscuit = Some(v),
-            "pubkey" => pubkey = Some(v),
-            "nonce" => nonce = Some(v),
-            "ts" => ts = v.parse::<i64>().ok(),
-            "pop" => pop = Some(v),
+            "dpop" => proof = Some(v),
             _ => {}
         }
     }
     let biscuit = biscuit.ok_or_else(|| AuthError::Malformed("missing biscuit".into()))?;
-    let pubkey = pubkey.ok_or_else(|| AuthError::Malformed("missing pubkey".into()))?;
-    let nonce = nonce.ok_or_else(|| AuthError::Malformed("missing nonce".into()))?;
-    let ts = ts.ok_or_else(|| AuthError::Malformed("missing ts".into()))?;
-    let pop = pop.ok_or_else(|| AuthError::Malformed("missing pop".into()))?;
-    Ok(build_areq(
-        method,
-        path,
-        right,
-        body_sha256_hex,
-        &biscuit,
-        &pubkey,
-        &nonce,
-        ts,
-        &pop,
-    ))
+    let proof = proof.ok_or_else(|| AuthError::Malformed("missing dpop proof".into()))?;
+    Ok(DpopHttpRequest {
+        method: method.to_string(),
+        htu: htu.to_string(),
+        right: right.to_string(),
+        biscuit_b64: biscuit,
+        proof_jwt: proof,
+        body_sha256,
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_areq(
-    method: &Method,
-    path: &str,
-    right: &str,
-    body_sha256_hex: &str,
-    biscuit: &str,
-    pubkey: &str,
-    nonce: &str,
-    ts: i64,
-    pop: &str,
-) -> AuthedRequest {
-    AuthedRequest {
-        op: Op::Http {
-            method: method.to_string(),
-            path: path.to_string(),
-            right: right.to_string(),
-            body_sha256_hex: body_sha256_hex.to_string(),
-        },
-        biscuit_b64: biscuit.to_string(),
-        pubkey_hex: pubkey.to_string(),
-        nonce_b64: nonce.to_string(),
-        ts_ms: ts,
-        pop_sig_b64: pop.to_string(),
-        required_lanes: vec![],
-        address_hex: None,
-    }
+/// Parse an `Authorization: DPoP <token>` value, returning the token iff the scheme
+/// is `DPoP` (case-insensitive, per RFC 9110) and the token is non-empty.
+fn dpop_scheme_token(authz: &str) -> Option<&str> {
+    let (scheme, token) = authz.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("dpop") && !token.is_empty()).then_some(token)
 }
 
 /// Minimal, dependency-free `application/x-www-form-urlencoded` pair decoding
@@ -754,6 +750,7 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
             StatusCode::UNAUTHORIZED
         }
         AuthError::PopFailed
+        | AuthError::DpopFailed(_)
         | AuthError::BiscuitSignature
         | AuthError::MissingPubkey
         | AuthError::MissingIdentity => StatusCode::UNAUTHORIZED,

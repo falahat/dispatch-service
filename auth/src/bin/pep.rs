@@ -58,7 +58,9 @@ fn plan_surfaces(get: impl Fn(&str) -> Option<String>) -> Result<SurfacePlan, St
         match (get(listen_key), get(backend_key)) {
             (Some(listen), Some(backend)) => Ok(Some((listen, backend))),
             (None, None) => Ok(None),
-            _ => Err(format!("set BOTH {listen_key} and {backend_key}, or neither")),
+            _ => Err(format!(
+                "set BOTH {listen_key} and {backend_key}, or neither"
+            )),
         }
     };
     let plan = SurfacePlan {
@@ -240,7 +242,10 @@ mod tests {
             ("PEP_HTTP_ROUTES", "/etc/dispatch/sync-routes.toml"),
         ]))
         .unwrap();
-        assert!(plan.runner.is_none(), "http-only must not open a runner listener");
+        assert!(
+            plan.runner.is_none(),
+            "http-only must not open a runner listener"
+        );
         assert!(plan.cas.is_none(), "http-only must not open a cas listener");
         assert_eq!(
             plan.http,
@@ -262,7 +267,10 @@ mod tests {
         .unwrap();
         assert!(plan.runner.is_some());
         assert!(plan.cas.is_some());
-        assert!(plan.http.is_none(), "the plane PEP must not open an http listener");
+        assert!(
+            plan.http.is_none(),
+            "the plane PEP must not open an http listener"
+        );
     }
 
     #[test]

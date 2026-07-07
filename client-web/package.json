@@ -23,10 +23,10 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "eslint .",
-    "gen-vector": "npm run build && node --import ./scripts/sumo-loader-register.mjs scripts/gen-vector.mjs"
+    "lint": "eslint ."
   },
   "dependencies": {
+    "jose": "^6.1.0",
     "libsodium-wrappers-sumo": "^0.7.15"
   },
   "devDependencies": {

@@ -6,6 +6,7 @@
 pub mod canonical;
 pub mod cas_proxy;
 pub mod cred;
+pub mod dpop;
 pub mod error;
 pub mod frame_proxy;
 pub mod http_proxy;
@@ -16,7 +17,10 @@ pub mod revocation;
 pub mod signer;
 
 pub use canonical::Op;
-pub use cred::{attenuate_for_lease, mint, verify, AuthedRequest, Identity, MintParams};
+pub use cred::{
+    attenuate_for_lease, mint, verify, verify_http_dpop, AuthedRequest, DpopHttpRequest, Identity,
+    MintParams, ProvenIdentity,
+};
 pub use error::{AuthError, Result};
 pub use nonce::{NonceStore, DEFAULT_WINDOW_MS};
 pub use revocation::RevocationStore;

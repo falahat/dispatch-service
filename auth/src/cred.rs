@@ -103,17 +103,30 @@ pub struct AuthedRequest {
     pub address_hex: Option<String>,
 }
 
-/// Verify a request end to end: PoP, Biscuit signature, capability authorization,
-/// and freshness. Any failure is a typed denial, never a panic.
+/// The identity-proving result of a per-request proof, whatever its form: the
+/// pubkey the caller proved control of, a single-use replay id, and the proof's
+/// timestamp (ms). The runner PoP (Ed25519 over a canonical string) and the HTTP
+/// DPoP proof JWT both reduce to this before the SHARED authorization runs, so the
+/// Biscuit + revocation + capability + freshness ladder lives in exactly one place
+/// ([`authorize_request`]) regardless of how the caller proved possession.
+pub struct ProvenIdentity {
+    /// The Ed25519 public key (hex) the caller proved control of.
+    pub pubkey_hex: String,
+    /// The single-use replay key (runner: the nonce; DPoP: the proof `jti`).
+    pub replay_id: String,
+    /// The proof timestamp in epoch-ms (runner: `ts`; DPoP: `iat * 1000`).
+    pub ts_ms: i64,
+}
+
+/// Verify a RUNNER request (CAS / dispatch frame) end to end: bespoke Ed25519 PoP
+/// over the rebuilt canonical string, then the shared authorization ladder. Any
+/// failure is a typed denial, never a panic.
 ///
 /// `single_use` controls the nonce discipline. `true` (the default for every
-/// mutating surface — CAS, the runner frame, header-auth HTTP) requires the
-/// nonce to be fresh AND unseen, storing it so a replay of the exact request is
-/// denied. `false` (signed-URL query-auth reads) enforces freshness ONLY: the
-/// timestamp must be within the window (so a signed URL still EXPIRES), but the
-/// nonce is not stored, so a browser reusing one signed URL across range
-/// requests / retries is not replay-rejected. Only idempotent GET/HEAD reads are
-/// allowed to run non-single-use (enforced at route-table boot time).
+/// mutating surface — CAS, the runner frame) requires the nonce to be fresh AND
+/// unseen, storing it so a replay of the exact request is denied. `false` enforces
+/// freshness ONLY (no such runner surface today; retained for symmetry with the
+/// HTTP path). See [`verify_http_dpop`] for the browser-facing surface.
 pub fn verify(
     root_pub: &PublicKey,
     nonces: &NonceStore,
@@ -124,7 +137,8 @@ pub fn verify(
 ) -> Result<Identity> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-    // 1. Proof of possession over the rebuilt canonical string.
+    // Proof of possession over the rebuilt canonical string. The PEP never trusts
+    // a client-supplied canonical — it rebuilds it from structured request fields.
     let pubkey =
         hex::decode(&req.pubkey_hex).map_err(|_| AuthError::Malformed("pubkey hex".into()))?;
     let sig = STANDARD
@@ -133,11 +147,94 @@ pub fn verify(
     let canonical = req.op.canonical(&req.nonce_b64, req.ts_ms);
     pop::verify_pop(&pubkey, &canonical, &sig)?;
 
-    // 2. Parse the Biscuit against the root key (verifies its signature chain).
-    let biscuit = Biscuit::from_base64(&req.biscuit_b64, *root_pub)
-        .map_err(|_| AuthError::BiscuitSignature)?;
+    let proven = ProvenIdentity {
+        pubkey_hex: req.pubkey_hex.clone(),
+        replay_id: req.nonce_b64.clone(),
+        ts_ms: req.ts_ms,
+    };
+    authorize_request(
+        root_pub,
+        nonces,
+        revocations,
+        now_ms,
+        &req.biscuit_b64,
+        req.op.required_right(),
+        &req.required_lanes,
+        req.address_hex.as_deref(),
+        &proven,
+        single_use,
+    )
+}
 
-    // 2b. Revocation: a credential is revoked by putting any of its block
+/// One authenticated HTTP request presented to the PEP's DPoP surface. The proof is
+/// an RFC 9449 DPoP proof JWT (verified by [`crate::dpop`]); `htu` is the PEP-rebuilt
+/// `<public-origin><path>` (no query) and `body_sha256` is the raw SHA-256 of the
+/// buffered request body (the empty-body digest for a bodyless GET/HEAD).
+pub struct DpopHttpRequest {
+    pub method: String,
+    pub htu: String,
+    pub right: String,
+    pub biscuit_b64: String,
+    pub proof_jwt: String,
+    pub body_sha256: [u8; 32],
+}
+
+/// Verify an HTTP request whose proof is a DPoP proof JWT (RFC 9449). The proof —
+/// signature, method/uri/token/body binding — is checked by [`crate::dpop`]; the
+/// Biscuit capability, revocation, and freshness/replay are the SAME shared ladder
+/// the runner PoP uses. `single_use=true` for mutating header-auth calls; `false`
+/// for signed-URL GET/HEAD reads (freshness-only, reusable within the window).
+pub fn verify_http_dpop(
+    root_pub: &PublicKey,
+    nonces: &NonceStore,
+    revocations: &RevocationStore,
+    now_ms: i64,
+    req: &DpopHttpRequest,
+    single_use: bool,
+) -> Result<Identity> {
+    let proven = crate::dpop::verify_proof(
+        &req.proof_jwt,
+        &req.method,
+        &req.htu,
+        &req.biscuit_b64,
+        &req.body_sha256,
+    )?;
+    authorize_request(
+        root_pub,
+        nonces,
+        revocations,
+        now_ms,
+        &req.biscuit_b64,
+        &req.right,
+        &[],
+        None,
+        &proven,
+        single_use,
+    )
+}
+
+/// The authorization ladder shared by every surface, run AFTER a proof has proven
+/// possession of `proven.pubkey_hex`: parse the Biscuit against the root key, apply
+/// the revocation deny-list, authorize the capability (pubkey binding + required
+/// right + any lanes), then enforce freshness/replay. Any failure is a typed denial.
+#[allow(clippy::too_many_arguments)]
+fn authorize_request(
+    root_pub: &PublicKey,
+    nonces: &NonceStore,
+    revocations: &RevocationStore,
+    now_ms: i64,
+    biscuit_b64: &str,
+    right: &str,
+    required_lanes: &[String],
+    address_hex: Option<&str>,
+    proven: &ProvenIdentity,
+    single_use: bool,
+) -> Result<Identity> {
+    // 1. Parse the Biscuit against the root key (verifies its signature chain).
+    let biscuit =
+        Biscuit::from_base64(biscuit_b64, *root_pub).map_err(|_| AuthError::BiscuitSignature)?;
+
+    // 1b. Revocation: a credential is revoked by putting any of its block
     //     revocation identifiers on the deny-list. `revocation_identifiers()`
     //     ALWAYS includes the authority-block id (index 0), which every
     //     attenuation inherits — so revoking the authority id denies the base
@@ -149,24 +246,26 @@ pub fn verify(
         return Err(AuthError::Revoked);
     }
 
-    // 3. Authorize: bind the presented pubkey, the operation, address, and time;
+    // 2. Authorize: bind the presented pubkey, the operation, address, and time;
     //    require the right and the pubkey match (and any required lanes).
-    let right = req.op.required_right().to_string();
     let mut authorizer = biscuit
         .authorizer()
         .map_err(|e| AuthError::Denied(e.to_string()))?;
     authorizer
-        .add_fact(fact!("presented_pubkey({p})", p = req.pubkey_hex.clone()))
+        .add_fact(fact!(
+            "presented_pubkey({p})",
+            p = proven.pubkey_hex.clone()
+        ))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
     authorizer
-        .add_fact(fact!("operation({o})", o = right.clone()))
+        .add_fact(fact!("operation({o})", o = right.to_string()))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
     authorizer
         .add_fact(fact!("now({t})", t = now_ms))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
-    if let Some(addr) = &req.address_hex {
+    if let Some(addr) = address_hex {
         authorizer
-            .add_fact(fact!("address({a})", a = addr.clone()))
+            .add_fact(fact!("address({a})", a = addr.to_string()))
             .map_err(|e| AuthError::Denied(e.to_string()))?;
     }
     // The presented pubkey must equal the one bound in the credential.
@@ -174,31 +273,31 @@ pub fn verify(
         .add_check(check!("check if pubkey($p), presented_pubkey($p)"))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
     // Each required lane must be granted by the credential.
-    for lane in &req.required_lanes {
+    for lane in required_lanes {
         authorizer
             .add_check(check!("check if lane({l})", l = lane.clone()))
             .map_err(|e| AuthError::Denied(e.to_string()))?;
     }
     // The credential must grant the required right.
     authorizer
-        .add_policy(policy!("allow if right({o})", o = right.clone()))
+        .add_policy(policy!("allow if right({o})", o = right.to_string()))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
     authorizer
         .authorize()
         .map_err(|e| AuthError::Denied(e.to_string()))?;
 
-    // 4. Freshness (+ single-use, if required) — only after the request
+    // 3. Freshness (+ single-use, if required) — only after the request
     //    authenticates, so unauthenticated traffic can never pollute the store.
     //    Non-single-use (signed-URL reads) is freshness-only: still rejects a
-    //    stale ts, but does not store the nonce, so the URL is reusable until it
-    //    expires.
+    //    stale ts, but does not store the replay id, so the URL is reusable until
+    //    it expires.
     if single_use {
-        nonces.check_and_store(&req.nonce_b64, req.ts_ms, now_ms)?;
+        nonces.check_and_store(&proven.replay_id, proven.ts_ms, now_ms)?;
     } else {
-        nonces.check_freshness(req.ts_ms, now_ms)?;
+        nonces.check_freshness(proven.ts_ms, now_ms)?;
     }
 
     Ok(Identity {
-        id: req.pubkey_hex.clone(),
+        id: proven.pubkey_hex.clone(),
     })
 }

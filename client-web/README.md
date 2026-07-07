@@ -2,73 +2,66 @@
 
 The browser signer for the dispatch plane's PEP. One pure, framework-agnostic
 crypto module shared by every web peer — the easy-podcast PWA and the antibody
-frontend both authenticate with this. It produces the plane's proof-of-possession
-(libsodium Ed25519) over the frozen HTTP request contract and the BLAKE2b pairing
-MAC. Storage (IndexedDB, etc.) is the app's job: pass the identity and biscuit in,
-get signed headers / query params out.
+frontend both authenticate with this. It produces the plane's per-request proof —
+an RFC 9449 **DPoP proof JWT** (via [`jose`](https://github.com/panva/jose), over the
+peer's Ed25519 key) — and the BLAKE2b pairing MAC (libsodium). Storage (IndexedDB,
+etc.) is the app's job: pass the identity + biscuit in, get the DPoP headers / query
+params out.
 
-The Rust source of truth for every byte is `dispatch-service/auth/src/`
-(`canonical.rs`, `cred.rs`, `http_proxy.rs`). A cross-implementation test in the
-`auth` crate verifies a fixed vector emitted by this module.
+The Rust source of truth is `dispatch-service/auth/src/dpop.rs` (the PEP's
+`jsonwebtoken` verifier). Because the wire format is a standard JWS/JWT, agreement is
+library-guaranteed, not byte-kept: a cross-implementation test in the `auth` crate
+verifies a PyJWT-signed proof, and this signer's `jose` output uses the identical JWS.
 
 ## The contract this implements
 
-```
-canonical: http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>
-```
+Per request the peer signs a **DPoP proof JWT**:
 
-Single ASCII spaces; `METHOD` uppercased; `<path>` is the URL path only (no
-query); `<sha256hex(body)>` is lowercase-hex SHA-256 of the raw body
-(`sha256hex("")` for an empty body); `<ts>` is the decimal integer epoch-ms.
+- **header** — `typ = dpop+jwt`, `alg = EdDSA`, `jwk` = the peer's PUBLIC Ed25519 key
+  (OKP). The PEP verifies the signature against that key and binds it (hex of the raw
+  key) to the Biscuit's `pubkey(<hex>)` fact.
+- **claims** — `htm` (method), `htu` (scheme+host+path, **no query**),
+  `ath = base64url(sha256(biscuit))`, `content-digest = base64url(sha256(body))` (empty
+  digest for a bodyless GET), `iat` (freshness), `jti` (single-use replay).
 
-| field | encoding |
-|---|---|
-| `pop` | **STANDARD base64, WITH padding** (libsodium `base64_variants.ORIGINAL`) — the Rust PEP decodes it with the STANDARD engine, NOT url-safe |
-| `pubkey` | lowercase hex of the 32-byte Ed25519 public key |
-| `ts` | decimal string of the integer epoch-millisecond timestamp |
-| `nonce` | a fresh random base64 string, used identically in the canonical and on the wire |
-| `biscuit` | opaque; stored from pairing and forwarded verbatim (never re-encoded) |
-
-Header-auth attaches five headers: `x-dispatch-{biscuit,pubkey,nonce,ts,pop}`.
-Query-auth (signed URLs, empty body) uses the same five as query keys:
-`biscuit,pubkey,nonce,ts,pop`.
+`alg` is `EdDSA` — the value the Rust PEP (`jsonwebtoken`) and the Python signer (PyJWT)
+all speak. Carriers: header-auth sends `Authorization: DPoP <biscuit>` + `DPoP: <proof>`;
+query-auth (signed URLs, empty body) sends the `biscuit` + `dpop` query params.
 
 ## API
 
 ```ts
 import {
   generateIdentity, identityFromSeed,
-  signRequest, signQueryParams,
+  dpopHeaders, dpopQuery,
   pairingMac, sodiumReady,
 } from '@dispatch/client-web';
 
 // An Ed25519 identity. Persist identity.secretKey in the app's storage.
 const identity = await generateIdentity();
 
-// Header-auth (mutating call). Returns the five x-dispatch-* headers.
-const headers = await signRequest(identity, biscuit, {
-  method: 'POST', path: '/upsert', body: new TextEncoder().encode(json),
+// Header-auth (mutating call). `htu` is the request URI, no query.
+// Returns { authorization: 'DPoP <biscuit>', dpop: '<proof-jwt>' }.
+const headers = await dpopHeaders(identity, {
+  method: 'POST', htu: `${location.origin}/upsert`, biscuit,
+  body: new TextEncoder().encode(json),
 });
 await fetch('/upsert', { method: 'POST', headers, body: json });
 
-// Query-auth (signed URL, GET/HEAD, empty body). Returns the five raw fields;
-// the caller URL-encodes them (e.g. URLSearchParams).
-const q = await signQueryParams(identity, biscuit, { method: 'GET', path: '/audio' });
+// Query-auth (signed URL, GET/HEAD, empty body). Returns { biscuit, dpop } — the
+// caller URL-encodes them (e.g. URLSearchParams) alongside any app params.
+const q = await dpopQuery(identity, { method: 'GET', htu: `${location.origin}/audio`, biscuit });
 const url = `/audio?${new URLSearchParams({ ...q, id: 'ep42' })}`;
 
 // Pairing redeem MAC (BLAKE2b-256, keyed by the one-time QR token). Hex.
 const mac = await pairingMac(tokenBytes, identity.publicKeyHex, timestamp);
 ```
 
-`sodiumReady()` resolves the initialised libsodium once; the signing functions
-await it internally, so calling it yourself is optional (useful to pre-warm WASM).
-
-### Reproducible signatures
-
-`signRequest` / `signQueryParams` take an optional `{ nonce, ts }` override.
-Default nonce is fresh 32-byte random (standard-base64); default `ts` is
-`Date.now()`. Overrides exist to reproduce fixed vectors — production calls MUST
-use the fresh default nonce (header-auth is single-use at the PEP).
+`sodiumReady()` resolves the initialised libsodium once (used by the pairing MAC + key
+handling); the functions await it internally, so calling it yourself is optional. The
+DPoP proof uses WebCrypto Ed25519 via `jose` — available in every target browser and
+Node 18+. Each proof carries a fresh `iat` + `jti`, so header-auth is single-use at the
+PEP; do not cache a proof across requests.
 
 ## Build & test
 

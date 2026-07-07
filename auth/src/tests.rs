@@ -601,7 +601,11 @@ fn revocation_live_reloads_without_restart() {
     // own writer cache.
     let writer = RevocationStore::open(&path).unwrap();
     writer
-        .revoke(&authority_revocation_id(&root, &cred), "revoked mid-run", NOW)
+        .revoke(
+            &authority_revocation_id(&root, &cred),
+            "revoked mid-run",
+            NOW,
+        )
         .unwrap();
 
     // The next request through the ORIGINAL store is denied — it re-read the file.

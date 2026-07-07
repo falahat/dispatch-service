@@ -1,4 +1,5 @@
-//! Adversarial + happy-path integration tests for the generic HTTP PEP mode.
+//! Adversarial + happy-path integration tests for the generic HTTP PEP mode,
+//! whose per-request proof is an RFC 9449 DPoP proof JWT.
 //!
 //! Each test stands up a real loopback echo backend and a real `HttpProxy` in
 //! front of it on ephemeral ports, then drives it with a raw hyper client. The
@@ -6,17 +7,15 @@
 //! and a JSON map of the headers it saw — so a test can prove BOTH that a
 //! request reached the backend and that the PEP stripped the auth material.
 //!
-//! These are hand-authored attack tests, one per boundary the HTTP surface adds:
-//! forged/invalid biscuit, replayed nonce, stale ts, wrong right, tampered
-//! path/body, tampered query-auth, a passthrough route that must never reach an
-//! authed backend route, oversize (caught during buffering), and quota. Plus the
-//! two hardenings: the PoP binds the body (tamper the body → 401), and a
-//! signed-URL query read is reusable within its freshness window but expires.
-//! The core engine's own boundaries (PoP forgery, biscuit signature,
-//! pubkey-binding) are already covered in the crate's unit `tests.rs`; here we
-//! prove the HTTP wiring feeds `verify()` faithfully and fails closed end to end.
+//! These are hand-authored attack tests, one per boundary the DPoP HTTP surface
+//! adds. The proofs are assembled here from JOSE primitives (base64url segments +
+//! an Ed25519 signature over `header.payload`) so a test can produce not just
+//! valid proofs but forged, alg-confused, and tampered ones — exactly the shapes
+//! a real attacker would try. `jsonwebtoken` (the PEP's verifier) and a real JOSE
+//! signer agree on this format by the JWS standard; the cross-language interop is
+//! proven separately in `cross_impl_py_mint.rs` (a `joserfc`-signed proof).
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use biscuit_auth::KeyPair;
 use dispatch_auth::cred::{mint, MintParams};
 use dispatch_auth::http_proxy::{HttpProxy, RouteTableSpec};
@@ -35,9 +34,18 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
+/// The PEP's fixed clock (ms) and the equivalent whole-second `iat` a proof carries.
 const NOW: i64 = 1_700_000_000_000;
+const NOW_S: i64 = NOW / 1000;
+/// The PEP's configured public origin — the `htu` a proof must match is rebuilt
+/// from this + the request path, never from a client Host header.
+const TEST_ORIGIN: &str = "https://test.example";
 
-// ---------- test harness ----------
+// ---------- DPoP proof construction (the attacker's toolkit) ----------
+
+fn b64url(b: impl AsRef<[u8]>) -> String {
+    URL_SAFE_NO_PAD.encode(b)
+}
 
 /// A holder identity: an Ed25519 signing key + its pubkey hex.
 fn holder() -> (SigningKey, String) {
@@ -50,28 +58,82 @@ fn holder() -> (SigningKey, String) {
     (sk, pk_hex)
 }
 
-fn nonce_b64() -> String {
-    let mut b = [0u8; 32];
+/// A fresh random proof id (the DPoP `jti`, this surface's replay key).
+fn jti() -> String {
+    let mut b = [0u8; 16];
     for x in b.iter_mut() {
         *x = rand::random::<u8>();
     }
-    STANDARD.encode(b)
+    b64url(b)
 }
 
-/// Sign the HTTP canonical string, which binds the body:
-/// `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`.
-fn sign_http(
+/// Assemble a compact JWS from an arbitrary header + claims, signing
+/// `base64url(header).base64url(claims)` with `sk`. Arbitrary JSON so adversarial
+/// tests can malform the header (alg/typ) or claims at will.
+fn jws(sk: &SigningKey, header: &serde_json::Value, claims: &serde_json::Value) -> String {
+    let h = b64url(serde_json::to_vec(header).unwrap());
+    let p = b64url(serde_json::to_vec(claims).unwrap());
+    let signing_input = format!("{h}.{p}");
+    let sig = sk.sign(signing_input.as_bytes()).to_bytes();
+    format!("{signing_input}.{}", b64url(sig))
+}
+
+/// The standard DPoP protected header advertising `pub_bytes` as the OKP/Ed25519 jwk.
+fn dpop_header(pub_bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "EdDSA",
+        "jwk": { "kty": "OKP", "crv": "Ed25519", "x": b64url(pub_bytes) },
+    })
+}
+
+/// The standard DPoP claim set binding this method / path / biscuit / body.
+fn dpop_claims(
+    method: &str,
+    path: &str,
+    biscuit: &str,
+    body: &[u8],
+    iat_s: i64,
+    jti: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "htm": method,
+        "htu": format!("{TEST_ORIGIN}{path}"),
+        "iat": iat_s,
+        "jti": jti,
+        "ath": b64url(Sha256::digest(biscuit.as_bytes())),
+        "content-digest": b64url(Sha256::digest(body)),
+    })
+}
+
+/// A valid proof: signed by `sk`, advertising `sk`'s own public key, binding the
+/// request exactly.
+#[allow(clippy::too_many_arguments)]
+fn proof(
     sk: &SigningKey,
     method: &str,
     path: &str,
+    biscuit: &str,
     body: &[u8],
-    nonce: &str,
-    ts: i64,
+    jti: &str,
 ) -> String {
-    let body_hash = hex::encode(Sha256::digest(body));
-    let canonical = format!("http/v0 {method} {path} {body_hash} {nonce} {ts}");
-    STANDARD.encode(sk.sign(canonical.as_bytes()).to_bytes())
+    jws(
+        sk,
+        &dpop_header(&sk.verifying_key().to_bytes()),
+        &dpop_claims(method, path, biscuit, body, NOW_S, jti),
+    )
 }
+
+/// The header set for a header-auth request: the Biscuit in `Authorization: DPoP`
+/// and the proof JWT in `DPoP`.
+fn dpop_headers(biscuit: &str, proof: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("authorization", format!("DPoP {biscuit}")),
+        ("dpop", proof.to_string()),
+    ]
+}
+
+// ---------- test harness ----------
 
 /// The echo backend's reflected view of the request it received.
 #[derive(serde::Deserialize)]
@@ -156,14 +218,15 @@ impl Drop for Pep {
 }
 
 /// Build a PEP HTTP surface from a route-table TOML body pointed at `backend`,
-/// with a fixed clock at `NOW` and the given quota. Returns its address.
+/// with a fixed clock at `NOW` and the given quota. The `origin` is prepended so
+/// each test's `ROUTES` snippet need only list routes. Returns its address.
 async fn start_pep(backend: &str, routes_toml: &str, max_req: u32, max_bytes: u64) -> Pep {
     let dir = tempfile::tempdir().unwrap();
     let ns = NonceStore::open(dir.path().join("n.redb"), dispatch_auth::DEFAULT_WINDOW_MS).unwrap();
     let revocation_path = dir.path().join("revocations.json");
     let revocations = RevocationStore::open(&revocation_path).unwrap();
     let root = KeyPair::new();
-    let full = format!("backend = \"{backend}\"\n{routes_toml}");
+    let full = format!("origin = \"{TEST_ORIGIN}\"\nbackend = \"{backend}\"\n{routes_toml}");
     let spec: RouteTableSpec = toml::from_str(&full).unwrap();
     let cfg = spec.resolve().unwrap();
     let now: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(|| NOW);
@@ -247,8 +310,7 @@ async fn send(
 
 /// Send a request with an HTTP/1.1 CHUNKED body (no Content-Length at all),
 /// written raw so we control the framing. Used to prove the body cap is enforced
-/// while buffering, not by trusting a declared length. Reads the status line
-/// back; the PEP is expected to reject the oversize body before the chunks end.
+/// while buffering, not by trusting a declared length.
 async fn send_chunked(
     base: &str,
     method: &str,
@@ -266,17 +328,12 @@ async fn send_chunked(
     }
     req.push_str("\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
-    // One chunk carrying the whole (oversize) body, then the terminating chunk.
-    // The PEP is expected to reject mid-stream; the terminating chunk may never
-    // be consumed, so we do NOT block waiting for the connection to close —
-    // we read only the response head, under a timeout.
     stream
         .write_all(format!("{:x}\r\n", body.len()).as_bytes())
         .await
         .unwrap();
     let _ = stream.write_all(body).await;
     let _ = stream.write_all(b"\r\n0\r\n\r\n").await;
-    // Read until the end of the response headers (\r\n\r\n) or a short timeout.
     let mut buf = Vec::new();
     let deadline = std::time::Duration::from_secs(5);
     let _ = tokio::time::timeout(deadline, async {
@@ -305,23 +362,6 @@ async fn send_chunked(
         status,
         body: text.into_owned(),
     }
-}
-
-/// The five auth headers for a header-auth request.
-fn auth_headers(
-    biscuit: &str,
-    pubkey: &str,
-    nonce: &str,
-    ts: i64,
-    pop: &str,
-) -> Vec<(&'static str, String)> {
-    vec![
-        ("x-dispatch-biscuit", biscuit.to_string()),
-        ("x-dispatch-pubkey", pubkey.to_string()),
-        ("x-dispatch-nonce", nonce.to_string()),
-        ("x-dispatch-ts", ts.to_string()),
-        ("x-dispatch-pop", pop.to_string()),
-    ]
 }
 
 /// A route table used by most tests: an authed POST /upsert (header), a signed
@@ -353,24 +393,36 @@ async fn header_auth_happy_path_forwards_and_strips_auth() {
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"payload", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"payload",
+    )
+    .await;
     assert_eq!(r.status, 200, "body: {}", r.body);
     let echo = r.echo();
     assert_eq!(echo.method, "POST");
     assert_eq!(echo.uri, "/upsert");
     assert_eq!(echo.body, "payload");
-    // The backend must NEVER see the client's auth material. The one x-dispatch-*
-    // header it MAY see is the PEP-injected x-dispatch-identity — the client's own
-    // auth headers (biscuit/pubkey/nonce/ts/pop) are all stripped.
+    // The backend must NEVER see the client's auth material — no Authorization, no
+    // DPoP proof — and the one x-dispatch-* it MAY see is the PEP-injected identity.
     for k in echo.headers.keys() {
         assert!(
             !k.starts_with("x-dispatch-") || k == "x-dispatch-identity",
             "auth header leaked to backend: {k}"
         );
     }
+    assert!(
+        !echo.headers.contains_key("authorization"),
+        "biscuit leaked to backend"
+    );
+    assert!(
+        !echo.headers.contains_key("dpop"),
+        "proof leaked to backend"
+    );
     assert_eq!(
         echo.headers.get("x-dispatch-identity").map(String::as_str),
         Some(pk.as_str()),
@@ -384,16 +436,11 @@ async fn query_auth_happy_path_forwards_full_query() {
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
-    // The signed-URL query carries the five fields plus an app param (id).
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
     let q = format!(
-        "/audio?id=ep42&biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        "/audio?id=ep42&biscuit={}&dpop={}",
         urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
+        urlenc(&pr),
     );
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r.status, 200, "body: {}", r.body);
@@ -402,7 +449,7 @@ async fn query_auth_happy_path_forwards_full_query() {
     // The backend receives the full query verbatim (app param survives).
     assert!(echo.uri.starts_with("/audio?id=ep42"), "uri: {}", echo.uri);
     assert!(
-        echo.uri.contains("pop="),
+        echo.uri.contains("dpop="),
         "auth query forwarded: {}",
         echo.uri
     );
@@ -421,21 +468,25 @@ async fn passthrough_happy_path_forwards_unauthenticated() {
 
 #[tokio::test]
 async fn header_auth_injects_verified_identity_for_backend() {
-    // On an authed route the backend must receive x-dispatch-identity equal to
-    // the PEP-verified pubkey — so the loopback app can attribute the request to
-    // an identity without holding any auth crypto or trusting a client header.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"payload", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"payload",
+    )
+    .await;
     assert_eq!(r.status, 200, "body: {}", r.body);
-    let echo = r.echo();
     assert_eq!(
-        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        r.echo()
+            .headers
+            .get("x-dispatch-identity")
+            .map(String::as_str),
         Some(pk.as_str()),
         "backend must see the verified pubkey as x-dispatch-identity",
     );
@@ -443,83 +494,76 @@ async fn header_auth_injects_verified_identity_for_backend() {
 
 #[tokio::test]
 async fn forwarded_post_carries_a_single_content_length() {
-    // Regression: `is_forwardable` must strip the client's Content-Length so the PEP's own
-    // authoritative length is the ONLY one the backend sees. Relaying both emits a DUPLICATE
-    // Content-Length — a strict backend parser (httptools/uvicorn) rejects it as malformed
-    // ("Invalid HTTP request received."), while a lenient one would accept a client-forged length.
+    // Regression: the PEP's own authoritative Content-Length is the ONLY one the backend sees.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
     let body = b"the app payload";
-    let pop = sign_http(&sk, "POST", "/upsert", body, &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, body).await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, body, &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        body,
+    )
+    .await;
     assert_eq!(r.status, 200, "body: {}", r.body);
     let echo = r.echo();
     assert_eq!(
         echo.content_length_count, 1,
         "the backend must receive EXACTLY one Content-Length (the PEP's), never the client's too",
     );
-    let expected_len = body.len().to_string();
     assert_eq!(
         echo.headers.get("content-length").map(String::as_str),
-        Some(expected_len.as_str()),
+        Some(body.len().to_string().as_str()),
         "the single Content-Length must be the true buffered body length",
     );
 }
 
 #[tokio::test]
 async fn client_supplied_identity_is_stripped_and_replaced() {
-    // An attacker sets x-dispatch-identity itself, hoping the backend trusts it.
-    // is_forwardable strips ALL client x-dispatch-* headers before the PEP adds
-    // the real one, so the backend sees the VERIFIED identity, never the forged.
+    // An attacker sets x-dispatch-identity itself, hoping the backend trusts it —
+    // is_forwardable strips ALL client x-dispatch-* before the PEP adds the real one.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"payload", &nonce, NOW);
-    let mut hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"payload", &jti());
+    let mut hdrs = dpop_headers(&cred, &pr);
     hdrs.push(("x-dispatch-identity", "attacker".to_string()));
     let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"payload").await;
     assert_eq!(r.status, 200, "body: {}", r.body);
-    let echo = r.echo();
     assert_eq!(
-        echo.headers.get("x-dispatch-identity").map(String::as_str),
+        r.echo()
+            .headers
+            .get("x-dispatch-identity")
+            .map(String::as_str),
         Some(pk.as_str()),
         "the forged identity must be replaced with the verified pubkey",
-    );
-    assert_ne!(
-        echo.headers.get("x-dispatch-identity").map(String::as_str),
-        Some("attacker"),
-        "the attacker's forged identity must never reach the backend",
     );
 }
 
 #[tokio::test]
 async fn query_auth_injects_verified_identity_for_backend() {
-    // Signed-URL (query-auth) reads inject the identity too — the backend can
-    // attribute a media fetch to the verified owner.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
     let q = format!(
-        "/audio?id=ep42&biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        "/audio?id=ep42&biscuit={}&dpop={}",
         urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
+        urlenc(&pr)
     );
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r.status, 200, "body: {}", r.body);
     assert_eq!(
-        r.echo().headers.get("x-dispatch-identity").map(String::as_str),
+        r.echo()
+            .headers
+            .get("x-dispatch-identity")
+            .map(String::as_str),
         Some(pk.as_str()),
         "query-auth must also inject the verified identity",
     );
@@ -527,8 +571,6 @@ async fn query_auth_injects_verified_identity_for_backend() {
 
 #[tokio::test]
 async fn passthrough_injects_no_identity() {
-    // Passthrough has no verified identity, so no x-dispatch-identity may reach
-    // the backend — and a client that tries to smuggle one is stripped anyway.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let r = send(
@@ -555,8 +597,7 @@ fn authority_revocation_id(root: &KeyPair, cred: &str) -> String {
     hex::encode(&biscuit.revocation_identifiers()[0])
 }
 
-/// Write the deny-list file the PEP reads, revoking exactly these hex ids. Proves
-/// the on-disk format is the contract (`{"revoked":[{"id","note","revoked_at"}]}`).
+/// Write the deny-list file the PEP reads, revoking exactly these hex ids.
 fn write_deny_list(path: &std::path::Path, ids: &[&str]) {
     let revoked: Vec<_> = ids
         .iter()
@@ -572,12 +613,19 @@ async fn revoked_credential_is_403_on_header_auth() {
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    // Revoke this credential's authority id.
-    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    write_deny_list(
+        &pep.revocation_path,
+        &[&authority_revocation_id(&pep.root, &cred)],
+    );
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
     assert_eq!(r.status, 403, "revoked credential must be 403: {}", r.body);
 }
 
@@ -587,17 +635,12 @@ async fn revoked_credential_is_403_on_query_auth() {
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
-    let q = format!(
-        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
-        urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
+    write_deny_list(
+        &pep.revocation_path,
+        &[&authority_revocation_id(&pep.root, &cred)],
     );
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let q = format!("/audio?biscuit={}&dpop={}", urlenc(&cred), urlenc(&pr));
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(
         r.status, 403,
@@ -608,56 +651,68 @@ async fn revoked_credential_is_403_on_query_auth() {
 
 #[tokio::test]
 async fn non_revoked_credential_still_passes_with_a_populated_deny_list() {
-    // A deny-list holding an UNRELATED id must not deny an unrelated credential.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
     write_deny_list(&pep.revocation_path, &[&"0".repeat(64)]); // someone else
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
-    assert_eq!(r.status, 200, "unrelated revocation must not deny: {}", r.body);
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 200,
+        "unrelated revocation must not deny: {}",
+        r.body
+    );
 }
 
 #[tokio::test]
 async fn revocation_live_reloads_mid_run() {
-    // Write the deny-list AFTER the PEP is serving and one request has passed;
-    // the very next request must be denied — no restart.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
 
     // First request passes (empty deny-list).
-    let nonce1 = nonce_b64();
-    let pop1 = sign_http(&sk, "POST", "/upsert", b"x", &nonce1, NOW);
-    let h1 = auth_headers(&cred, &pk, &nonce1, NOW, &pop1);
-    let r1 = send(&pep.addr, "POST", "/upsert", &h1, b"x").await;
+    let p1 = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let r1 = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &p1),
+        b"x",
+    )
+    .await;
     assert_eq!(r1.status, 200, "passes before revocation: {}", r1.body);
 
     // Revoke mid-run by writing the file.
-    write_deny_list(&pep.revocation_path, &[&authority_revocation_id(&pep.root, &cred)]);
+    write_deny_list(
+        &pep.revocation_path,
+        &[&authority_revocation_id(&pep.root, &cred)],
+    );
 
-    // The next request (fresh nonce, so this is a revocation denial, not a replay)
-    // is denied immediately — the store live-reloaded the file.
-    let nonce2 = nonce_b64();
-    let pop2 = sign_http(&sk, "POST", "/upsert", b"y", &nonce2, NOW);
-    let h2 = auth_headers(&cred, &pk, &nonce2, NOW, &pop2);
-    let r2 = send(&pep.addr, "POST", "/upsert", &h2, b"y").await;
+    // The next request (fresh jti, so a revocation denial, not a replay) is denied.
+    let p2 = proof(&sk, "POST", "/upsert", &cred, b"y", &jti());
+    let r2 = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &p2),
+        b"y",
+    )
+    .await;
     assert_eq!(
         r2.status, 403,
         "the very next request after revocation must be 403: {}",
         r2.body
     );
 }
-
-// The engine-level guarantee that revoking the authority id denies EVERY
-// attenuation lives in the unit test `revoking_authority_id_denies_every_
-// attenuation` (src/tests.rs) — where `revocation_identifiers()` inheritance is
-// asserted directly, without depending on a route whose op happens to be
-// attenuation-compatible.
 
 // ---------- adversarial: authentication boundaries ----------
 
@@ -677,10 +732,15 @@ async fn forged_biscuit_from_other_root_is_401() {
         },
     )
     .unwrap();
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
     assert_eq!(r.status, 401, "body: {}", r.body);
 }
 
@@ -688,51 +748,74 @@ async fn forged_biscuit_from_other_root_is_401() {
 async fn garbage_biscuit_is_401() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
-    let (sk, pk) = holder();
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers("not-a-biscuit", &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    let (sk, _pk) = holder();
+    // A syntactically-valid proof (ath binds "not-a-biscuit"), but the biscuit is junk.
+    let pr = proof(&sk, "POST", "/upsert", "not-a-biscuit", b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers("not-a-biscuit", &pr),
+        b"x",
+    )
+    .await;
     assert_eq!(r.status, 401, "body: {}", r.body);
 }
 
 #[tokio::test]
-async fn missing_auth_headers_is_401() {
+async fn missing_auth_is_401() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
-    // No auth headers at all on an authed route.
+    // No Authorization / DPoP headers at all on an authed route (a downgrade attempt).
     let r = send(&pep.addr, "POST", "/upsert", &[], b"x").await;
     assert_eq!(r.status, 401, "body: {}", r.body);
 }
 
 #[tokio::test]
-async fn replayed_nonce_is_401_on_second_use() {
+async fn missing_proof_header_is_401() {
+    // The Biscuit is present but the DPoP proof header is not — fail closed.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (_sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let hdrs = vec![("authorization", format!("DPoP {cred}"))];
+    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    assert_eq!(r.status, 401, "missing proof must fail closed: {}", r.body);
+}
+
+#[tokio::test]
+async fn replayed_jti_is_401_on_second_use() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let hdrs = dpop_headers(&cred, &pr);
     let r1 = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r1.status, 200, "first should pass: {}", r1.body);
-    // Exact same request (same nonce) — single-use replay must be denied.
+    // Exact same proof (same jti) — single-use replay must be denied.
     let r2 = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
     assert_eq!(r2.status, 401, "replay must be denied: {}", r2.body);
 }
 
 #[tokio::test]
-async fn stale_timestamp_is_401() {
+async fn stale_iat_is_401() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, stale);
-    let hdrs = auth_headers(&cred, &pk, &nonce, stale, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
-    assert_eq!(r.status, 401, "body: {}", r.body);
+    // 10 min old, window is 5 min.
+    let claims = dpop_claims("POST", "/upsert", &cred, b"x", NOW_S - 600, &jti());
+    let pr = jws(&sk, &dpop_header(&sk.verifying_key().to_bytes()), &claims);
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(r.status, 401, "stale iat must be denied: {}", r.body);
 }
 
 #[tokio::test]
@@ -742,21 +825,206 @@ async fn wrong_right_is_403() {
     let (sk, pk) = holder();
     // Credential grants audio_get, but /upsert requires sync_write.
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
     assert_eq!(r.status, 403, "wrong right must be forbidden: {}", r.body);
+}
+
+// ---------- adversarial: DPoP proof integrity ----------
+
+#[tokio::test]
+async fn proof_signed_by_a_non_bound_key_is_denied() {
+    // FORGE: the proof advertises + is signed by the ATTACKER's key (self-consistent
+    // JWS), but the Biscuit binds the VICTIM's key. The proof verifies, but the
+    // authorizer's `pubkey == presented_pubkey` check fails — a valid signature over
+    // a key the credential does not bind is worthless. (403: an authorization denial.)
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (_victim, victim_pk) = holder();
+    let (attacker, _attacker_pk) = holder();
+    let cred = pep.mint(&victim_pk, &["sync_write"]); // bound to the victim
+                                                      // Signed by + advertising the attacker key.
+    let pr = proof(&attacker, "POST", "/upsert", &cred, b"x", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 403,
+        "a proof keyed to a non-bound key must be denied: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
+async fn proof_advertising_victim_key_but_signed_by_attacker_is_401() {
+    // FORGE 2: the proof advertises the VICTIM's jwk (to satisfy the pubkey binding)
+    // but is signed by the attacker (who lacks the victim's private key). The JWS
+    // signature verify fails against the advertised key — 401.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (victim, victim_pk) = holder();
+    let (attacker, _) = holder();
+    let cred = pep.mint(&victim_pk, &["sync_write"]);
+    // Header advertises the victim's key; the JWS is signed by the attacker.
+    let pr = jws(
+        &attacker,
+        &dpop_header(&victim.verifying_key().to_bytes()),
+        &dpop_claims("POST", "/upsert", &cred, b"x", NOW_S, &jti()),
+    );
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "signature must verify against the advertised jwk: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
+async fn alg_none_proof_is_401() {
+    // alg=none (unsigned) must be rejected: the verifier's algorithm allowlist is
+    // EdDSA-only. The signature segment is empty.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let header = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "none",
+        "jwk": { "kty": "OKP", "crv": "Ed25519", "x": b64url(sk.verifying_key().to_bytes()) },
+    });
+    let claims = dpop_claims("POST", "/upsert", &cred, b"x", NOW_S, &jti());
+    let h = b64url(serde_json::to_vec(&header).unwrap());
+    let p = b64url(serde_json::to_vec(&claims).unwrap());
+    let pr = format!("{h}.{p}."); // empty signature
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(r.status, 401, "alg=none must be rejected: {}", r.body);
+}
+
+#[tokio::test]
+async fn alg_confusion_hs256_is_401() {
+    // alg=HS256 (symmetric), hoping the verifier treats the public key as an HMAC
+    // secret. The EdDSA-only allowlist rejects it before any signature check.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let header = serde_json::json!({
+        "typ": "dpop+jwt",
+        "alg": "HS256",
+        "jwk": { "kty": "OKP", "crv": "Ed25519", "x": b64url(sk.verifying_key().to_bytes()) },
+    });
+    let claims = dpop_claims("POST", "/upsert", &cred, b"x", NOW_S, &jti());
+    let h = b64url(serde_json::to_vec(&header).unwrap());
+    let p = b64url(serde_json::to_vec(&claims).unwrap());
+    // A plausible-looking (but irrelevant) signature segment.
+    let pr = format!("{h}.{p}.{}", b64url([0u8; 32]));
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "alg=HS256 confusion must be rejected: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
+async fn wrong_typ_is_401() {
+    // typ must be dpop+jwt (RFC 9449). A plain jwt typ is rejected.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let header = serde_json::json!({
+        "typ": "jwt",
+        "alg": "EdDSA",
+        "jwk": { "kty": "OKP", "crv": "Ed25519", "x": b64url(sk.verifying_key().to_bytes()) },
+    });
+    let claims = dpop_claims("POST", "/upsert", &cred, b"x", NOW_S, &jti());
+    let pr = jws(&sk, &header, &claims);
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "typ != dpop+jwt must be rejected: {}",
+        r.body
+    );
+}
+
+#[tokio::test]
+async fn token_substitution_ath_mismatch_is_401() {
+    // A VALID proof for credential A, presented with a different (also valid)
+    // credential B. The `ath` (bound to A) won't match sha256(B) — reject.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred_a = pep.mint(&pk, &["sync_write"]);
+    let cred_b = pep.mint(&pk, &["sync_write"]); // a second, distinct credential for the same key
+    assert_ne!(
+        cred_a, cred_b,
+        "the two mints must differ (else the test is vacuous)"
+    );
+    let pr = proof(&sk, "POST", "/upsert", &cred_a, b"x", &jti()); // ath binds A
+                                                                   // Present the proof with credential B in the Authorization header.
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred_b, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "ath must bind the presented biscuit: {}",
+        r.body
+    );
 }
 
 // ---------- adversarial: request tampering ----------
 
 #[tokio::test]
-async fn tampered_path_breaks_pop_401() {
-    let backend = start_echo().await;
-    // Sign for /upsert but send to a different authed path — the canonical
-    // string the PEP rebuilds won't match, so PoP fails. Both paths carry the
-    // same right, so this is a PoP failure, not a routing/right failure.
+async fn tampered_path_breaks_htu_401() {
+    // Sign for /upsert but send to a different authed path — the `htu` the PEP
+    // rebuilds won't match the proof. Both paths carry the same right, so this is a
+    // proof failure, not a routing/right failure.
     let two_paths = r#"
 [[routes]]
 methods = ["POST"]
@@ -770,82 +1038,108 @@ path = "/upsert-evil"
 auth = "header"
 right = "sync_write"
 "#;
+    let backend = start_echo().await;
     let pep = start_pep(&backend, two_paths, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert-evil", &hdrs, b"x").await;
-    assert_eq!(r.status, 401, "tampered path must fail PoP: {}", r.body);
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti()); // htu = .../upsert
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert-evil",
+        &dpop_headers(&cred, &pr),
+        b"x",
+    )
+    .await;
+    assert_eq!(r.status, 401, "tampered path must fail htu: {}", r.body);
 }
 
 #[tokio::test]
-async fn tampered_body_breaks_pop_401() {
-    // FIX 1: the PoP binds the body. Sign over body A but deliver body B — the
-    // canonical string the PEP rebuilds (from the hash of the DELIVERED body)
-    // won't match, so PoP fails closed. This is the regression the hardening
-    // closes: the transport does NOT get to protect the body.
+async fn tampered_method_breaks_htm_401() {
+    // A proof signed for GET replayed on a POST route (same path/right) — htm mismatch.
+    let routes = r#"
+[[routes]]
+methods = ["GET", "POST"]
+path = "/thing"
+auth = "header"
+right = "sync_write"
+"#;
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let pr = proof(&sk, "GET", "/thing", &cred, b"", &jti()); // htm = GET
+    let r = send(&pep.addr, "POST", "/thing", &dpop_headers(&cred, &pr), b"").await;
+    assert_eq!(r.status, 401, "htm swap must fail: {}", r.body);
+}
+
+#[tokio::test]
+async fn tampered_body_breaks_content_digest_401() {
+    // The proof binds sha256(body) via content-digest. Sign over body A, deliver
+    // body B — the digest won't match. The transport does NOT protect the body.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
-    // Sign over body A ...
-    let pop = sign_http(&sk, "POST", "/upsert", b"body-A", &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    // ... but deliver body B.
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, b"body-B").await;
-    assert_eq!(r.status, 401, "tampered body must fail PoP: {}", r.body);
+    let pr = proof(&sk, "POST", "/upsert", &cred, b"body-A", &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        b"body-B",
+    )
+    .await;
+    assert_eq!(
+        r.status, 401,
+        "tampered body must fail content-digest: {}",
+        r.body
+    );
 }
 
 #[tokio::test]
 async fn matching_body_authenticates_200() {
-    // The positive counterpart: signing over the exact delivered body passes,
-    // and the body reaches the backend intact.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
     let body = b"{\"k\":\"v\"}";
-    let pop = sign_http(&sk, "POST", "/upsert", body, &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, body).await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, body, &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        body,
+    )
+    .await;
     assert_eq!(r.status, 200, "body: {}", r.body);
     assert_eq!(r.echo().body, "{\"k\":\"v\"}");
 }
 
 #[tokio::test]
-async fn tampered_query_auth_pop_is_401() {
+async fn tampered_query_proof_is_401() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    // A valid PoP for /audio, then flip one base64 char of the pop param.
-    let mut pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
-    let first = pop.remove(0);
-    let flipped = if first == 'A' { 'B' } else { 'A' };
-    pop.insert(0, flipped);
+    // A valid proof for /audio, then flip one base64url char of the signature segment.
+    let mut pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let last = pr.pop().unwrap();
+    pr.push(if last == 'A' { 'B' } else { 'A' });
     let q = format!(
-        "/audio?id=ep42&biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        "/audio?id=ep42&biscuit={}&dpop={}",
         urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
+        urlenc(&pr)
     );
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
-    assert_eq!(r.status, 401, "tampered query pop must fail: {}", r.body);
+    assert_eq!(r.status, 401, "tampered query proof must fail: {}", r.body);
 }
 
 #[tokio::test]
-async fn query_auth_signed_for_other_path_is_401() {
-    // A signed URL for /audio must not be replayable against /audio-secret,
-    // even though both are query-auth for the same right: the path is in the
-    // canonical string.
-    let backend = start_echo().await;
+async fn query_proof_signed_for_other_path_is_401() {
+    // A signed URL for /audio must not be replayable against /audio-secret, even
+    // though both are query-auth for the same right: the path is in the proof's htu.
     let routes = r#"
 [[routes]]
 methods = ["GET"]
@@ -859,47 +1153,34 @@ path = "/audio-secret"
 auth = "query"
 right = "audio_get"
 "#;
+    let backend = start_echo().await;
     let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW); // signs /audio
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti()); // htu = .../audio
     let q = format!(
-        "/audio-secret?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
+        "/audio-secret?biscuit={}&dpop={}",
         urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
+        urlenc(&pr)
     );
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r.status, 401, "cross-path signed URL must fail: {}", r.body);
 }
 
-// ---------- signed-URL reuse + expiry (FIX 2) ----------
+// ---------- signed-URL reuse + expiry ----------
 
 #[tokio::test]
 async fn signed_url_is_reusable_within_freshness_window() {
-    // FIX 2: a browser <audio> element reuses ONE signed URL across range
-    // requests / retries. Query-auth is freshness-only, so the SAME signed URL
-    // (same nonce) must succeed more than once — it is NOT replay-rejected.
+    // A browser <audio> element reuses ONE signed URL across range requests. Query-auth
+    // is freshness-only, so the SAME URL (same jti) must succeed more than once.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, NOW);
-    let q = format!(
-        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
-        urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        NOW,
-        urlenc(&pop),
-    );
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let q = format!("/audio?biscuit={}&dpop={}", urlenc(&cred), urlenc(&pr));
     let r1 = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r1.status, 200, "first read: {}", r1.body);
-    // Reuse the EXACT same URL (same nonce) — must NOT be replay-rejected.
     let r2 = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(
         r2.status, 200,
@@ -910,23 +1191,13 @@ async fn signed_url_is_reusable_within_freshness_window() {
 
 #[tokio::test]
 async fn signed_url_still_expires_when_stale() {
-    // Freshness is still enforced for query-auth: a signed URL with a ts outside
-    // the window is rejected, so the URL is not a permanent bearer token.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["audio_get"]);
-    let nonce = nonce_b64();
-    let stale = NOW - 10 * 60 * 1000; // 10 min old, window is 5 min
-    let pop = sign_http(&sk, "GET", "/audio", b"", &nonce, stale);
-    let q = format!(
-        "/audio?biscuit={}&pubkey={}&nonce={}&ts={}&pop={}",
-        urlenc(&cred),
-        pk,
-        urlenc(&nonce),
-        stale,
-        urlenc(&pop),
-    );
+    let claims = dpop_claims("GET", "/audio", &cred, b"", NOW_S - 600, &jti()); // 10 min old
+    let pr = jws(&sk, &dpop_header(&sk.verifying_key().to_bytes()), &claims);
+    let q = format!("/audio?biscuit={}&dpop={}", urlenc(&cred), urlenc(&pr));
     let r = send(&pep.addr, "GET", &q, &[], b"").await;
     assert_eq!(r.status, 401, "stale signed URL must expire: {}", r.body);
 }
@@ -935,16 +1206,10 @@ async fn signed_url_still_expires_when_stale() {
 
 #[tokio::test]
 async fn passthrough_cannot_reach_an_authed_route() {
-    // The crux invariant: a request routed to a passthrough is forwarded
-    // WITHOUT auth, but it can never thereby reach an authed route's handler.
-    // We give the backend an authed path and a passthrough path; a request to
-    // the passthrough path reaches ONLY the passthrough path — never /upsert.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
-    // Hitting /upsert with NO auth is denied (proves /upsert is guarded)...
     let denied = send(&pep.addr, "POST", "/upsert", &[], b"x").await;
     assert_eq!(denied.status, 401);
-    // ...and the passthrough route forwards to /app-shell, not to /upsert.
     let ok = send(&pep.addr, "GET", "/app-shell", &[], b"").await;
     assert_eq!(ok.status, 200);
     assert_eq!(ok.echo().uri, "/app-shell");
@@ -962,16 +1227,12 @@ async fn unknown_path_is_404_and_never_forwarded() {
 async fn wrong_method_on_known_path_is_405() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
-    // /upsert is POST-only; a GET must be 405, not reach the backend or auth.
     let r = send(&pep.addr, "GET", "/upsert", &[], b"").await;
     assert_eq!(r.status, 405, "wrong method must 405: {}", r.body);
 }
 
 #[tokio::test]
 async fn exact_route_wins_over_prefix() {
-    // A more specific exact route must win over a covering prefix route, so an
-    // app can carve a passthrough hole inside an otherwise-authed subtree
-    // deterministically (longest match, order-independent).
     let backend = start_echo().await;
     let routes = r#"
 [[routes]]
@@ -986,14 +1247,12 @@ path = "/api/health"
 auth = "passthrough"
 "#;
     let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
-    // /api/health matches BOTH; the exact passthrough wins -> no auth needed.
     let health = send(&pep.addr, "GET", "/api/health", &[], b"").await;
     assert_eq!(
         health.status, 200,
         "exact passthrough should win: {}",
         health.body
     );
-    // /api/other matches only the prefix -> auth required.
     let other = send(&pep.addr, "GET", "/api/other", &[], b"").await;
     assert_eq!(
         other.status, 401,
@@ -1004,10 +1263,8 @@ auth = "passthrough"
 
 #[tokio::test]
 async fn approve_credential_cannot_reject_or_dispatch() {
-    // The parked-job decision actions use ACTION-FIRST paths (/jobs/approve/{id},
-    // /jobs/reject/{id}) so each carries a DISTINCT right at the single enforcement
-    // point. An approve-only credential must be able to approve but be DENIED on reject
-    // and on dispatch — proving the capability split is real, not cosmetic.
+    // Action-first paths carry a DISTINCT right each; an approve-only credential must
+    // approve but be DENIED on reject and dispatch — the capability split is real.
     let backend = start_echo().await;
     let routes = r#"
 [[routes]]
@@ -1030,28 +1287,41 @@ right = "reject"
 "#;
     let pep = start_pep(&backend, routes, 1000, 1 << 30).await;
     let (sk, pk) = holder();
-    let cred = pep.mint(&pk, &["approve"]); // approve-only credential
+    let cred = pep.mint(&pk, &["approve"]);
 
-    // Allowed: approve with the approve right.
-    let n1 = nonce_b64();
-    let p1 = sign_http(&sk, "POST", "/jobs/approve/7", b"{}", &n1, NOW);
-    let h1 = auth_headers(&cred, &pk, &n1, NOW, &p1);
-    let ok = send(&pep.addr, "POST", "/jobs/approve/7", &h1, b"{}").await;
+    let p1 = proof(&sk, "POST", "/jobs/approve/7", &cred, b"{}", &jti());
+    let ok = send(
+        &pep.addr,
+        "POST",
+        "/jobs/approve/7",
+        &dpop_headers(&cred, &p1),
+        b"{}",
+    )
+    .await;
     assert_eq!(ok.status, 200, "approve right may approve: {}", ok.body);
 
-    // Denied: the SAME credential cannot reject (lacks the reject right) -> 403.
-    let n2 = nonce_b64();
-    let p2 = sign_http(&sk, "POST", "/jobs/reject/7", b"{}", &n2, NOW);
-    let h2 = auth_headers(&cred, &pk, &n2, NOW, &p2);
-    let no_reject = send(&pep.addr, "POST", "/jobs/reject/7", &h2, b"{}").await;
-    assert_eq!(no_reject.status, 403, "approve right must NOT reject: {}", no_reject.body);
+    let p2 = proof(&sk, "POST", "/jobs/reject/7", &cred, b"{}", &jti());
+    let no_reject = send(
+        &pep.addr,
+        "POST",
+        "/jobs/reject/7",
+        &dpop_headers(&cred, &p2),
+        b"{}",
+    )
+    .await;
+    assert_eq!(
+        no_reject.status, 403,
+        "approve right must NOT reject: {}",
+        no_reject.body
+    );
 
-    // Denied: nor dispatch a new job -> 403.
-    let n3 = nonce_b64();
-    let p3 = sign_http(&sk, "POST", "/jobs", b"{}", &n3, NOW);
-    let h3 = auth_headers(&cred, &pk, &n3, NOW, &p3);
-    let no_dispatch = send(&pep.addr, "POST", "/jobs", &h3, b"{}").await;
-    assert_eq!(no_dispatch.status, 403, "approve right must NOT dispatch: {}", no_dispatch.body);
+    let p3 = proof(&sk, "POST", "/jobs", &cred, b"{}", &jti());
+    let no_dispatch = send(&pep.addr, "POST", "/jobs", &dpop_headers(&cred, &p3), b"{}").await;
+    assert_eq!(
+        no_dispatch.status, 403,
+        "approve right must NOT dispatch: {}",
+        no_dispatch.body
+    );
 }
 
 // ---------- adversarial: size + rate ----------
@@ -1073,31 +1343,37 @@ async fn oversize_body_is_413_with_truthful_length() {
     let pep = start_pep(&backend, CAP8_ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
     let big = vec![b'z'; 20];
-    // Signed over the 20-byte body (so this is a size denial, not a PoP fail).
-    let pop = sign_http(&sk, "POST", "/upsert", &big, &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    // 20-byte body exceeds the 8-byte cap — caught while buffering, 413.
-    let r = send(&pep.addr, "POST", "/upsert", &hdrs, &big).await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, &big, &jti());
+    let r = send(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        &big,
+    )
+    .await;
     assert_eq!(r.status, 413, "oversize must be 413: {}", r.body);
 }
 
 #[tokio::test]
 async fn oversize_body_is_413_with_no_content_length() {
-    // The cap must NOT rely on Content-Length: a chunked (length-less) oversize
-    // body must still be caught WHILE buffering. Proves the advisory header is
-    // not the control. The backend must never see the body.
+    // The cap must NOT rely on Content-Length: a chunked oversize body is caught
+    // WHILE buffering, before auth even runs.
     let backend = start_echo().await;
     let pep = start_pep(&backend, CAP8_ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    let nonce = nonce_b64();
     let big = vec![b'z'; 20];
-    let pop = sign_http(&sk, "POST", "/upsert", &big, &nonce, NOW);
-    let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-    // Send the body as HTTP/1.1 chunked (no Content-Length header at all).
-    let r = send_chunked(&pep.addr, "POST", "/upsert", &hdrs, &big).await;
+    let pr = proof(&sk, "POST", "/upsert", &cred, &big, &jti());
+    let r = send_chunked(
+        &pep.addr,
+        "POST",
+        "/upsert",
+        &dpop_headers(&cred, &pr),
+        &big,
+    )
+    .await;
     assert_eq!(
         r.status, 413,
         "chunked oversize must be 413 (no CL to trust): {}",
@@ -1108,90 +1384,135 @@ async fn oversize_body_is_413_with_no_content_length() {
 #[tokio::test]
 async fn request_quota_exhaustion_is_429() {
     let backend = start_echo().await;
-    // Allow only 2 requests per minute.
     let pep = start_pep(&backend, ROUTES, 2, 1 << 30).await;
     let (sk, pk) = holder();
     let cred = pep.mint(&pk, &["sync_write"]);
-    // Two authed requests succeed; the third trips the per-identity quota.
     let mut last = 0u16;
     for _ in 0..3 {
-        let nonce = nonce_b64();
-        let pop = sign_http(&sk, "POST", "/upsert", b"x", &nonce, NOW);
-        let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
-        last = send(&pep.addr, "POST", "/upsert", &hdrs, b"x").await.status;
+        let pr = proof(&sk, "POST", "/upsert", &cred, b"x", &jti());
+        last = send(
+            &pep.addr,
+            "POST",
+            "/upsert",
+            &dpop_headers(&cred, &pr),
+            b"x",
+        )
+        .await
+        .status;
     }
     assert_eq!(last, 429, "quota should be exhausted by the 3rd request");
 }
 
 // ---------- route-table validation (boot-time) ----------
 
+/// Prepend the required `origin` to a routes-only TOML for the validation tests.
+fn with_origin(routes: &str) -> String {
+    format!("origin = \"{TEST_ORIGIN}\"\nbackend = \"http://127.0.0.1:1\"\n{routes}")
+}
+
 #[test]
-fn route_table_rejects_ambiguous_matcher() {
+fn route_table_rejects_missing_origin() {
+    // origin is REQUIRED — a DPoP htu is unverifiable without it, so a table that
+    // omits it must not even parse.
     let toml = r#"
 backend = "http://127.0.0.1:1"
+[[routes]]
+methods = ["GET"]
+path = "/x"
+auth = "passthrough"
+"#;
+    assert!(
+        toml::from_str::<RouteTableSpec>(toml).is_err(),
+        "a route table without origin must be rejected",
+    );
+}
+
+#[test]
+fn route_table_rejects_origin_without_scheme() {
+    let toml = r#"
+origin = "easypod.example"
+backend = "http://127.0.0.1:1"
+[[routes]]
+methods = ["GET"]
+path = "/x"
+auth = "passthrough"
+"#;
+    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+    assert!(
+        spec.resolve().is_err(),
+        "a bare-host origin (no scheme) must be rejected"
+    );
+}
+
+#[test]
+fn route_table_rejects_ambiguous_matcher() {
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["GET"]
 path = "/x"
 prefix = "/x"
 auth = "passthrough"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(spec.resolve().is_err(), "path+prefix must be rejected");
 }
 
 #[test]
 fn route_table_rejects_root_prefix() {
-    // `prefix = "/"` reads as a default-open catch-all but matches only the bare
-    // root under segment-boundary matching (the 2026-07 white-page outage). It
-    // must be inexpressible; the root is published with `path = "/"`.
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["GET"]
 prefix = "/"
 auth = "passthrough"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(spec.resolve().is_err(), "prefix \"/\" must be rejected");
 }
 
 #[test]
 fn route_table_rejects_authed_route_without_right() {
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["POST"]
 path = "/x"
 auth = "header"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(spec.resolve().is_err(), "header auth needs a right");
 }
 
 #[test]
 fn route_table_rejects_passthrough_with_right() {
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["GET"]
 path = "/x"
 auth = "passthrough"
 right = "sneaky"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(spec.resolve().is_err(), "passthrough must take no right");
 }
 
 #[test]
 fn route_table_rejects_unknown_auth() {
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["GET"]
 path = "/x"
 auth = "magic"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(
         spec.resolve().is_err(),
         "unknown auth mode must be rejected"
@@ -1200,17 +1521,16 @@ auth = "magic"
 
 #[test]
 fn route_table_rejects_query_auth_on_mutating_method() {
-    // FIX 2: query-auth is freshness-only (reusable), so a mutating signed URL
-    // could be replayed within the window — it must be GET/HEAD only, at boot.
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["POST"]
 path = "/x"
 auth = "query"
 right = "audio_get"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(
         spec.resolve().is_err(),
         "query auth on POST must be rejected"
@@ -1219,15 +1539,16 @@ right = "audio_get"
 
 #[test]
 fn route_table_allows_query_auth_on_get_and_head() {
-    let toml = r#"
-backend = "http://127.0.0.1:1"
+    let toml = with_origin(
+        r#"
 [[routes]]
 methods = ["GET", "HEAD"]
 path = "/audio"
 auth = "query"
 right = "audio_get"
-"#;
-    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+"#,
+    );
+    let spec: RouteTableSpec = toml::from_str(&toml).unwrap();
     assert!(spec.resolve().is_ok(), "GET/HEAD query auth is allowed");
 }
 

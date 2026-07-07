@@ -20,6 +20,13 @@ path = "src/bin/signer.rs"
 [dependencies]
 biscuit-auth = "5"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+# RFC 9449 DPoP proof (JWT) verification for the HTTP surface — a maintained JOSE
+# parser/verifier so the browser-facing proof is library-produced/consumed, not a
+# hand-rolled canonical held equal across three languages by cross-impl tests. The
+# `rust_crypto` provider (RustCrypto EdDSA) keeps this pure Rust — no ring/aws-lc C
+# toolchain — so it builds where the rest of the crate does. The runner surfaces
+# (cas/v0, dispatch/v0) keep the bespoke PoP.
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
 redb = "2"
 sha2 = "0.10"

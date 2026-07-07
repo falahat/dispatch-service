@@ -2,50 +2,58 @@
 
 The PEP has three in-path surfaces. Two are fixed (the dispatcher's framed runner
 surface and the CAS). The third is **generic HTTP**: it fronts one app's loopback
-HTTP backend (its Flask/FastAPI server) and enforces Biscuit + PoP per a static
-**route table** before streaming each request through. The backend binds loopback
-only, holds no auth crypto, and sees only pre-authenticated traffic — identical to
-the CAS surface, but the capability for each `(method, path)` is named by the route
-table rather than a fixed CAS convention.
+HTTP backend (its Flask/FastAPI server) and enforces Biscuit + a per-request **DPoP
+proof** per a static **route table** before streaming each request through. The
+backend binds loopback only, holds no auth crypto, and sees only pre-authenticated
+traffic — identical to the CAS surface, but the capability for each `(method, path)`
+is named by the route table rather than a fixed CAS convention.
 
 Enabling it is opt-in: set **both** `PEP_HTTP_ROUTES` (a route-table file) and
 `PEP_HTTP_LISTEN` (the surface's listen address). Absent, the PEP serves only the
 runner + CAS surfaces, exactly as before.
 
-## Canonical string (what the PoP signs)
+The runner + CAS surfaces keep their bespoke canonical-string PoP (`cas/v0`,
+`dispatch/v0`); only this browser-facing HTTP surface uses DPoP.
 
-```
-http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>
-```
+## DPoP proof (what the client signs)
 
-The PoP binds **method + path + the full request body**. `<path>` is the request
-path **without** the query string; `<sha256hex(body)>` is the lowercase hex SHA-256
-of the raw request body (`sha256hex(b"")` for an empty GET/HEAD body).
+The per-request proof is an **RFC 9449 DPoP proof JWT** — a short-lived JWS the holder
+signs with the Ed25519 key its Biscuit binds. The client uses a maintained JOSE library
+(browser `jose`, Python PyJWT); the PEP verifies with `jsonwebtoken` (EdDSA) and owns
+only the DPoP-specific claim checks. There is no hand-rolled canonical string.
 
-- **Body-binding (why).** The PEP buffers the body under a hard cap, hashes it, and
-  rebuilds this string from the *delivered* bytes — so tampering with the body after
-  signing breaks the PoP. We do **not** trust the transport to protect the body
-  ("the tunnel protects it" is the trust-the-tunnel assumption the plane rejects).
-  This matches the Python `trust_core` engine the apps use today.
-- **The query is NOT signed.** A signed URL carries its auth fields in the query, and
-  those fields cannot sign themselves. So a PoP binds the exact method + path (any
-  path tamper breaks it) while a benign query reordering is tolerated.
+- **header:** `typ = dpop+jwt`, `alg = EdDSA`, `jwk` = the holder's PUBLIC Ed25519 key
+  (OKP). The `alg` allowlist (EdDSA only) is the alg-confusion defense. The raw key from
+  the `jwk` is what the PEP binds against the Biscuit's `pubkey(<hex>)` fact — same key
+  material, hex vs base64url, so no thumbprint and no Biscuit change. Trusting the
+  in-proof `jwk` is not circular: the root-signed Biscuit is what authorizes that key.
+- **claims:**
+  - `htm` — the request method; `htu` — the request URI **without query/fragment**.
+    The PEP rebuilds `htu` from its **configured public origin + the request path**,
+    never from a client `Host`/`X-Forwarded-*` header (TLS terminates at the Serve edge).
+  - `ath = base64url(sha256(biscuit))` — binds the proof to *this* Biscuit.
+  - `content-digest = base64url(sha256(body))` — binds the full body (the empty-body
+    digest for a bodyless GET). The PEP buffers the body under a hard cap, hashes it, and
+    checks this against the *delivered* bytes, so post-signing tampering fails closed. We
+    do **not** trust the transport to protect the body. (Plain base64url of the hash — NOT
+    the RFC 9530 structured-field `Content-Digest` header.)
+  - `iat` (freshness) + `jti` (single-use replay id).
 
-Header names for header-auth are the plane-wide `x-dispatch-*` set:
-`x-dispatch-biscuit`, `x-dispatch-pubkey`, `x-dispatch-nonce`, `x-dispatch-ts`,
-`x-dispatch-pop`. Query-auth uses the same five names as query keys, minus the
-prefix: `biscuit`, `pubkey`, `nonce`, `ts`, `pop`.
+**Carriers.** Header-auth rides `Authorization: DPoP <biscuit>` + `DPoP: <proof-jwt>`.
+Query-auth (signed URLs, where a browser `<audio>`/`<img>` can't set headers) rides the
+`biscuit` + `dpop` query params; the proof's `htu` is the path only, so the query — which
+carries the auth — is not signed.
 
-## Nonce discipline: single-use vs freshness-only
+## Replay discipline: single-use vs freshness-only
 
-- **`header` auth is SINGLE-USE.** The nonce is consumed on the first verify, so an
+- **`header` auth is SINGLE-USE.** The proof `jti` is consumed on the first verify, so an
   exact replay of a mutating call is rejected (durably, across a PEP restart).
-- **`query` auth is FRESHNESS-ONLY.** The `ts` must be within the freshness window
-  (so a signed URL still **expires**), but the nonce is **not** stored. A browser
-  reusing one signed URL across range requests / retries (e.g. an `<audio>` element
-  seeking) is therefore not replay-rejected. Because a freshness-only credential is
-  reusable within its window, `query` auth is restricted to **idempotent GET/HEAD**
-  routes — a mutating query route is rejected at boot.
+- **`query` auth is FRESHNESS-ONLY.** The `iat` must be within the freshness window (so a
+  signed URL still **expires**), but the `jti` is **not** stored. A browser reusing one
+  signed URL across range requests / retries (e.g. an `<audio>` element seeking) is
+  therefore not replay-rejected. Because a freshness-only credential is reusable within
+  its window, `query` auth is restricted to **idempotent GET/HEAD** routes — a mutating
+  query route is rejected at boot.
 
 The freshness window is the plane-wide `PEP_FRESHNESS_MS` (default 5 min).
 
@@ -56,11 +64,11 @@ identity to the loopback backend as **`x-dispatch-identity: <pubkey-hex>`** — 
 Ed25519 pubkey the credential is bound to (the runner/device fingerprint). The backend
 attributes the request to that identity **without holding any auth crypto**.
 
-This header is un-spoofable: the PEP strips **every** client `x-dispatch-*` header before
-injecting its own, so a client that sends `x-dispatch-identity: someone-else` has it
-dropped and replaced with the PEP-verified value. On a **passthrough** route there is no
-verified identity, so **no** `x-dispatch-identity` is injected (and any client-sent one is
-still stripped).
+This header is un-spoofable: the PEP strips **every** client `x-dispatch-*` header (and the
+consumed `Authorization` / `DPoP` headers) before injecting its own, so a client that sends
+`x-dispatch-identity: someone-else` has it dropped and replaced with the PEP-verified value.
+On a **passthrough** route there is no verified identity, so **no** `x-dispatch-identity` is
+injected (and any client-sent one is still stripped).
 
 ## Route-table format
 
@@ -68,6 +76,11 @@ TOML (or JSON — anything serde reads). **Phases 3 & 5 must author files in exa
 this shape.**
 
 ```toml
+# The PEP's public origin (scheme + host, no path). REQUIRED: the DPoP `htu` a proof
+# must match is rebuilt from this + the request path, so it is a trusted config value,
+# never a client header. A missing origin fails at boot.
+origin = "https://easypod.tail46021f.ts.net"
+
 # The one loopback backend this surface fronts.
 backend = "http://127.0.0.1:5000"
 
@@ -76,14 +89,14 @@ backend = "http://127.0.0.1:5000"
 # oversize body past it; the request is rejected 413 the moment the cap is hit.
 max_body_bytes = 67108864
 
-# An authed API call: the five PoP fields ride in x-dispatch-* headers.
+# An authed API call: `Authorization: DPoP <biscuit>` + a `DPoP:` proof header.
 [[routes]]
 methods = ["POST"]
 path    = "/upsert"        # exact path
 auth    = "header"
 right   = "sync_write"     # required capability
 
-# A signed-URL GET: the five PoP fields ride in the query string.
+# A signed-URL GET: the biscuit + dpop proof ride in the query string.
 # Query auth is GET/HEAD only (freshness-only reusable reads).
 [[routes]]
 methods = ["GET"]
@@ -102,6 +115,7 @@ auth    = "passthrough"    # no `right`
 
 | field | where | meaning |
 |---|---|---|
+| `origin` | top level | the PEP's public origin (scheme + host, no path), e.g. `https://host.ts.net`. **Required**: the DPoP `htu` is rebuilt from this + the request path. A bare host (no scheme) or a missing value is a boot failure. |
 | `backend` | top level | loopback base URL, e.g. `http://127.0.0.1:5000`. |
 | `max_body_bytes` | top level, optional | per-request body cap in bytes, enforced while buffering (default 64 MiB). |
 | `routes` | top level | the array of route entries below. |
@@ -123,18 +137,20 @@ it matched says so.
 - No matching path → `404`.
 - Matching path but no matching method → `405`.
 - Body over the cap → `413` (caught while buffering).
-- Matched an authed route, auth fails → `401` (malformed / stale / replay / bad PoP /
-  bad biscuit / tampered body) or `403` (valid identity, missing right) — the same
-  status policy the CAS surface uses.
+- Matched an authed route, auth fails → `401` (malformed / stale / replay / bad DPoP
+  proof — signature, `htm`/`htu`/`ath`/`content-digest` mismatch, tampered body — or bad
+  biscuit) or `403` (valid identity, missing right) — the same status policy the CAS
+  surface uses.
 - Per-identity rate exceeded → `429`.
 - Matched a route, auth passes (or passthrough) → forwarded to `backend` with the full
-  path + query preserved, the true buffered length set, and the `x-dispatch-*` /
-  hop-by-hop headers stripped. The response body streams straight back.
+  path + query preserved, the true buffered length set, and the auth (`Authorization` /
+  `DPoP` / `x-dispatch-*`) + hop-by-hop headers stripped. The response body streams
+  straight back.
 
-A malformed route table (both `path` and `prefix`, neither, a `prefix = "/"`
-catch-all, an authed route with no `right`, a passthrough with a `right`, an unknown
-`auth`, a bad method, or a `query` route on a non-GET/HEAD method) is a **boot
-failure** — never a request-time surprise.
+A malformed route table (a missing/scheme-less `origin`, both `path` and `prefix`,
+neither, a `prefix = "/"` catch-all, an authed route with no `right`, a passthrough with
+a `right`, an unknown `auth`, a bad method, or a `query` route on a non-GET/HEAD method)
+is a **boot failure** — never a request-time surprise.
 
 ## Credential revocation (deny-list)
 

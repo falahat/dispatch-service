@@ -15,6 +15,8 @@ pub enum AuthError {
     BiscuitSignature,
     #[error("proof-of-possession failed")]
     PopFailed,
+    #[error("dpop proof rejected: {0}")]
+    DpopFailed(String),
     #[error("missing pubkey binding in credential")]
     MissingPubkey,
     #[error("missing identity in credential")]

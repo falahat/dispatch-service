@@ -1,10 +1,15 @@
-//! Canonical request strings — the exact bytes a proof-of-possession signs.
+//! Canonical request strings — the exact bytes a runner proof-of-possession signs.
 //! One source of truth for both the runner (Go) and the PEP (Rust): the PEP
 //! rebuilds the canonical string from structured request fields rather than
 //! trusting a client-supplied string.
+//!
+//! Only the RUNNER surfaces use a canonical string. The browser-facing HTTP
+//! surface authenticates with an RFC 9449 DPoP proof JWT instead (see
+//! [`crate::dpop`]); it has no `Op` because its proof is self-describing and
+//! library-verified, not a bespoke canonical.
 
-/// The operation an authenticated request performs, with everything needed to
-/// rebuild its canonical string and to name the required capability.
+/// The operation an authenticated runner request performs, with everything
+/// needed to rebuild its canonical string and to name the required capability.
 #[derive(Debug, Clone)]
 pub enum Op {
     /// A CAS request. Canonical: `cas/v0 <METHOD> <path> <nonce> <ts>`.
@@ -16,23 +21,6 @@ pub enum Op {
     Dispatch {
         verb: String,
         frame_sha256_hex: String,
-    },
-    /// A generic HTTP request fronted by the PEP's HTTP mode. Canonical:
-    /// `http/v0 <METHOD> <path> <sha256hex(body)> <nonce> <ts>`. The required
-    /// capability is carried on the op (resolved from the app's route table)
-    /// rather than derived from the method, because an app maps arbitrary
-    /// (method, path) pairs to its own rights.
-    ///
-    /// Method, path, AND the full request body are bound: the PEP buffers and
-    /// hashes the body, so tampering with it after signing breaks the PoP — we
-    /// do NOT trust the transport to protect the body. The query string is NOT
-    /// bound: signed-URL auth fields travel in the query and must not sign
-    /// themselves (and a GET/HEAD body is empty → `sha256hex(b"")`).
-    Http {
-        method: String,
-        path: String,
-        right: String,
-        body_sha256_hex: String,
     },
 }
 
@@ -52,17 +40,6 @@ impl Op {
                     verb, frame_sha256_hex, nonce_b64, ts_ms
                 )
             }
-            Op::Http {
-                method,
-                path,
-                body_sha256_hex,
-                ..
-            } => {
-                format!(
-                    "http/v0 {} {} {} {} {}",
-                    method, path, body_sha256_hex, nonce_b64, ts_ms
-                )
-            }
         }
     }
 
@@ -75,7 +52,6 @@ impl Op {
                 _ => "cas_deny",
             },
             Op::Dispatch { verb, .. } => verb.as_str(),
-            Op::Http { right, .. } => right.as_str(),
         }
     }
 }

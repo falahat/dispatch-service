@@ -6,8 +6,8 @@ the frozen `contracts/`, the implementer rules) and `docs/PEP_HTTP.md` for the H
 surface. The design rationale lives in easy-podcast's `docs/DISPATCH_PLANE.md`.
 
 This repo is one checkout in a single system whose other repos live under `Code/`
-(easy-podcast the product + its `transcription/` workspace, trust-core, tailnet-guard,
-antibody-analysis). Same owner, same bar as `transcription/CLAUDE.md` — that file does
+(easy-podcast the product + its `transcription/` workspace, trust-core, antibody-analysis).
+Same owner, same bar as `transcription/CLAUDE.md` — that file does
 NOT auto-load here, so the load-bearing rules are restated below.
 
 ## The bar

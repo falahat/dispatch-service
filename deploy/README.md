@@ -33,11 +33,15 @@ enrolls it (out of band — pairing is the root of trust), and writes
 
 ## Enrolling more runners / apps
 
+`keygen --out` writes the keypair to the credential file at 0600 and prints ONLY the
+public key — the private seed never touches stdout. Enroll that pubkey, then `seal`
+folds the returned Biscuit into the same file (the signer only ever sees the pubkey):
+
 ```sh
-auth/target/release/runner-tool keygen                 # -> pubkey_hex, seed_b64
+pub=$(deploy/secrets/runner-tool keygen --out deploy/cred/cred.json)
 auth/target/release/signer -secrets deploy/secrets/secrets.json \
-    enroll --pubkey <hex> --rights hello,lease,heartbeat,complete,fail,release,cas_get,cas_put --lanes transcribe
-# assemble {biscuit, pubkey_hex, seed_b64} into that runner's credential file.
+    enroll --pubkey "$pub" --rights hello,lease,heartbeat,complete,fail,release,cas_get,cas_put --lanes transcribe \
+  | deploy/secrets/runner-tool seal --cred deploy/cred/cred.json --biscuit-file -
 ```
 
 Apps that only use the CAS need `--rights cas_get,cas_put` and no lanes.

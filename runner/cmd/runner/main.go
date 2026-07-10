@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -28,27 +29,67 @@ func main() {
 	case "check":
 		checkCmd(os.Args[2:], log)
 	case "keygen":
-		keygenCmd()
+		keygenCmd(os.Args[2:])
+	case "seal":
+		sealCmd(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: runner run [flags] | runner check <image> [--fixture dir] | runner keygen")
+	fmt.Fprintln(os.Stderr, "usage: runner run [flags] | runner check <image> [--fixture dir] | runner keygen --out <file> | runner seal --cred <file> --biscuit-file <file|->")
 	os.Exit(2)
 }
 
-// keygenCmd mints a fresh Ed25519 keypair; enroll the printed pubkey with the
-// signer, then assemble a credential file {biscuit, pubkey_hex, seed_b64}.
-func keygenCmd() {
-	seed, pub, err := runner.GenerateKeypair()
+// keygenCmd mints a fresh Ed25519 keypair, writes {pubkey_hex, seed_b64} to the
+// --out file at 0600, and prints ONLY the public key. The private seed never
+// touches stdout — enroll the printed pubkey with the signer, then `runner seal`
+// folds the Biscuit into that same file.
+func keygenCmd(args []string) {
+	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
+	out := fs.String("out", "", "write the {pubkey_hex, seed_b64} keypair here at 0600 (REQUIRED; the seed goes ONLY here)")
+	_ = fs.Parse(args)
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "usage: runner keygen --out <keypair.json>  (the private seed is written ONLY to this 0600 file, never stdout)")
+		os.Exit(2)
+	}
+	pub, err := runner.WriteKeypair(*out)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "keygen:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("pubkey_hex=%s\nseed_b64=%s\n", pub, seed)
-	fmt.Fprintln(os.Stderr, "next: signer enroll --pubkey "+pub+" --rights ... --lanes ...  then write {biscuit, pubkey_hex, seed_b64} to a credential file")
+	fmt.Println(pub) // ONLY the public key on stdout
+	fmt.Fprintf(os.Stderr, "next: signer enroll --pubkey %s --rights ... --lanes ...  |  runner seal --cred %s --biscuit-file -\n", pub, *out)
+}
+
+// sealCmd folds a minted Biscuit (from --biscuit-file, or "-" for stdin) into the
+// keypair file from `keygen --out`, producing a complete credential at 0600.
+func sealCmd(args []string) {
+	fs := flag.NewFlagSet("seal", flag.ExitOnError)
+	cred := fs.String("cred", "", "the keypair file from `keygen --out` (sealed in place; REQUIRED)")
+	biscuitFile := fs.String("biscuit-file", "", "file with the minted Biscuit, or - for stdin (REQUIRED)")
+	_ = fs.Parse(args)
+	if *cred == "" || *biscuitFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: runner seal --cred <keypair.json> --biscuit-file <biscuit.txt|->")
+		os.Exit(2)
+	}
+	var biscuit []byte
+	var err error
+	if *biscuitFile == "-" {
+		biscuit, err = io.ReadAll(os.Stdin)
+	} else {
+		biscuit, err = os.ReadFile(*biscuitFile)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "seal:", err)
+		os.Exit(1)
+	}
+	if err := runner.SealCredential(*cred, string(biscuit)); err != nil {
+		fmt.Fprintln(os.Stderr, "seal:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "seal: wrote credential "+*cred)
 }
 
 func runCmd(args []string, log *slog.Logger) {

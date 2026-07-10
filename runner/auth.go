@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,9 +21,9 @@ import (
 // signs proofs-of-possession with. The runner never needs a Biscuit library —
 // the token is carried verbatim; only the PoP is computed here.
 type Credential struct {
-	Biscuit   string `json:"biscuit"`    // base64 Biscuit token
-	PubkeyHex string `json:"pubkey_hex"` // hex Ed25519 public key
-	SeedB64   string `json:"seed_b64"`   // base64 of the 32-byte Ed25519 seed
+	Biscuit   string `json:"biscuit,omitempty"` // base64 Biscuit token (omitted in a pre-seal keypair file)
+	PubkeyHex string `json:"pubkey_hex"`        // hex Ed25519 public key
+	SeedB64   string `json:"seed_b64"`          // base64 of the 32-byte Ed25519 seed
 }
 
 // LoadCredential reads a credential file.
@@ -50,6 +52,78 @@ func GenerateKeypair() (seedB64, pubkeyHex string, err error) {
 	priv := ed25519.NewKeyFromSeed(seed)
 	pub := priv.Public().(ed25519.PublicKey)
 	return base64.StdEncoding.EncodeToString(seed), hex.EncodeToString(pub), nil
+}
+
+// writeFile0600Atomic writes data to path via a same-dir temp file + rename, so a
+// reader never sees a partial credential and the bytes are 0600 from creation — the
+// private seed is never briefly world-readable.
+func writeFile0600Atomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cred-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// WriteKeypair mints a fresh Ed25519 keypair and writes {pubkey_hex, seed_b64} to
+// path at 0600 (no Biscuit yet), returning ONLY the public key. The private seed
+// goes solely into the 0600 file — never to stdout, a variable, or argv. Enroll the
+// returned pubkey with the signer, then SealCredential folds the Biscuit into this
+// same file.
+func WriteKeypair(path string) (pubkeyHex string, err error) {
+	seedB64, pubkeyHex, err := GenerateKeypair()
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(Credential{PubkeyHex: pubkeyHex, SeedB64: seedB64}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := writeFile0600Atomic(path, append(data, '\n')); err != nil {
+		return "", err
+	}
+	return pubkeyHex, nil
+}
+
+// SealCredential folds a minted Biscuit into an existing keypair file (from
+// WriteKeypair), producing a complete credential at 0600. It FAILS CLOSED if the
+// biscuit is blank or the keypair file lacks a pubkey/seed — it never writes a
+// half-formed credential. The seed is read and rewritten in-process; it never leaves.
+func SealCredential(path, biscuit string) error {
+	biscuit = strings.TrimSpace(biscuit)
+	if biscuit == "" {
+		return fmt.Errorf("seal: empty biscuit — refusing to write an unbound credential")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("seal: read keypair: %w", err)
+	}
+	var c Credential
+	if err := json.Unmarshal(b, &c); err != nil {
+		return fmt.Errorf("seal: parse keypair: %w", err)
+	}
+	if c.PubkeyHex == "" || c.SeedB64 == "" {
+		return fmt.Errorf("seal: keypair file %s is missing pubkey_hex/seed_b64", path)
+	}
+	c.Biscuit = biscuit
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFile0600Atomic(path, append(data, '\n'))
 }
 
 // popSigner turns a credential into the CAS Signer and dispatcher FrameWrapper.

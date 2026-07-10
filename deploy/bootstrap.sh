@@ -28,19 +28,14 @@ echo "   PEP_ROOT_PUBKEY=$ROOT_PUB"
 LANES="${1:-embed}"
 RIGHTS="hello,lease,heartbeat,complete,fail,release,cas_get,cas_put"
 
-echo "== runner keypair =="
-KG="$(deploy/secrets/runner-tool keygen 2>/dev/null)"
-PUBHEX="$(printf '%s\n' "$KG" | sed -n 's/^pubkey_hex=//p')"
-SEED="$(printf '%s\n' "$KG" | sed -n 's/^seed_b64=//p')"
-# Fail closed: don't enroll/write a credential from an empty keygen (its stderr is swallowed).
-[ -n "$PUBHEX" ] && [ -n "$SEED" ] || { echo "ERROR: runner keygen produced no keypair" >&2; exit 1; }
-
 echo "== enroll runner ($LANES) =="
-BISCUIT="$("${SIGNER[@]}" enroll --pubkey "$PUBHEX" --rights "$RIGHTS" --lanes "$LANES")"
-
-cat > deploy/cred/cred.json <<EOF
-{"biscuit":"$BISCUIT","pubkey_hex":"$PUBHEX","seed_b64":"$SEED"}
-EOF
+# keygen writes {pubkey_hex, seed_b64} to the 0600 credential file and prints ONLY the pubkey — the
+# private seed never touches this shell. The signer mints a Biscuit over the PUBLIC key; pipe it
+# straight into `seal`, which folds it into the same file (and fails closed on an empty biscuit).
+PUBHEX="$(deploy/secrets/runner-tool keygen --out deploy/cred/cred.json)"
+[ -n "$PUBHEX" ] || { echo "ERROR: runner keygen produced no pubkey" >&2; exit 1; }
+"${SIGNER[@]}" enroll --pubkey "$PUBHEX" --rights "$RIGHTS" --lanes "$LANES" \
+  | deploy/secrets/runner-tool seal --cred deploy/cred/cred.json --biscuit-file -
 echo "== wrote deploy/cred/cred.json (runner id ${PUBHEX:0:16}...) =="
 echo
 echo "Next: docker compose -f compose.dev.yml up --build"

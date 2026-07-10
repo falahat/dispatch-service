@@ -18,7 +18,11 @@ SIGNER=(auth/target/release/signer -secrets deploy/secrets/secrets.json)
 
 echo "== root public key -> .env =="
 ROOT_PUB="$("${SIGNER[@]}" pubkey)"
-echo "PEP_ROOT_PUBKEY=$ROOT_PUB" > .env
+# Upsert, don't clobber: preserve any other vars already in .env (matches plane-enroll.sh).
+touch .env
+grep -v '^PEP_ROOT_PUBKEY=' .env > .env.tmp || true
+echo "PEP_ROOT_PUBKEY=$ROOT_PUB" >> .env.tmp
+mv .env.tmp .env
 echo "   PEP_ROOT_PUBKEY=$ROOT_PUB"
 
 LANES="${1:-embed}"
@@ -28,6 +32,8 @@ echo "== runner keypair =="
 KG="$(deploy/secrets/runner-tool keygen 2>/dev/null)"
 PUBHEX="$(printf '%s\n' "$KG" | sed -n 's/^pubkey_hex=//p')"
 SEED="$(printf '%s\n' "$KG" | sed -n 's/^seed_b64=//p')"
+# Fail closed: don't enroll/write a credential from an empty keygen (its stderr is swallowed).
+[ -n "$PUBHEX" ] && [ -n "$SEED" ] || { echo "ERROR: runner keygen produced no keypair" >&2; exit 1; }
 
 echo "== enroll runner ($LANES) =="
 BISCUIT="$("${SIGNER[@]}" enroll --pubkey "$PUBHEX" --rights "$RIGHTS" --lanes "$LANES")"

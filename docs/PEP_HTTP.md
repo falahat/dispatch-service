@@ -67,6 +67,7 @@ attributes the request to that identity **without holding any auth crypto**.
 
 Credentials are consumed at the boundary. Header auth never forwards `Authorization` or
 `DPoP`; query auth removes `biscuit` and `dpop` while preserving application parameters.
+Duplicate query-auth parameters are rejected rather than resolved by order.
 
 This header is un-spoofable: the PEP strips **every** client `x-dispatch-*` header (and the
 consumed `Authorization` / `DPoP` headers) before injecting its own, so a client that sends

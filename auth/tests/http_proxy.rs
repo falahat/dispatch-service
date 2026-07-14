@@ -450,6 +450,57 @@ async fn query_auth_happy_path_consumes_auth_query() {
 }
 
 #[tokio::test]
+async fn percent_encoded_query_auth_is_consumed() {
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let q = format!(
+        "/audio?id=ep42&%62iscuit={}&%64pop={}",
+        urlenc(&cred),
+        urlenc(&pr),
+    );
+    let r = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(r.status, 200, "body: {}", r.body);
+    assert_eq!(r.echo().uri, "/audio?id=ep42");
+}
+
+#[tokio::test]
+async fn duplicate_query_auth_is_401() {
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["audio_get"]);
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let cred = urlenc(&cred);
+    let pr = urlenc(&pr);
+    let cases = [
+        (
+            "duplicate biscuit",
+            format!("/audio?biscuit={cred}&biscuit={cred}&dpop={pr}"),
+        ),
+        (
+            "encoded duplicate biscuit",
+            format!("/audio?biscuit={cred}&%62iscuit={cred}&dpop={pr}"),
+        ),
+        (
+            "duplicate dpop",
+            format!("/audio?biscuit={cred}&dpop={pr}&dpop={pr}"),
+        ),
+        (
+            "encoded duplicate dpop",
+            format!("/audio?biscuit={cred}&dpop={pr}&%64pop={pr}"),
+        ),
+    ];
+
+    for (name, q) in cases {
+        let r = send(&pep.addr, "GET", &q, &[], b"").await;
+        assert_eq!(r.status, 401, "{name} reached the backend: {}", r.body);
+    }
+}
+
+#[tokio::test]
 async fn passthrough_happy_path_forwards_unauthenticated() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;

@@ -696,7 +696,13 @@ fn extract_dpop_query(
     let mut proof = None;
     for (k, v) in url_query_pairs(q) {
         match k.as_str() {
+            "biscuit" if biscuit.is_some() => {
+                return Err(AuthError::Malformed("duplicate biscuit".into()));
+            }
             "biscuit" => biscuit = Some(v),
+            "dpop" if proof.is_some() => {
+                return Err(AuthError::Malformed("duplicate dpop proof".into()));
+            }
             "dpop" => proof = Some(v),
             _ => {}
         }

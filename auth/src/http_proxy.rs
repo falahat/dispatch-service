@@ -191,9 +191,11 @@ pub struct RouteTableSpec {
     /// `https://easypod.tail46021f.ts.net`. REQUIRED: the DPoP `htu` a proof must
     /// match is rebuilt from this + the request path, so it is a trusted config
     /// value, never a client header. A missing origin fails at boot.
-    pub origin: String,
+    #[serde(default)]
+    pub origin: Option<String>,
     /// Loopback backend base URL, e.g. `http://127.0.0.1:5000`.
-    pub backend: String,
+    #[serde(default)]
+    pub backend: Option<String>,
     /// Ordered routes (order is irrelevant to matching — longest match wins).
     pub routes: Vec<RouteSpec>,
     /// Optional per-request body cap in bytes (default 64 MiB).
@@ -217,15 +219,32 @@ impl RouteTableSpec {
     /// Validate + resolve a spec into an `HttpConfig`. Rejects an ambiguous or
     /// incomplete route so a misconfiguration fails at boot, not in the path.
     pub fn resolve(self) -> std::result::Result<HttpConfig, RouteTableError> {
+        self.resolve_with(None, None)
+    }
+
+    /// Resolve with deployment-owned origin/backend values. Environment-specific
+    /// values stay out of the tracked route policy; explicit overrides win.
+    pub fn resolve_with(
+        self,
+        origin_override: Option<String>,
+        backend_override: Option<String>,
+    ) -> std::result::Result<HttpConfig, RouteTableError> {
         // The public origin the DPoP `htu` is rebuilt from must be a real
         // scheme+authority; a bare host or an empty value would make every proof's
         // `htu` unverifiable. Trailing slash is trimmed so `<origin><path>` never
         // doubles it (`location.origin` never has one).
-        let origin = self.origin.trim_end_matches('/').to_string();
+        let configured_origin = origin_override.or(self.origin).unwrap_or_default();
+        let origin = configured_origin.trim_end_matches('/').to_string();
         if origin.is_empty() || !origin.contains("://") {
             return Err(RouteTableError(format!(
                 "origin must be a scheme+host like https://host.example (got {:?})",
-                self.origin
+                configured_origin
+            )));
+        }
+        let backend = backend_override.or(self.backend).unwrap_or_default();
+        if backend.is_empty() || !backend.contains("://") {
+            return Err(RouteTableError(format!(
+                "backend must be a scheme+host like http://app:8080 (got {backend:?})"
             )));
         }
         let mut routes = Vec::with_capacity(self.routes.len());
@@ -314,7 +333,7 @@ impl RouteTableSpec {
         }
         Ok(HttpConfig {
             origin,
-            backend: self.backend,
+            backend,
             table: RouteTable::new(routes),
             max_body_bytes: self.max_body_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES),
         })

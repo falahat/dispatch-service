@@ -1441,8 +1441,8 @@ fn with_origin(routes: &str) -> String {
 
 #[test]
 fn route_table_rejects_missing_origin() {
-    // origin is REQUIRED — a DPoP htu is unverifiable without it, so a table that
-    // omits it must not even parse.
+    // A file may omit deployment-owned endpoints, but resolution must still fail
+    // when neither the file nor the environment supplies them.
     let toml = r#"
 backend = "http://127.0.0.1:1"
 [[routes]]
@@ -1450,10 +1450,29 @@ methods = ["GET"]
 path = "/x"
 auth = "passthrough"
 "#;
-    assert!(
-        toml::from_str::<RouteTableSpec>(toml).is_err(),
-        "a route table without origin must be rejected",
-    );
+    let spec: RouteTableSpec = toml::from_str(toml).unwrap();
+    assert!(spec.resolve().is_err());
+}
+
+#[test]
+fn deployment_can_supply_origin_and_backend() {
+    let spec: RouteTableSpec = toml::from_str(
+        r#"
+[[routes]]
+methods = ["GET"]
+path = "/health"
+auth = "passthrough"
+"#,
+    )
+    .unwrap();
+    let cfg = spec
+        .resolve_with(
+            Some("https://app.example".to_string()),
+            Some("http://app:8080".to_string()),
+        )
+        .unwrap();
+    assert_eq!(cfg.origin, "https://app.example");
+    assert_eq!(cfg.backend, "http://app:8080");
 }
 
 #[test]

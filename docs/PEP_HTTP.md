@@ -9,8 +9,9 @@ traffic — identical to the CAS surface, but the capability for each `(method, 
 is named by the route table rather than a fixed CAS convention.
 
 Enabling it is opt-in: set **both** `PEP_HTTP_ROUTES` (a route-table file) and
-`PEP_HTTP_LISTEN` (the surface's listen address). Absent, the PEP serves only the
-runner + CAS surfaces, exactly as before.
+`PEP_HTTP_LISTEN` (the surface's listen address). `PEP_HTTP_ORIGIN` and
+`PEP_HTTP_BACKEND` may supply the deployment-specific endpoints; otherwise the route
+file must contain them. Absent, the PEP serves only the runner + CAS surfaces.
 
 The runner + CAS surfaces keep their bespoke canonical-string PoP (`cas/v0`,
 `dispatch/v0`); only this browser-facing HTTP surface uses DPoP.
@@ -79,12 +80,9 @@ TOML (or JSON — anything serde reads). **Phases 3 & 5 must author files in exa
 this shape.**
 
 ```toml
-# The PEP's public origin (scheme + host, no path). REQUIRED: the DPoP `htu` a proof
-# must match is rebuilt from this + the request path, so it is a trusted config value,
-# never a client header. A missing origin fails at boot.
+# These may instead be supplied by PEP_HTTP_ORIGIN and PEP_HTTP_BACKEND. A missing
+# value fails at boot; deployment overrides win over values in this file.
 origin = "https://easypod.tail46021f.ts.net"
-
-# The one loopback backend this surface fronts.
 backend = "http://127.0.0.1:5000"
 
 # Optional per-request body cap in bytes (default 64 MiB). Enforced by counting

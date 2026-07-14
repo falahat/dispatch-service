@@ -191,10 +191,15 @@ async fn main() {
             eprintln!("pep: parse http route table {routes_path}: {e}");
             std::process::exit(2);
         });
-        let cfg = spec.resolve().unwrap_or_else(|e| {
-            eprintln!("pep: {e}");
-            std::process::exit(2);
-        });
+        let cfg = spec
+            .resolve_with(
+                std::env::var("PEP_HTTP_ORIGIN").ok(),
+                std::env::var("PEP_HTTP_BACKEND").ok(),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("pep: {e}");
+                std::process::exit(2);
+            });
         let backend = cfg.backend.clone();
         let http_max_req: u32 = env("PEP_HTTP_MAX_REQ_PER_MIN", "6000")
             .parse()

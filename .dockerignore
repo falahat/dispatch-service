@@ -1,0 +1,7 @@
+.git
+.env
+**/.env
+auth/target
+client-web/node_modules
+client-web/dist
+**/__pycache__

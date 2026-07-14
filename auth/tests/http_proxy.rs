@@ -431,7 +431,7 @@ async fn header_auth_happy_path_forwards_and_strips_auth() {
 }
 
 #[tokio::test]
-async fn query_auth_happy_path_forwards_full_query() {
+async fn query_auth_happy_path_consumes_auth_query() {
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();
@@ -446,13 +446,7 @@ async fn query_auth_happy_path_forwards_full_query() {
     assert_eq!(r.status, 200, "body: {}", r.body);
     let echo = r.echo();
     assert_eq!(echo.method, "GET");
-    // The backend receives the full query verbatim (app param survives).
-    assert!(echo.uri.starts_with("/audio?id=ep42"), "uri: {}", echo.uri);
-    assert!(
-        echo.uri.contains("dpop="),
-        "auth query forwarded: {}",
-        echo.uri
-    );
+    assert_eq!(echo.uri, "/audio?id=ep42");
 }
 
 #[tokio::test]

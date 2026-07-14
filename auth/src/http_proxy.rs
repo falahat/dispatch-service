@@ -448,6 +448,7 @@ impl HttpProxy {
         // (reusable signed-URL read, but still expires). `verified` is the
         // authenticated pubkey to hand the backend on an authed route, and None
         // on passthrough (there is no verified identity to inject).
+        let query_auth = matches!(auth, RouteAuth::Query(_));
         let (id, verified): (String, Option<String>) = match &auth {
             RouteAuth::Passthrough => ("anon".to_string(), None),
             RouteAuth::Header(right) => {
@@ -479,7 +480,8 @@ impl HttpProxy {
             return text(StatusCode::TOO_MANY_REQUESTS, "quota_exceeded");
         }
 
-        self.forward(parts, buffered, verified.as_deref()).await
+        self.forward(parts, buffered, verified.as_deref(), query_auth)
+            .await
     }
 
     /// Verify a built DPoP request against the shared engine (`verify_http_dpop`).
@@ -496,9 +498,8 @@ impl HttpProxy {
         .map(|id| id.id)
     }
 
-    /// Forward the buffered request to the loopback backend, preserving method,
-    /// the full path+query, and the (already-read) body. The response body still
-    /// streams straight back, unbuffered.
+    /// Forward the buffered request to the backend. Query-auth credentials are
+    /// consumed here; application query parameters survive unchanged.
     ///
     /// `verified` is the authenticated pubkey (hex) on an authed route, or None
     /// on passthrough. When present, it is injected as `x-dispatch-identity` AFTER
@@ -510,9 +511,18 @@ impl HttpProxy {
         parts: hyper::http::request::Parts,
         body: Bytes,
         verified: Option<&str>,
+        strip_query_auth: bool,
     ) -> Response<BoxedBody> {
         let path = parts.uri.path();
         let pq = match parts.uri.query() {
+            Some(q) if strip_query_auth => {
+                let query = query_without_auth(q);
+                if query.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{path}?{query}")
+                }
+            }
             Some(q) => format!("{path}?{q}"),
             None => path.to_string(),
         };
@@ -707,6 +717,18 @@ fn url_query_pairs(q: &str) -> Vec<(String, String)> {
             (percent_decode(k), percent_decode(v))
         })
         .collect()
+}
+
+/// Remove the query credentials consumed by a query-auth route while preserving
+/// every application parameter byte-for-byte.
+fn query_without_auth(q: &str) -> String {
+    q.split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            !matches!(percent_decode(key).as_str(), "biscuit" | "dpop")
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn percent_decode(s: &str) -> String {

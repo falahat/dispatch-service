@@ -64,6 +64,9 @@ identity to the loopback backend as **`x-dispatch-identity: <pubkey-hex>`** — 
 Ed25519 pubkey the credential is bound to (the runner/device fingerprint). The backend
 attributes the request to that identity **without holding any auth crypto**.
 
+Credentials are consumed at the boundary. Header auth never forwards `Authorization` or
+`DPoP`; query auth removes `biscuit` and `dpop` while preserving application parameters.
+
 This header is un-spoofable: the PEP strips **every** client `x-dispatch-*` header (and the
 consumed `Authorization` / `DPoP` headers) before injecting its own, so a client that sends
 `x-dispatch-identity: someone-else` has it dropped and replaced with the PEP-verified value.
@@ -142,10 +145,9 @@ it matched says so.
   biscuit) or `403` (valid identity, missing right) — the same status policy the CAS
   surface uses.
 - Per-identity rate exceeded → `429`.
-- Matched a route, auth passes (or passthrough) → forwarded to `backend` with the full
-  path + query preserved, the true buffered length set, and the auth (`Authorization` /
-  `DPoP` / `x-dispatch-*`) + hop-by-hop headers stripped. The response body streams
-  straight back.
+- Matched a route, auth passes (or passthrough) → forwarded to `backend` with application
+  parameters preserved, the true buffered length set, and auth + hop-by-hop fields removed.
+  The response body streams straight back.
 
 A malformed route table (a missing/scheme-less `origin`, both `path` and `prefix`,
 neither, a `prefix = "/"` catch-all, an authed route with no `right`, a passthrough with

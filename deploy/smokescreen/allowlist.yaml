@@ -1,33 +1,11 @@
-# Egress allowlist for the plane's two egress lanes. Role is assigned by the client's
-# source network (main.go — the internal network's membership is the identity: only a
-# known, single-purpose peer set shares each egress network). Each lane is a DIFFERENT
-# threat, so each has its OWN role + stanza — never a widening of another.
-#
-#   worker  worker-net GPU compute pulling model weights. The host set is EMPIRICAL —
-#           observed from a full production-policy pipeline run (transcribe + align +
-#           diarize + embed), not guessed:
-#             huggingface.co + cdn-lfs*/xet     hub API, LFS + xet-backed weight downloads
-#             download.pytorch.org              torchaudio alignment pipelines (wav2vec2)
-#             raw.githubusercontent.com         nltk tokenizer data (pulled at first use)
-#           Models pull themselves on first use into the cache volume (a speed/convenience
-#           cache, not a maintained artifact).
-#
-#   ingest  the coordinator fetching podcast feeds + cover art from ARBITRARY public hosts.
-#           The URLs are attacker-controlled, so no host allowlist is possible or meaningful
-#           — the threat is SSRF (reaching an INTERNAL host), not which public CDN. So this
-#           lane is `action: open` (allow every PUBLIC host) and the config's deny_ranges is
-#           the SSRF control: it denies internal / loopback / link-local / metadata / CGNAT
-#           on the RESOLVED IP, at CONNECT, on every redirect hop — closing the DNS-rebinding
-#           TOCTOU window a pre-resolve app check cannot. `open` is NOT `enforce []` (deny):
-#           it lets any public host through while deny_ranges still blocks the private class.
-#
-# A future lane with different egress needs gets its OWN role (an mTLS client-cert CN, once
-# clients present certs) and its own stanza — never a widening of one of these.
+# Source-network roles have separate policies. `model` is an exact host allowlist for
+# compute downloads. `ingest` accepts arbitrary public podcast hosts; config.yaml still
+# rejects private, local, metadata, link-local, and CGNAT addresses on every connection.
 ---
 version: v1
 
 services:
-  - name: worker
+  - name: model
     project: easypod
     action: enforce
     allowed_domains:
@@ -41,9 +19,6 @@ services:
 
   - name: ingest
     project: easypod
-    # `open`: allow ALL public hosts (feeds/covers live anywhere). SSRF is not policed by
-    # a host list here — the config's deny_ranges rejects the internal/private class on the
-    # resolved IP. This is the single egress SSRF control (the app no longer pre-resolves).
     action: open
 
 # Anything not carrying a known role: enforce against an empty allow set = deny.

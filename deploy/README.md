@@ -1,55 +1,37 @@
-# Deploying the dispatch plane
+# Local integration deployment
 
-`compose.dev.yml` brings the whole plane up on one host for integration + E2E.
-Production distributes the runner/compute pairs across the tailnet; the container
-graph is identical — only the network between the runner and the PEP changes from
-a compose network to the tailnet.
+`compose.dev.yml` is a standalone integration stack for the plane. It is not the
+easy-podcast production deployment. easy-podcast owns the production topology and runs it
+through
+[`deploy/easypod`](https://github.com/falahat/easy-podcast/blob/main/deploy/easypod).
 
-## Trust boundaries (as network topology)
+## Topology
 
-| Network | Members | Exposed? |
+| Network | Members | Host exposure |
 |---|---|---|
-| `backplane` (internal) | pep ⇄ dispatcher ⇄ cas — "loopback" | no |
-| `edge` | the pep's runner + cas surfaces | yes (the only doors) |
-| `worker` (internal) | a runner ⇄ its compute container | no |
-| `egress` | smokescreen ⇄ internet | no (smokescreen only) |
+| `backplane` | PEP, dispatcher, CAS | none |
+| `edge` | PEP and runner | PEP ports `7443` and `8443` |
+| `invoke` | runner and echo compute | none |
 
-The compute container is jailed on `worker` (internal) with no credentials and no
-route out. An **ingest**-lane image (feed/download) additionally sets
-`HTTP(S)_PROXY=smokescreen:4750` and is on `worker` only — so its single outbound
-neighbor is the EgressGuard, which enforces the host allowlist.
+The echo compute has no credential and no internet route. Application deployments add
+their own compute and ingest egress guards on separate internal networks.
 
-## Bring-up
+## Start
 
 ```sh
-./deploy/bootstrap.sh embed        # issuer key + .env + a runner credential
+./deploy/bootstrap.sh embed
 docker compose -f compose.dev.yml up --build
 ```
 
-`bootstrap.sh` mints the issuer key (or reuses an existing `deploy/secrets/secrets.json`),
-writes the PEP's root public key to `.env`, generates a runner Ed25519 keypair,
-enrolls it (out of band — pairing is the root of trust), and writes
-`deploy/cred/cred.json`. Re-running preserves existing pairings.
+Bootstrap preserves an existing issuer key and pairing registry, writes the issuer public
+key to `.env`, and creates a mode-`0600` runner credential under `deploy/cred/`. The private
+holder seed stays in that credential file.
 
-## Enrolling more runners / apps
-
-`keygen --out` writes the keypair to the credential file at 0600 and prints ONLY the
-public key — the private seed never touches stdout. Enroll that pubkey, then `seal`
-folds the returned Biscuit into the same file (the signer only ever sees the pubkey):
+Stop and remove the local containers with:
 
 ```sh
-pub=$(deploy/secrets/runner-tool keygen --out deploy/cred/cred.json)
-auth/target/release/signer -secrets deploy/secrets/secrets.json \
-    enroll --pubkey "$pub" --rights hello,lease,heartbeat,complete,fail,release,cas_get,cas_put --lanes transcribe \
-  | deploy/secrets/runner-tool seal --cred deploy/cred/cred.json --biscuit-file -
+docker compose -f compose.dev.yml down
 ```
 
-Apps that only use the CAS need `--rights cas_get,cas_put` and no lanes.
-
-## Notes
-
-- The CAS is **bazel-remote**; the PEP rewrites its `/blobs/sha256/<hex>` surface
-  to bazel-remote's `/cas/<hex>` (`PEP_CAS_STYLE=bazel`).
-- `deploy/secrets/`, `deploy/cred/`, and `.env` hold secrets and are gitignored.
-- Cost gate defaults to `$0` (fail-closed): no priced/cloud job runs until the cap
-  is raised via `dispatchctl` / config.
+The CAS rewrites Bazel Remote Cache paths behind the PEP. The default priced-work cap is
+`$0.00`, so this stack cannot admit cloud-priced work.

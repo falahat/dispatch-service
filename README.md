@@ -1,62 +1,54 @@
 # dispatch-service
 
-The shared **dispatch plane**: one durable, co-located work service (the **dispatcher**) and
-its paired **runner** image, spoken to over frozen, language-neutral contracts. The design
-reference is easy-podcast's [`docs/DISPATCH_PLANE.md`](../transcription/easy-podcast/docs/DISPATCH_PLANE.md);
-this repo is its implementation home. Auth is [trust-core](../trust-core) (Biscuit + PoP).
+dispatch-service is the reusable GPU work plane used by easy-podcast and
+antibody-analysis. It provides a durable queue, authenticated CAS, runner, isolated
+compute protocol, and constrained egress. Each application deploys its own plane instance,
+trust root, and runtime state; only the code and wire contracts are shared. The system
+design lives in easy-podcast's
+[dispatch-plane document](https://github.com/falahat/easy-podcast/blob/main/docs/DISPATCH_PLANE.md).
 
-## Status
+## Components
 
-The plane is **live in production for both apps**: easy-podcast (shared drain, GPU
-transcribe/embed) and antibody-analysis (its own isolated plane instance) each run this
-dispatcher + runner + Rust PEP/PDP + signer from SHA-tagged images, deployed per
-easy-podcast's `docs/RUNBOOK.md`. Tested at every layer — unit suites, component
-integration, a **cross-language auth E2E** (Go runner ⇄ Rust PEP ⇄ dispatcher + CAS), a
-**SIGKILL crash-injection** proving exactly-once recovery, and hand-written adversarial
-suites per auth boundary. Drain health is a first-class read: the `stats` verb
-(`dispatchctl stats`, shipped inside the dispatcher image) feeds each app's gauges and
-stall alerts.
+| Path | Responsibility |
+|---|---|
+| `contracts/` | Versioned wire, artifact, CAS, invoke, and state-machine contracts |
+| `dispatcher/` | Durable queue, leases, fencing, retries, admission, and fleet state |
+| `runner/` | Authenticated lease client, CAS transfer, and compute invocation |
+| `auth/` | Biscuit/PoP PEPs, nonce and revocation stores, and isolated signer |
+| `client/` | Python application client for the dispatcher's Unix socket |
+| `dispatchctl/` | Operator commands for queue and fleet state |
+| `deploy/smokescreen/` | Source-network egress roles and destination policy |
+| `compute/echo/` | Credential-free fixture compute used by integration tests |
 
-## Layout
+The schemas under `contracts/` are normative. Components reject unsupported contract
+versions rather than negotiating mixed deployments.
 
-| Path | What | Language |
-|---|---|---|
-| `contracts/` | **The frozen v0 contracts** — normative specs + JSON Schemas + the state machine as data. Everything below implements these; nothing implements prose. | data |
-| `dispatcher/` | the work service: durable queue (SQLite WAL), leases, retries, cost admission, fleet; the pure decision rules as an internal package | **Go** (born) |
-| `runner/` | the shared worker client image; drives compute containers over the invoke protocol | **Go** (born) |
-| `pep/` | the auth enforcement proxy + PDP — the **single verify engine**, in-path on the dispatcher's runner surface, the CAS, and an app's generic HTTP surface ([`docs/PEP_HTTP.md`](docs/PEP_HTTP.md); backends get pre-authed requests over loopback) + the **signer** (mint), one crate | **Rust** (born) |
-| `client/` | the app-side UDS client (enqueue · completions subscription · ack · views) | Python (for the Python apps) |
-| `dispatchctl/` | the human console over the admin surface | **Go** (with the dispatcher) |
-| `tests/` | unit (per package) · integration (compose) · E2E (full job flow + crash injection) · adversarial (hand-written attacks per boundary) | protected |
+## Local integration
 
-Every component is **born in its end-state language** — no interim Python, no port phase.
+The standalone stack uses the echo compute and has no internet egress:
 
-## Stack (decided)
+```sh
+./deploy/bootstrap.sh embed
+docker compose -f compose.dev.yml up --build
+```
 
-- **Monorepo — chosen, not forced.** Versioning could support polyrepo; we choose against
-  the compat matrix it implies (this plane deploys as one unit, for one operator). What the
-  monorepo buys: a contract change is ONE atomic PR proving every component together; one
-  compose/E2E harness; no N×M version states. It stays reversible: components share **no
-  code, only the contracts**, so splitting one out later is cutting a directory.
-- **Go** components: stdlib `net/http`, `modernc.org/sqlite` (pure-Go, cgo-free → static
-  scratch image). **Rust** components: tokio + hyper/axum + `biscuit-auth`.
-- **CAS = bazel-remote** (verifies digests on write natively; the PEP inherits integrity).
-  The cloud lane is the same address space over GCS signed URLs.
-- **EgressGuard = smokescreen** (adopted), the ingest lane's only outbound neighbor — built
-  in Phase 1, not later.
-- **Cost gate** (reserve-on-approval, `$0` fail-closed default) is **in v0** — inert until
-  cloud is enabled.
-- **Config:** one `plane.toml` per stack, read at boot; change = restart (downtime is free).
+Production is not launched from this repository. The consuming application owns its
+Compose topology, credentials, egress policy, and release record. easy-podcast uses
+[`deploy/easypod`](https://github.com/falahat/easy-podcast/blob/main/deploy/easypod) as its
+only production path.
 
-## Rules for implementers (human or agent)
+## Gates
 
-1. Implement against `contracts/schemas/*.json` and `contracts/states.json` — never against
-   prose alone; the prose explains, the schemas bind.
-2. `tests/**` is the acceptance gate. Implementation PRs **add** tests and make them pass;
-   they do not weaken or delete existing tests. The **adversarial** suites are hand-written,
-   never agent-generated, and no implementation PR may modify them.
-3. Contract changes are their own human-approved PRs.
-4. Every PR cites the DISPATCH_PLANE decision rows it implements.
-5. All times are **server-stamped** ms-epoch; runner-reported timings are hints, never truth.
-6. **Completion means deletion** — a migration PR is not done until the old code it replaces
-   is gone.
+```sh
+go test ./...
+(cd deploy/smokescreen && go test ./...)
+cargo test --manifest-path auth/Cargo.toml
+docker compose -f compose.dev.yml config --quiet
+```
+
+The Rust PEP is the only credential-verification engine. Backends receive verified
+identity and never parse credentials. Model and ingest egress use separate source-network
+roles; unknown roles are denied. The priced-work cap defaults to `$0.00`.
+
+Security-boundary tests under `auth/tests/` are hand-written and must not be weakened or
+generated by an agent. HTTP PEP details are in [docs/PEP_HTTP.md](docs/PEP_HTTP.md).

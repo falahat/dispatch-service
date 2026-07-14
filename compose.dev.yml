@@ -1,23 +1,12 @@
-# The dispatch plane, single-host, for local integration + E2E. Production
-# distributes the runner/compute pairs across the tailnet (see deploy/README.md);
-# the container graph is identical.
-#
-# Trust boundaries as network topology:
-#   backplane (internal) — pep <-> dispatcher <-> cas over "loopback"; never exposed.
-#   edge                 — the pep's tailnet-facing surfaces; the only exposed doors.
-#   worker  (internal)   — a runner and its compute container; compute has no route
-#                          out except (for ingest lanes) the smokescreen egress guard.
-#   egress               — smokescreen's path to the internet.
-#
-# Bootstrap (once): ./deploy/bootstrap.sh generates secrets/, .env, and cred/.
+# Standalone local integration stack. Consuming applications own production Compose.
+# The bundled echo compute needs no internet route or egress guard.
 
 networks:
   backplane:
     internal: true
   edge: {}
-  worker:
+  invoke:
     internal: true
-  egress: {}
 
 volumes:
   cas-data: {}
@@ -73,27 +62,15 @@ services:
       - "8443:8443" # cas surface (tailnet)
     restart: unless-stopped
 
-  # EgressGuard (adopted smokescreen): the ONLY outbound neighbor of ingest-lane
-  # compute. On [worker] (reachable by ingest compute) + [egress] (reaches out).
-  smokescreen:
-    build:
-      context: ./deploy/smokescreen
-    command: ["--config-file", "/etc/smokescreen/config.yaml"]
-    networks: [worker, egress]
-    volumes:
-      - ./deploy/smokescreen/config.yaml:/etc/smokescreen/config.yaml:ro
-      - ./deploy/smokescreen/allowlist.yaml:/etc/smokescreen/allowlist.yaml:ro
-    restart: unless-stopped
-
   # A worker: the runner drives its paired compute over the invoke protocol on
-  # the private worker network; both share the /work volume. This example runs
+  # the private invoke network; both share the /work volume. This example runs
   # the echo compute on the `embed` lane.
   runner-embed:
     build:
       context: .
       dockerfile: runner/Dockerfile
     depends_on: [pep, echo]
-    networks: [edge, worker]
+    networks: [edge, invoke]
     environment:
       DISPATCHER_ADDR: pep:7443
       CAS_URL: http://pep:8443
@@ -106,13 +83,11 @@ services:
       - ./deploy/cred:/run/cred:ro
     restart: unless-stopped
 
-  # The compute container: jailed on the worker network, no credentials, no
-  # egress. (An ingest-lane image would additionally set HTTP(S)_PROXY to
-  # smokescreen and be its only outbound door.)
+  # The compute container has no credential or internet route.
   echo:
     build:
       context: ./compute/echo
-    networks: [worker]
+    networks: [invoke]
     environment:
       INVOKE_ADDR: 0.0.0.0:8080
     volumes:

@@ -1,12 +1,9 @@
-# Smokescreen (EgressGuard) config. Worker-lane compute reaches the internet ONLY
-# through this proxy, and only to the allowlisted model hosts (allowlist.yaml).
-# Deny is the default.
+# Smokescreen config. Model compute reaches allowlisted hosts through this proxy.
+# Unknown roles and special-purpose address ranges are denied.
 ---
 # listen-ip / listen-port / egress-acl-file are passed as CLI flags in the deploy
 # compose command (this smokescreen version rejects them as config-file keys).
-# Deny access to link-local / private ranges by default (SSRF hardening,
-# including the CGNAT range). smokescreen blocks RFC1918 + loopback natively;
-# these add the remaining special ranges.
+# Smokescreen blocks RFC1918 and loopback natively; these add other special ranges.
 deny_ranges:
   - 169.254.0.0/16
   - 100.64.0.0/10

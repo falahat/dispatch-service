@@ -1,42 +1,8 @@
-//! The generic HTTP enforcement proxy: it fronts an arbitrary loopback HTTP
-//! backend (an app's Flask/FastAPI server) and, per a static per-app route
-//! table, enforces Biscuit + a DPoP proof on each request before forwarding it.
-//! The backend sees only pre-authenticated loopback traffic and holds no auth
-//! crypto — like `CasProxy`, but the capability for each (method, path) is named
-//! by the route table rather than a fixed CAS convention.
+//! HTTP PEP for static per-app route policy, Biscuit rights, and RFC 9449 DPoP.
 //!
-//! The per-request proof is an RFC 9449 **DPoP proof JWT** (see [`crate::dpop`]),
-//! which binds method + URI + the presented Biscuit + the FULL request body (a
-//! `content-digest` claim). On an authed route the PEP buffers the body under a
-//! HARD cap (413 if the cap is hit WHILE reading — the advisory Content-Length is
-//! never trusted), hashes it, verifies the proof against the hash, then forwards
-//! the buffered bytes. We do NOT trust the transport to protect the body. This is
-//! the small app-JSON surface; large blobs stay on the streaming CAS. Response
-//! bodies still stream straight back, unbuffered.
-//!
-//! The `htu` the proof must match is rebuilt by the PEP from its CONFIGURED public
-//! origin plus the request path — never from a client `Host`/`X-Forwarded-*`
-//! header (TLS terminates at the Serve edge, so those are untrusted here).
-//!
-//! Three auth modes per route.
-//!
-//! `Header(right)`: the Biscuit rides in `Authorization: DPoP <biscuit>` and the
-//! proof in the `DPoP:` header — the standard authed (mutating) API call.
-//! SINGLE-USE: the proof `jti` is consumed, so an exact replay is rejected.
-//!
-//! `Query(right)`: the Biscuit + proof ride in the `biscuit` / `dpop` query params,
-//! for signed-URL GET/HEAD reads (`GET /audio?...&dpop=...`) where a browser
-//! `<audio>`/`<img>` can't set headers. The proof binds an empty body; its `htu`
-//! is the path (no query), so the auth params don't sign themselves. FRESHNESS-ONLY:
-//! the `iat` must be within the window (so the URL EXPIRES) but the `jti` is not
-//! stored, so a browser reusing one signed URL across range requests / retries is
-//! not replay-rejected. Query-auth is restricted to idempotent GET/HEAD at
-//! route-table boot time.
-//!
-//! `Passthrough`: forwarded unauthenticated (app-shell GET, the enrollment
-//! redeem endpoint). A passthrough route can never satisfy an authed route:
-//! routing is decided once, before auth, by longest-match, so a request is
-//! authed iff the route it matched says so.
+//! Header proofs are single-use. Query proofs are freshness-limited GET/HEAD URLs whose
+//! auth parameters are consumed before forwarding. Proof targets use the configured
+//! origin and request path, never client forwarding headers. See `docs/PEP_HTTP.md`.
 
 use crate::cred::{verify_http_dpop, DpopHttpRequest};
 use crate::error::AuthError;

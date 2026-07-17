@@ -12,6 +12,7 @@ services:
       - "huggingface.co"
       - "cdn-lfs.huggingface.co"
       - "cdn-lfs-us-1.huggingface.co"
+      - "us.aws.cdn.hf.co"
       - "cas-bridge.xethub.hf.co"
       - "cas-server.xethub.hf.co"
       - "transfer.xethub.hf.co"

@@ -13,6 +13,7 @@ services:
       - "cdn-lfs.huggingface.co"
       - "cdn-lfs-us-1.huggingface.co"
       - "cas-bridge.xethub.hf.co"
+      - "cas-server.xethub.hf.co"
       - "transfer.xethub.hf.co"
       - "download.pytorch.org"
       - "raw.githubusercontent.com"

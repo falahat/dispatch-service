@@ -8,6 +8,8 @@
 //! presented_pubkey` check, so a valid decision means the holder controls the
 //! exact key the issuer bound. No fragile fact extraction, no key registry.
 
+use std::time::Duration;
+
 use crate::canonical::Op;
 use crate::error::{AuthError, Result};
 use crate::nonce::NonceStore;
@@ -15,7 +17,17 @@ use crate::pop;
 use crate::revocation::RevocationStore;
 use biscuit_auth::builder::BlockBuilder;
 use biscuit_auth::macros::{check, fact, policy};
-use biscuit_auth::{Biscuit, KeyPair, PublicKey};
+use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
+
+/// Wall-clock backstop for the Datalog authorize. biscuit measures `max_time` as `Instant`
+/// elapsed over the WHOLE authorize call, so the library default of 1 ms made a
+/// structurally-valid credential's verdict a function of host CPU scheduling: under the
+/// 2026-07 transcribe backfill that pegged all 24 cores, trivial authorizes were preempted
+/// past 1 ms and biscuit fail-closed-403'd healthy runner lease/heartbeat/CAS frames (the
+/// "Reached Datalog execution limits" brownout). A generous budget cannot be crossed by
+/// scheduler jitter; the DETERMINISTIC fact/iteration caps (kept at the biscuit defaults via
+/// `..Default::default()`) remain the real DoS guard against a hostile fact-generating token.
+const AUTHZ_MAX_TIME: Duration = Duration::from_secs(5);
 
 /// Parameters for minting a credential.
 pub struct MintParams {
@@ -282,6 +294,11 @@ fn authorize_request(
     authorizer
         .add_policy(policy!("allow if right({o})", o = right.to_string()))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
+    // Widen only the wall-clock backstop; keep biscuit's deterministic fact/iteration caps.
+    authorizer.set_limits(AuthorizerLimits {
+        max_time: AUTHZ_MAX_TIME,
+        ..Default::default()
+    });
     authorizer
         .authorize()
         .map_err(|e| AuthError::Denied(e.to_string()))?;

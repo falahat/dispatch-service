@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	"github.com/falahat/dispatch-service/internal/artifact"
@@ -136,9 +135,22 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 			return nil
 		}
 
-		job, ok, err := selectClaimable(tx, open, now)
-		if err != nil {
-			return err
+		// Round-robin across the open lanes so a deep backlog in one lane can't freeze
+		// another: a single runner serves one job at a time, and taking the globally
+		// oldest job let an older transcribe backlog starve embed for 36h (2026-07). Rotate
+		// the starting lane each claim; within a lane, oldest-runnable still wins.
+		numLanes := len(open)
+		start := int(d.claimSeq.Add(1) % uint64(numLanes))
+		var job Job
+		var ok bool
+		for i := 0; i < numLanes; i++ {
+			job, ok, err = selectClaimableInLane(tx, open[(start+i)%numLanes], now)
+			if err != nil {
+				return err
+			}
+			if ok {
+				break
+			}
 		}
 		if !ok {
 			result.outcome = claimNoWork
@@ -202,20 +214,14 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 	return result, nil
 }
 
-// selectClaimable returns the oldest runnable QUEUED job among the open lanes:
-// next_attempt_at in the past, ordered by priority then age.
-func selectClaimable(tx *sql.Tx, lanes []string, now int64) (Job, bool, error) {
-	placeholders := strings.Repeat("?,", len(lanes))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(lanes)+1)
-	for _, l := range lanes {
-		args = append(args, l)
-	}
-	args = append(args, now)
+// selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane:
+// next_attempt_at in the past, ordered by priority then age. The caller rotates over the
+// open lanes for cross-lane fairness (see tryClaim), so this stays a single-lane query.
+func selectClaimableInLane(tx *sql.Tx, lane string, now int64) (Job, bool, error) {
 	query := `SELECT ` + jobColumns + ` FROM jobs
-		WHERE state='QUEUED' AND lane IN (` + placeholders + `) AND next_attempt_at<=?
+		WHERE state='QUEUED' AND lane=? AND next_attempt_at<=?
 		ORDER BY priority ASC, created_ts ASC LIMIT 1`
-	row := tx.QueryRow(query, args...)
+	row := tx.QueryRow(query, lane, now)
 	job, err := scanJob(row)
 	if err == sql.ErrNoRows {
 		return Job{}, false, nil

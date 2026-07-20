@@ -8,6 +8,7 @@ package dispatcher
 import (
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +26,10 @@ type Dispatcher struct {
 	subs      *subMgr      // the single active app subscription
 
 	rl *rateLimiter
+
+	// claimSeq round-robins lane selection across claims so a deep backlog in one lane
+	// can't starve another on a shared runner (embed dead 36h behind transcribe, 2026-07).
+	claimSeq atomic.Uint64
 }
 
 // New builds a Dispatcher over an open store and config.

@@ -104,6 +104,49 @@ func TestGrantCarriesExpectedWall(t *testing.T) {
 	}
 }
 
+func TestClaimRoundRobinsLanesSoNeitherStarves(t *testing.T) {
+	// Regression: global oldest-first froze the newer embed lane behind an OLDER transcribe
+	// backlog on a shared runner (embed dead 36h, 2026-07). With lane concurrency out of the
+	// way (both unlimited here), round-robin is the only thing distributing claims — two
+	// consecutive claims with both lanes backlogged must hit BOTH lanes, not just the older.
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "d.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	cfg := testConfig()
+	cfg.Lanes = map[string]LaneConfig{
+		"transcribe": {Concurrency: 0, PersistingWatermark: 0},
+		"embed":      {Concurrency: 0, PersistingWatermark: 0},
+	}
+	clk := NewManualClock(1_000_000)
+	d, err := New(store, cfg, clk)
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	enqueueOne(t, d, "t0", "transcribe", invAddr("t0"), nil)
+	enqueueOne(t, d, "t1", "transcribe", invAddr("t1"), nil)
+	clk.Advance(60_000) // embed is strictly NEWER — global FIFO would never reach it
+	enqueueOne(t, d, "e0", "embed", invAddr("e0"), nil)
+	enqueueOne(t, d, "e1", "embed", invAddr("e1"), nil)
+	hello(t, d, "R1", "transcribe", "embed")
+
+	lanes := map[string]int{}
+	for i := 0; i < 2; i++ {
+		g, _ := leaseOne(t, d, "R1", "transcribe", "embed")
+		if g == nil {
+			t.Fatalf("lease %d: no grant", i)
+		}
+		lanes[g.Job.Lane]++
+	}
+	if lanes["embed"] != 1 || lanes["transcribe"] != 1 {
+		t.Fatalf("round-robin should serve both lanes in 2 claims (global FIFO starves the "+
+			"newer embed lane); got %v", lanes)
+	}
+}
+
 func TestEnqueueIdempotency(t *testing.T) {
 	d, _ := newTestDispatcher(t)
 	inv := invAddr("a")

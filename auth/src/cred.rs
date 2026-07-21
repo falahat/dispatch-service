@@ -29,6 +29,27 @@ use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 /// `..Default::default()`) remain the real DoS guard against a hostile fact-generating token.
 const AUTHZ_MAX_TIME: Duration = Duration::from_secs(5);
 
+/// Deterministic ceilings on the Datalog evaluation — THE DoS guard, in the one unit a
+/// hostile token controls and a busy host does not. A genuine credential contributes a
+/// pubkey fact, a right per capability, a lane per lane, and the request's own checks: tens
+/// of facts and a couple of iterations. These bounds leave enormous headroom for that while
+/// still stopping an attenuation block that tries to generate facts combinatorially, and —
+/// unlike a wall-clock budget — they fail identically on an idle box and a pegged one.
+const AUTHZ_MAX_FACTS: u64 = 1000;
+const AUTHZ_MAX_ITERATIONS: u64 = 100;
+
+/// Hard ceiling on a presented credential's base64 length, enforced BEFORE the biscuit is
+/// parsed — the bound that actually constrains attacker-supplied token CONTENT.
+///
+/// `max_facts` limits facts DERIVED during evaluation, not facts DECLARED in blocks, so it
+/// does not stop a token that simply carries thousands of them. Attenuation needs no root key,
+/// so any holder can self-attenuate and hand the PEP a half-megabyte credential to base64-decode,
+/// signature-verify, and evaluate on EVERY request. Measured sizes: a base credential is 372
+/// bytes, a real lease-scoped one ~780, an implausibly broad 50-address scope under 6 KiB — and
+/// a 5000-fact bomb 508 KiB. This ceiling leaves ~300 addresses of headroom and still refuses
+/// that bomb by more than an order of magnitude.
+const MAX_BISCUIT_B64_LEN: usize = 32 * 1024;
+
 /// Parameters for minting a credential.
 pub struct MintParams {
     /// The Ed25519 public key (hex) the holder proves possession of.
@@ -242,6 +263,13 @@ fn authorize_request(
     proven: &ProvenIdentity,
     single_use: bool,
 ) -> Result<Identity> {
+    // 0. Bound the credential BEFORE spending any work on it. Parsing, verifying the
+    //    signature chain, and evaluating Datalog are all proportional to token size, and a
+    //    holder can self-attenuate to any size they like — so this cap, not the Datalog
+    //    limits, is what stops a credential-shaped DoS.
+    if biscuit_b64.len() > MAX_BISCUIT_B64_LEN {
+        return Err(AuthError::Malformed("credential too large".into()));
+    }
     // 1. Parse the Biscuit against the root key (verifies its signature chain).
     let biscuit =
         Biscuit::from_base64(biscuit_b64, *root_pub).map_err(|_| AuthError::BiscuitSignature)?;
@@ -294,10 +322,17 @@ fn authorize_request(
     authorizer
         .add_policy(policy!("allow if right({o})", o = right.to_string()))
         .map_err(|e| AuthError::Denied(e.to_string()))?;
-    // Widen only the wall-clock backstop; keep biscuit's deterministic fact/iteration caps.
+    // The DoS guard is DETERMINISTIC (facts/iterations), never the clock. A real credential is
+    // tiny — a pubkey fact, a few rights and lanes, and the checks added above — so these
+    // ceilings sit far above anything legitimate and far below what a fact-generating
+    // attenuation needs. Being functions of token CONTENT, they cannot be moved by host load,
+    // which is precisely the property `max_time` lacked. Set explicitly rather than left to
+    // `..Default::default()` so the guard is stated here and cannot drift with a dependency
+    // bump.
     authorizer.set_limits(AuthorizerLimits {
         max_time: AUTHZ_MAX_TIME,
-        ..Default::default()
+        max_facts: AUTHZ_MAX_FACTS,
+        max_iterations: AUTHZ_MAX_ITERATIONS,
     });
     authorizer
         .authorize()

@@ -12,6 +12,10 @@ const (
 	defaultBackoffClass = wire.BackoffStandard
 	defaultPriority     = 5
 	defaultReleaseCap   = 5
+	// transientReleaseCap bounds INFRASTRUCTURE releases (see transientRelease). Far
+	// above defaultReleaseCap because the condition is not the job's fault, but finite
+	// so a release loop always terminates visibly instead of spinning forever.
+	transientReleaseCap = 100
 )
 
 // ResolvedPolicy is a job's policy with every default applied — the concrete
@@ -56,6 +60,47 @@ func ResolvePolicy(p *wire.Policy) ResolvedPolicy {
 		r.ReleaseCap = *p.ReleaseCap
 	}
 	return r
+}
+
+// transientRelease is the release-side twin of defaultRetriable: which "couldn't
+// start / couldn't ship" reasons are INFRASTRUCTURE conditions that clear on their
+// own, rather than a verdict about this job.
+//
+// The Fail path has always routed through IsRetriable, but Release had no taxonomy
+// at all: every reason incremented the same poison counter and dead-lettered at
+// ReleaseCap (5). With the 1s..32s pacing that is well under a minute, so a CAS blip
+// or an auth plane briefly returning 403 permanently failed perfectly healthy jobs —
+// and ReleaseShipping additionally discarded a FINISHED GPU computation because its
+// upload hit a network hiccup. None of those are the job's fault or deterministic.
+//
+// integrity and wrong_hardware stay terminal: they ARE verdicts about this job on
+// this runner, and retrying them only burns the fleet.
+var transientRelease = map[wire.ReleaseReason]bool{
+	wire.ReleaseCASUnreachable: true,  // CAS/auth plane down or busy — clears on its own
+	wire.ReleaseShipping:       true,  // output upload blip — the compute is already done
+	wire.ReleaseCASMiss:        false, // input genuinely evicted; needs re-staging
+	wire.ReleaseIntegrity:      false, // the bytes are wrong
+	wire.ReleaseWrongHardware:  false, // this runner cannot serve it
+}
+
+// IsTransientRelease reports whether a release reason is infrastructure noise that
+// should back off and requeue WITHOUT consuming the terminal poison budget.
+func IsTransientRelease(reason wire.ReleaseReason) bool {
+	return transientRelease[reason]
+}
+
+// ReleaseCapFor is how many releases are tolerated before a job dead-letters.
+//
+// A transient condition must not livelock forever — a broken or hostile runner could
+// release in a loop — so it stays BOUNDED, just generously, and it fails closed to a
+// visible terminal state. With the 1s..32s pacing this ceiling is roughly an hour of
+// retrying: long enough to outlast a plane restart or a CAS outage, while still
+// guaranteeing the job stops rather than spinning silently forever.
+func (r ResolvedPolicy) ReleaseCapFor(reason wire.ReleaseReason) int {
+	if IsTransientRelease(reason) {
+		return transientReleaseCap
+	}
+	return r.ReleaseCap
 }
 
 // defaultRetriable is the built-in error-class disposition. Transient classes

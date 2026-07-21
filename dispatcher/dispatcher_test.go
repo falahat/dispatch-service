@@ -302,7 +302,9 @@ func TestFailExhaustsAttempts(t *testing.T) {
 	}
 }
 
-func TestReleaseCap(t *testing.T) {
+// A release reason that is a VERDICT about this job on this runner still
+// dead-letters at the configured (small) cap, now carrying its reason forward.
+func TestReleaseCapTerminalReason(t *testing.T) {
 	d, clk := newTestDispatcher(t)
 	inv := invAddr("j")
 	cap := 3
@@ -313,7 +315,7 @@ func TestReleaseCap(t *testing.T) {
 		if g == nil {
 			t.Fatalf("release round %d: no grant (%+v)", i, e)
 		}
-		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseCASUnreachable}); werr != nil {
+		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseWrongHardware}); werr != nil {
 			t.Fatalf("release: %v", werr)
 		}
 		job, _ := d.GetJob(id)
@@ -322,9 +324,86 @@ func TestReleaseCap(t *testing.T) {
 				t.Fatalf("release should requeue with attempt unchanged: state=%s attempt=%d", job.State, job.Attempt)
 			}
 			clk.Set(job.NextAttemptAt + 1)
-		} else if job.State != "FAILED" || job.Reason != "unstartable" {
-			t.Fatalf("release cap should FAIL(unstartable): state=%s reason=%s", job.State, job.Reason)
+		} else if job.State != "FAILED" || job.Reason != "unstartable:wrong_hardware" {
+			t.Fatalf("terminal release should FAIL naming the reason: state=%s reason=%s", job.State, job.Reason)
 		}
+	}
+}
+
+// THE regression: during the 2026-07 brownout the auth plane briefly denied CAS
+// reads, and because every release shared one tiny cap the 1s..32s pacing exhausted
+// it in well under a minute — permanently failing healthy jobs over a self-clearing
+// outage.
+func TestTransientReleaseDoesNotBurnThePoisonBudget(t *testing.T) {
+	d, clk := newTestDispatcher(t)
+	inv := invAddr("j")
+	cap := 3
+	id := enqueueOne(t, d, "k", "embed", inv, &wire.Policy{ReleaseCap: &cap})
+	hello(t, d, "R1", "embed")
+	for i := 0; i < 6; i++ { // twice the terminal cap
+		g, e := leaseOne(t, d, "R1", "embed")
+		if g == nil {
+			t.Fatalf("release round %d: no grant (%+v)", i, e)
+		}
+		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseCASUnreachable}); werr != nil {
+			t.Fatalf("release: %v", werr)
+		}
+		job, _ := d.GetJob(id)
+		if job.State != "QUEUED" {
+			t.Fatalf("round %d: a transient CAS outage must not dead-letter a healthy job: state=%s reason=%s",
+				i, job.State, job.Reason)
+		}
+		clk.Set(job.NextAttemptAt + 1)
+	}
+}
+
+// Transient must not mean unbounded: a runner releasing forever has to fail closed
+// to a visible terminal state rather than spin silently.
+func TestTransientReleaseStillTerminates(t *testing.T) {
+	d, clk := newTestDispatcher(t)
+	inv := invAddr("j")
+	id := enqueueOne(t, d, "k", "embed", inv, nil)
+	hello(t, d, "R1", "embed")
+	for i := 0; i < transientReleaseCap+1; i++ {
+		g, _ := leaseOne(t, d, "R1", "embed")
+		if g == nil {
+			break // already dead-lettered
+		}
+		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseShipping}); werr != nil {
+			t.Fatalf("release: %v", werr)
+		}
+		job, _ := d.GetJob(id)
+		clk.Set(job.NextAttemptAt + 1)
+	}
+	job, _ := d.GetJob(id)
+	if job.State != "FAILED" {
+		t.Fatalf("a release loop must terminate visibly, got state=%s", job.State)
+	}
+}
+
+// An evicted content-addressed input is not a dead end — the app still holds the
+// source bytes — so the reason must say so instead of collapsing to 'unstartable',
+// which erased the app's ability to re-stage and retry.
+func TestCASMissDeadLettersAsRecoverable(t *testing.T) {
+	d, clk := newTestDispatcher(t)
+	inv := invAddr("j")
+	cap := 2
+	id := enqueueOne(t, d, "k", "embed", inv, &wire.Policy{ReleaseCap: &cap})
+	hello(t, d, "R1", "embed")
+	for i := 0; i < 2; i++ {
+		g, _ := leaseOne(t, d, "R1", "embed")
+		if g == nil {
+			t.Fatalf("round %d: no grant", i)
+		}
+		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseCASMiss}); werr != nil {
+			t.Fatalf("release: %v", werr)
+		}
+		job, _ := d.GetJob(id)
+		clk.Set(job.NextAttemptAt + 1)
+	}
+	job, _ := d.GetJob(id)
+	if job.State != "FAILED" || job.Reason != "input_evicted" {
+		t.Fatalf("cas_miss should dead-letter as input_evicted: state=%s reason=%s", job.State, job.Reason)
 	}
 }
 

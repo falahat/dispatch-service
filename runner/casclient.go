@@ -83,6 +83,28 @@ const (
 
 func (e *casError) Error() string { return fmt.Sprintf("cas(%d): %v", e.kind, e.err) }
 
+// casKindForStatus classifies a non-200, non-404 CAS response.
+//
+// Everything that was not 404 used to fall to casOther, which the loop maps to
+// release(cas_unreachable). That was survivable only because the dispatcher now
+// treats cas_unreachable as transient — but the statuses still deserve to be told
+// apart: 429 and 503 are explicitly "come back later" from a healthy service, and
+// 5xx is a server fault, so all of them are the plane being busy or broken rather
+// than anything about this job. A persistent 403 is deliberately NOT laundered into
+// a retriable class here: that is a genuine authorization denial, and retrying it
+// only burns the fleet. The honest fix for a timing-out authorizer is for the PEP to
+// answer 503 (unavailable) instead of 403 (denied), not for the runner to guess.
+func casKindForStatus(status int) casErrKind {
+	switch {
+	case status == http.StatusTooManyRequests, status == http.StatusServiceUnavailable:
+		return casUnreachable
+	case status >= 500:
+		return casUnreachable
+	default:
+		return casOther
+	}
+}
+
 // GetToFile streams a blob to destPath, hashing en route, and verifies the
 // result against the requested address. A mismatch is an integrity failure.
 func (c *CAS) GetToFile(ctx context.Context, a artifact.Address, destPath string) (int64, error) {
@@ -99,7 +121,7 @@ func (c *CAS) GetToFile(ctx context.Context, a artifact.Address, destPath string
 		return 0, &casError{casMiss, fmt.Errorf("blob %s not found", a)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, &casError{casOther, fmt.Errorf("GET %s: status %d", a, resp.StatusCode)}
+		return 0, &casError{casKindForStatus(resp.StatusCode), fmt.Errorf("GET %s: status %d", a, resp.StatusCode)}
 	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return 0, &casError{casOther, err}

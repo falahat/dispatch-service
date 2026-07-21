@@ -162,8 +162,10 @@ func (d *Dispatcher) Fail(runnerID string, req wire.Fail) *wire.Error {
 }
 
 // Release returns a job that could not be started/shipped to QUEUED with the
-// attempt UNCHANGED (no compute happened). A release_count at the cap turns the
-// job into FAILED(unstartable). Fenced by lease_id; idempotent per lease.
+// attempt UNCHANGED (no compute happened). A release_count at the cap for that
+// reason's class (ResolvedPolicy.ReleaseCapFor) dead-letters the job as FAILED,
+// carrying the reason forward so the app can tell an evicted input from a dead
+// CAS. Fenced by lease_id; idempotent per lease.
 func (d *Dispatcher) Release(runnerID string, req wire.Release) *wire.Error {
 	if !jobIDRe.MatchString(req.JobID) || !leaseIDRe.MatchString(req.LeaseID) {
 		return &wire.Error{Code: wire.CodeInvalid, Message: "release: malformed ids"}
@@ -202,12 +204,18 @@ func (d *Dispatcher) Release(runnerID string, req wire.Release) *wire.Error {
 			return err
 		}
 		newReleaseCount := job.ReleaseCount + 1
-		if newReleaseCount >= job.Policy.ReleaseCap {
+		// The cap depends on WHY. Infrastructure noise (CAS unreachable, a failed output
+		// upload) must not burn the same tiny poison budget as a verdict about this job.
+		if newReleaseCount >= job.Policy.ReleaseCapFor(req.Reason) {
+			// Preserve the distinguishing reason instead of collapsing every cause to
+			// 'unstartable'. The app reads this to decide what to DO, and a cas_miss — a
+			// content-addressed input that aged out of the CAS — is trivially fixable by
+			// re-staging the bytes it still holds. Collapsing the reason erased that.
 			if _, err := tx.Exec(
-				`UPDATE jobs SET state='FAILED', release_count=?, reason='unstartable',
+				`UPDATE jobs SET state='FAILED', release_count=?, reason=?,
 					lease_id=NULL, lease_deadline_ts=NULL, lease_runner_id=NULL, updated_ts=?
 				 WHERE job_id=? AND state='RUNNING' AND lease_id=?`,
-				newReleaseCount, now, req.JobID, req.LeaseID); err != nil {
+				newReleaseCount, deadLetterReason(req.Reason), now, req.JobID, req.LeaseID); err != nil {
 				return err
 			}
 			return releaseReservation(tx, job.CostCents)
@@ -289,6 +297,20 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// deadLetterReason is the terminal reason recorded when releases hit the cap.
+//
+// Everything used to collapse to "unstartable", which threw away the only
+// information the app needed to act. cas_miss in particular is not a dead end: the
+// input is content-addressed and the app still holds the source bytes, so naming it
+// distinctly lets the app re-stage and re-enqueue rather than surface a permanent
+// failure to the owner.
+func deadLetterReason(reason wire.ReleaseReason) string {
+	if reason == wire.ReleaseCASMiss {
+		return "input_evicted"
+	}
+	return "unstartable:" + string(reason)
 }
 
 // buildCompletion reconstructs the wire.Completion for a PERSISTING job from its

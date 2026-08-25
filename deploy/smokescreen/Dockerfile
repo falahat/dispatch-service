@@ -1,6 +1,6 @@
 # Smokescreen with source-network ACL roles. Unknown sources receive the deny-all role.
 # The build image matches the Go version pinned by this module.
-FROM golang:1.25-bookworm@sha256:b96f24a8d7d010ea0acb9c3ba99064740f02b6b984612b28bd3c9c5ab9453e38 AS build
+FROM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS build
 WORKDIR /src
 COPY go.mod go.sum main.go ./
 RUN go build -o /smokescreen .

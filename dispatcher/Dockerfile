@@ -1,6 +1,6 @@
 # Dispatcher image — static, cgo-free Go binary on a distroless base.
 # Build context is the repo root.
-FROM golang:1.26@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
+FROM golang:1.27@sha256:4013ae0f9e7994f8535c58c811f8f863fbed38b72e0d51e6592156f758d66146 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

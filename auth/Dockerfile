@@ -1,6 +1,6 @@
 # PEP + signer image (Rust). The PEP fronts both tailnet surfaces; the signer
 # mints credentials (CLI, out of band). Build context is the auth/ directory.
-FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
+FROM rust:1.98-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

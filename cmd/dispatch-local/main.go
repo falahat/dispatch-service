@@ -36,6 +36,7 @@ func run() error {
 	config := flag.String("config", "", "plane.toml")
 	capacity := flag.String("workers-file", "", "positive integer worker capacity; reload with SIGHUP")
 	lanes := flag.String("lanes", "work", "comma-separated lanes")
+	reserved := flag.String("reserve-lane", "", "dedicate one additional consumer to this lane")
 	noDeadline := flag.Bool("no-deadline", false, "allow execution until completion or explicit cancellation")
 	flag.Parse()
 	if !filepath.IsAbs(*root) || *capacity == "" || flag.NArg() == 0 {
@@ -102,6 +103,28 @@ func run() error {
 	go func() { defer running.Done(); report(d.AcknowledgeLocal(ctx)) }()
 	pool := []*runner.Runner{}
 	serial := 0
+	start := func(lanes []string) *runner.Runner {
+		serial++
+		worker := runner.New(runner.Config{RunnerID: fmt.Sprintf("local-%d", serial), Node: "local", Version: "runner/local-command/1",
+			DispatcherAddr: cfg.RunnerListen, CASBaseURL: (&url.URL{Scheme: "file", Path: filepath.Join(*root, "cas")}).String(),
+			WorkRoot: filepath.Join(*root, "work"), Lanes: lanes,
+			Command: command, NoDeadline: *noDeadline, OnSettled: d.ExecutionSettled}, nil, nil, slog.Default())
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			report(worker.Run(ctx))
+		}()
+		return worker
+	}
+	normalLanes := strings.Split(*lanes, ",")
+	for _, lane := range normalLanes {
+		if lane == "" || lane == *reserved {
+			return fmt.Errorf("normal and reserved lanes must be nonempty and distinct")
+		}
+	}
+	if *reserved != "" {
+		start([]string{*reserved})
+	}
 	reload := func() error {
 		data, err := os.ReadFile(*capacity)
 		if err != nil {
@@ -111,22 +134,11 @@ func run() error {
 		if err != nil || count < 1 {
 			return fmt.Errorf("worker capacity must be a positive integer")
 		}
-		for len(pool) > count {
-			pool[len(pool)-1].Drain()
-			pool = pool[:len(pool)-1]
+		if count < len(pool) {
+			return fmt.Errorf("capacity decrease requires an idle restart")
 		}
 		for len(pool) < count {
-			serial++
-			worker := runner.New(runner.Config{RunnerID: fmt.Sprintf("local-%d", serial), Node: "local", Version: "runner/local-command/1",
-				DispatcherAddr: cfg.RunnerListen, CASBaseURL: (&url.URL{Scheme: "file", Path: filepath.Join(*root, "cas")}).String(),
-				WorkRoot: filepath.Join(*root, "work"), Lanes: strings.Split(*lanes, ","),
-				Command: command, NoDeadline: *noDeadline, OnSettled: d.ExecutionSettled}, nil, nil, slog.Default())
-			pool = append(pool, worker)
-			running.Add(1)
-			go func() {
-				defer running.Done()
-				report(worker.Run(ctx))
-			}()
+			pool = append(pool, start(normalLanes))
 		}
 		return nil
 	}
@@ -154,7 +166,7 @@ func run() error {
 				return nil
 			}
 			if err := reload(); err != nil {
-				return err
+				slog.Error("capacity reload rejected; current executions preserved", "err", err)
 			}
 		case err := <-failures:
 			return err

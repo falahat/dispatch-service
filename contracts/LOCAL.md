@@ -34,7 +34,11 @@ dispatch-local --root QUEUE_ROOT --config PLANE_TOML --workers-file CAPACITY_FIL
 The executable is resolved at startup. Invocation data cannot select it. The
 executor is trusted owner code: it is responsible for containing untrusted work.
 The daemon provides no container socket or credentials to a workload. SIGHUP
-reloads capacity; removed consumers finish their current execution before draining.
+adds capacity. Invalid changes or capacity decreases are rejected without stopping
+current executions; a decrease requires an idle restart.
+`--reserve-lane NAME` dedicates one additional consumer to a distinct lane. It
+cannot take normal-lane jobs, so ordinary saturation cannot prevent that lane
+from starting. A lane's ordinary concurrency setting still applies.
 SIGTERM shuts down this daemon and cooperatively cancels its owned executors.
 
 ## Invocation and results

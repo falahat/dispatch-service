@@ -72,3 +72,18 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 		}
 	}
 }
+
+func TestIdleClaimDoesNotWakeItself(t *testing.T) {
+	d, _ := newTestDispatcher(t)
+	hello(t, d, "worker", "embed")
+	wake := d.leaseWake.wait()
+	result, err := d.tryClaim("worker", []string{"embed"})
+	if err != nil || result.outcome != claimNoWork {
+		t.Fatalf("idle claim: %v %v", result, err)
+	}
+	select {
+	case <-wake:
+		t.Fatal("an empty claim woke its own long-poll and would busy-loop")
+	default:
+	}
+}

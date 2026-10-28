@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import socket
 import subprocess
 import sys
@@ -19,7 +20,7 @@ class LocalCommands(unittest.TestCase):
     def test_dedup_concurrent_wait_cancel_and_no_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "capacity").write_text("2\n")
+            (root / "capacity").write_text("1\n")
             (root / "plane.toml").write_text(
                 "heartbeat_interval_s=1\nlease_ttl_s=30\n"
                 "runner_rate_per_min=0\n[default_lane]\nsingle_attempt=true\n"
@@ -42,6 +43,8 @@ class LocalCommands(unittest.TestCase):
                 "with open('invoke-result.json','w') as output:\n"
                 " json.dump({'outputs':{},'metrics':{'exit':0}},output)\n"
             )
+            notification = self.enterContext(socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM))
+            notification.bind(str(root / "notify.sock"))
             daemon = subprocess.Popen(
                 [
                     os.environ["DISPATCH_LOCAL_BIN"],
@@ -52,17 +55,24 @@ class LocalCommands(unittest.TestCase):
                     "--workers-file",
                     str(root / "capacity"),
                     "--no-deadline",
+                    "--reserve-lane",
+                    "isolated",
                     "--",
                     sys.executable,
                     str(script),
                 ],
                 stderr=subprocess.PIPE,
                 text=True,
+                env={**os.environ, "NOTIFY_SOCKET": str(root / "notify.sock")},
             )
             assert daemon.stderr is not None
             try:
-                while "dispatcher serving" not in daemon.stderr.readline():
-                    self.assertIsNone(daemon.poll(), "local queue failed to start")
+                while True:
+                    readable, _, _ = select.select([notification, daemon.stderr], [], [])
+                    if notification in readable:
+                        self.assertEqual(notification.recv(64), b"READY=1")
+                        break
+                    self.assertTrue(daemon.stderr.readline(), "local queue failed before readiness")
                 client = DispatchClient(
                     "unix:" + str(root / "queue/app.sock"), retry_requests=False
                 )
@@ -100,6 +110,30 @@ class LocalCommands(unittest.TestCase):
                             twin = client.enqueue([request])[0]
                             self.assertFalse(twin["created"])
                             self.assertEqual(twin["job_id"], submitted["job_id"])
+                            if outcome == "complete":
+                                with socket.socket(socket.AF_UNIX) as reserved:
+                                    reserved.bind(str(root / "reserved.sock"))
+                                    reserved.listen(1)
+                                    separate = json.loads(invocation)
+                                    separate["params"]["ready"] = str(root / "reserved.sock")
+                                    raw = json.dumps(separate).encode()
+                                    digest = hashlib.sha256(raw).hexdigest()
+                                    (blob.parent / digest).write_bytes(raw)
+                                    special = client.enqueue(
+                                        [
+                                            {
+                                                "job_key": "reserved",
+                                                "lane": "isolated",
+                                                "invocation_address": "sha256:" + digest,
+                                            }
+                                        ]
+                                    )[0]
+                                    with reserved.accept()[0] as concurrent:
+                                        concurrent.recv(64)
+                                        concurrent.sendall(b"x")
+                                    self.assertEqual(
+                                        client.wait(special["job_id"])["state"], "SUCCEEDED"
+                                    )
                             results = []
 
                             def wait() -> None:

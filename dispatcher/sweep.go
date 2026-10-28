@@ -93,7 +93,7 @@ func (d *Dispatcher) Sweep() (SweepResult, error) {
 	if err != nil {
 		return SweepResult{}, err
 	}
-	if out.Recovered > 0 {
+	if out.Recovered > 0 || out.Expired > 0 {
 		d.wakeLeases()
 	}
 	return out, nil

@@ -93,7 +93,6 @@ func (d *Dispatcher) Fail(runnerID string, req wire.Fail) *wire.Error {
 	}
 
 	var outErr *wire.Error
-	requeued := false
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		job, err := getJobTx(tx, req.JobID)
 		if err == sql.ErrNoRows {
@@ -138,7 +137,6 @@ func (d *Dispatcher) Fail(runnerID string, req wire.Fail) *wire.Error {
 				newAttempt, nextAt, batch, now, req.JobID, req.LeaseID); err != nil {
 				return err
 			}
-			requeued = true
 			return nil
 		}
 
@@ -155,7 +153,7 @@ func (d *Dispatcher) Fail(runnerID string, req wire.Fail) *wire.Error {
 	if err != nil {
 		return &wire.Error{Code: wire.CodeInternal, Message: "fail: " + err.Error()}
 	}
-	if outErr == nil && requeued {
+	if outErr == nil {
 		d.wakeLeases()
 	}
 	return outErr
@@ -175,7 +173,6 @@ func (d *Dispatcher) Release(runnerID string, req wire.Release) *wire.Error {
 	}
 
 	var outErr *wire.Error
-	requeued := false
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		job, err := getJobTx(tx, req.JobID)
 		if err == sql.ErrNoRows {
@@ -230,13 +227,12 @@ func (d *Dispatcher) Release(runnerID string, req wire.Release) *wire.Error {
 			newReleaseCount, now+delay, now, req.JobID, req.LeaseID); err != nil {
 			return err
 		}
-		requeued = true
 		return nil
 	})
 	if err != nil {
 		return &wire.Error{Code: wire.CodeInternal, Message: "release: " + err.Error()}
 	}
-	if outErr == nil && requeued {
+	if outErr == nil {
 		d.wakeLeases()
 	}
 	return outErr

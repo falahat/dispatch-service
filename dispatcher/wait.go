@@ -21,8 +21,11 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (map[string]
 	for {
 		wake := d.leaseWake.wait()
 		job, err := d.GetJob(id)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			return nil, &wire.Error{Code: wire.CodeGone, Message: "unknown job"}
+		}
+		if err != nil {
+			return nil, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
 		}
 		pending := job.State == "QUEUED" || job.State == "RUNNING" || job.State == "AWAITING_APPROVAL"
 		pending = pending || d.cfg.WaitForExecutor && job.State == "PERSISTING"
@@ -47,8 +50,12 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (map[string]
 // ExecutionSettled is called only after the local executor has reaped its child.
 // A cancellation request is not proof that the cancelled execution has stopped.
 func (d *Dispatcher) ExecutionSettled(id string) error {
-	return d.store.writeTx(func(tx *sql.Tx) error {
+	err := d.store.writeTx(func(tx *sql.Tx) error {
 		_, err := tx.Exec("UPDATE jobs SET cancel_requested=0 WHERE job_id=? AND state='CANCELLED'", id)
 		return err
 	})
+	if err == nil {
+		d.wakeLeases()
+	}
+	return err
 }

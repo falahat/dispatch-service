@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dispatch_client import DispatchClient, DispatchError  # noqa: E402
 from dispatch_client import frame  # noqa: E402
 
-GO = r"C:\Users\aryan\go-sdk\go\bin\go.exe"
+GO = os.environ.get("GO", "go")
 REPO = Path(__file__).resolve().parents[2]  # dispatch-service/
 
 # A valid CAS address is sha256: + 64 hex; the dispatcher never fetches it.

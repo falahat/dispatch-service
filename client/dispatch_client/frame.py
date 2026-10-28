@@ -11,10 +11,17 @@ from __future__ import annotations
 import json
 import socket
 import struct
-from typing import Any
+from typing import Any, TypedDict, cast
 
 CONTRACT_VERSION = "0.1"
 MAX_FRAME_BYTES = 4 << 20  # 4 MiB, matches wire.MaxFrameBytes
+
+
+class Envelope(TypedDict):
+    v: str
+    type: str
+    id: str
+    body: dict[str, Any]
 
 
 class FrameError(Exception):
@@ -68,7 +75,7 @@ def encode_envelope(req_id: str, msg_type: str, body: dict[str, Any]) -> bytes:
     return json.dumps(env, separators=(",", ":")).encode("utf-8")
 
 
-def decode_envelope(frame: bytes) -> dict[str, Any]:
+def decode_envelope(frame: bytes) -> Envelope:
     """Decode and validate an envelope frame into {v, type, id, body}."""
     try:
         env = json.loads(frame.decode("utf-8"))
@@ -85,7 +92,7 @@ def decode_envelope(frame: bytes) -> dict[str, Any]:
     body = env.get("body")
     if not isinstance(body, dict):
         raise FrameError("envelope missing body object")
-    return env
+    return cast(Envelope, env)
 
 
 def write_message(sock: socket.socket, req_id: str, msg_type: str, body: dict[str, Any]) -> None:
@@ -93,6 +100,6 @@ def write_message(sock: socket.socket, req_id: str, msg_type: str, body: dict[st
     write_frame(sock, encode_envelope(req_id, msg_type, body))
 
 
-def read_message(sock: socket.socket) -> dict[str, Any]:
+def read_message(sock: socket.socket) -> Envelope:
     """Read one frame and decode its envelope."""
     return decode_envelope(read_frame(sock))

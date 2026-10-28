@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/falahat/dispatch-service/internal/wire"
@@ -52,11 +53,22 @@ func NewServer(d *Dispatcher, log *slog.Logger) *Server {
 
 // Start opens the listeners and begins serving. It also starts the sweeper.
 func (s *Server) Start() error {
-	rl, err := net.Listen("tcp", s.cfg.RunnerListen)
+	network, address := "tcp", s.cfg.RunnerListen
+	if strings.HasPrefix(address, "unix:") {
+		network, address = "unix", strings.TrimPrefix(address, "unix:")
+		_ = os.Remove(address)
+	}
+	rl, err := net.Listen(network, address)
 	if err != nil {
 		return fmt.Errorf("server: runner listen: %w", err)
 	}
 	s.runnerLn = rl
+	if network == "unix" {
+		if err := os.Chmod(address, 0600); err != nil {
+			rl.Close()
+			return err
+		}
+	}
 	al, err := s.listenApp()
 	if err != nil {
 		rl.Close()
@@ -306,6 +318,16 @@ func (s *Server) handleAppConn(conn net.Conn) {
 
 func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 	switch env.Type {
+	case "job", "wait":
+		req, err := wire.DecodeBody[jobRequest](env)
+		if err != nil {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
+		}
+		result, werr := s.d.job(s.ctx, req.JobID, env.Type == "wait")
+		if werr != nil {
+			return replyErr(conn, env.ID, werr)
+		}
+		return reply(conn, env.ID, "job_result", result)
 	case wire.TypeEnqueue:
 		req, err := wire.DecodeBody[wire.Enqueue](env)
 		if err != nil {

@@ -1,0 +1,137 @@
+"""Exercise the real local dispatcher, runner, command and Python client together."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+
+from dispatch_client import DispatchClient
+
+
+@unittest.skipUnless(os.environ.get("DISPATCH_LOCAL_BIN"), "needs built dispatch-local")
+class LocalCommands(unittest.TestCase):
+    def test_dedup_concurrent_wait_cancel_and_no_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "capacity").write_text("2\n")
+            (root / "plane.toml").write_text(
+                "heartbeat_interval_s=1\nlease_ttl_s=30\n"
+                "runner_rate_per_min=0\n[default_lane]\nsingle_attempt=true\n"
+            )
+            script = root / "executor.py"
+            script.write_text(
+                "import json,os,signal,socket,sys\n"
+                "request=json.load(sys.stdin)\n"
+                "assert request['deadline_ts']==0\n"
+                "params=request['invocation']['params']\n"
+                "def cancel(*unused):\n"
+                " open(params['cleanup'],'w').write('settled')\n"
+                " sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM,cancel)\n"
+                "connection=socket.socket(socket.AF_UNIX)\n"
+                "connection.connect(params['ready'])\n"
+                "connection.sendall((str(os.getpid())+'\\n').encode())\n"
+                "connection.recv(1)\n"
+                "if params['fail']: sys.exit(7)\n"
+                "with open('invoke-result.json','w') as output:\n"
+                " json.dump({'outputs':{},'metrics':{'exit':0}},output)\n"
+            )
+            daemon = subprocess.Popen(
+                [
+                    os.environ["DISPATCH_LOCAL_BIN"],
+                    "--root",
+                    str(root / "queue"),
+                    "--config",
+                    str(root / "plane.toml"),
+                    "--workers-file",
+                    str(root / "capacity"),
+                    "--no-deadline",
+                    "--",
+                    sys.executable,
+                    str(script),
+                ],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert daemon.stderr is not None
+            try:
+                while "dispatcher serving" not in daemon.stderr.readline():
+                    self.assertIsNone(daemon.poll(), "local queue failed to start")
+                client = DispatchClient(
+                    "unix:" + str(root / "queue/app.sock"), retry_requests=False
+                )
+                self.addCleanup(client.close)
+                for outcome in ("complete", "cancel", "fail"):
+                    with socket.socket(socket.AF_UNIX) as ready:
+                        address = root / (outcome + ".sock")
+                        ready.bind(str(address))
+                        ready.listen(1)
+                        invocation = json.dumps(
+                            {
+                                "kind": "invocation/v0",
+                                "op": "command",
+                                "op_version": 1,
+                                "params": {
+                                    "ready": str(address),
+                                    "cleanup": str(root / "cleaned"),
+                                    "fail": outcome == "fail",
+                                },
+                                "inputs": {},
+                            }
+                        ).encode()
+                        digest = hashlib.sha256(invocation).hexdigest()
+                        blob = root / "queue/cas/blobs/sha256" / digest
+                        blob.parent.mkdir(parents=True, exist_ok=True)
+                        blob.write_bytes(invocation)
+                        request = {
+                            "job_key": outcome,
+                            "lane": "work",
+                            "invocation_address": "sha256:" + digest,
+                        }
+                        submitted = client.enqueue([request])[0]
+                        with ready.accept()[0] as execution:
+                            pid = int(execution.recv(64))
+                            twin = client.enqueue([request])[0]
+                            self.assertFalse(twin["created"])
+                            self.assertEqual(twin["job_id"], submitted["job_id"])
+                            results = []
+
+                            def wait() -> None:
+                                results.append(client.wait(submitted["job_id"]))
+
+                            observers = [threading.Thread(target=wait) for _ in range(2)]
+                            for observer in observers:
+                                observer.start()
+                            if outcome == "cancel":
+                                client.cancel(submitted["job_id"], "test cancellation")
+                            else:
+                                execution.sendall(b"x")
+                            for observer in observers:
+                                observer.join()
+                            self.assertEqual(len(results), 2)
+                            expected = {
+                                "complete": "SUCCEEDED",
+                                "cancel": "CANCELLED",
+                                "fail": "FAILED",
+                            }[outcome]
+                            self.assertTrue(
+                                all(result["state"] == expected for result in results),
+                                (outcome, expected, results),
+                            )
+                            if outcome == "complete":
+                                self.assertTrue(results[0]["action_result"]["runner"]["version"])
+                            self.assertEqual(client.job(submitted["job_id"])["attempt"], 1)
+                            if outcome == "cancel":
+                                self.assertEqual((root / "cleaned").read_text(), "settled")
+                                with self.assertRaises(ProcessLookupError):
+                                    os.kill(pid, 0)
+            finally:
+                daemon.terminate()
+                daemon.wait()
+                daemon.stderr.close()

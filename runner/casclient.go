@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,6 +39,13 @@ type CAS struct {
 // NewCAS builds a CAS client against baseURL (e.g. http://pep:8080). signer may
 // be nil for direct/trusted deployments.
 func NewCAS(baseURL string, hc *http.Client, signer Signer) *CAS {
+	if strings.HasPrefix(baseURL, "file://") {
+		location, err := url.Parse(baseURL)
+		if err == nil && location.Host == "" {
+			hc = &http.Client{Transport: fileCAS{root: filepath.FromSlash(location.Path)}}
+			baseURL = "http://local"
+		}
+	}
 	if hc == nil {
 		hc = &http.Client{}
 	}

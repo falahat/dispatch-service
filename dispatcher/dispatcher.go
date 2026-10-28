@@ -53,6 +53,7 @@ func New(store *Store, cfg Config, clock Clock) (*Dispatcher, error) {
 		subs:      newSubMgr(),
 		rl:        newRateLimiter(cfg.RunnerRatePerMin),
 	}
+	store.changed = d.wakeLeases
 	return d, nil
 }
 

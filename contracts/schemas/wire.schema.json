@@ -248,6 +248,13 @@
       }
     },
 
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id"],
+      "properties": { "job_id": { "$ref": "#/$defs/job_id" } }
+    },
+    "wait": { "$ref": "#/$defs/job" },
     "subscribe": { "type": "object", "additionalProperties": false },
     "completion": {
       "type": "object",

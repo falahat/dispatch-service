@@ -10,6 +10,7 @@ import (
 // Config is the dispatcher's plane.toml, read once at boot. Change = restart
 // (downtime is free; there is no live reconfiguration surface to attack).
 type Config struct {
+	WaitForExecutor bool `toml:"-"` // Local owner supplies an execution-settled callback.
 	DBPath             string `toml:"db_path"`
 	RunnerListen       string `toml:"runner_listen"` // tailnet TCP, PEP-fronted in prod
 	AppSocket          string `toml:"app_socket"`    // UDS path for the app/admin surface
@@ -41,6 +42,7 @@ type Config struct {
 
 // LaneConfig is per-lane routing policy.
 type LaneConfig struct {
+	SingleAttempt bool `toml:"single_attempt"` // Fail visibly instead of requeueing execution or infrastructure failures.
 	// Concurrency caps simultaneous RUNNING jobs in the lane. 0 = unbounded.
 	Concurrency int `toml:"concurrency"`
 	// PersistingWatermark: count(PERSISTING) beyond this pauses leasing on the

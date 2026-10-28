@@ -20,7 +20,8 @@ const quarantineThreshold = 2
 // mode. A single writer connection serializes all mutation; readers see a
 // consistent snapshot. Domain bytes never live here — only key + address rows.
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	changed func()
 }
 
 // OpenStore opens (creating if needed) the SQLite database at path and applies
@@ -170,7 +171,13 @@ func (s *Store) writeTx(fn func(*sql.Tx) error) error {
 		_ = tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.changed != nil {
+		s.changed()
+	}
+	return nil
 }
 
 // Job is the in-memory view of a jobs row for decision logic.

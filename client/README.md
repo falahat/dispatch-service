@@ -34,6 +34,11 @@ drain = client.stats()                                  # drain health: states, 
 # A caller that must never hang on a wedged dispatcher (health pollers):
 poller = DispatchClient("unix:/run/dispatch.sock", timeout=5.0)
 
+# An uncertain connection must not replay a CI submission.
+ci = DispatchClient("unix:/run/dispatch.sock", retry_requests=False)
+view = ci.job(job_id)
+finished = ci.wait(job_id)  # dedicated blocking connection; no automatic replay
+
 # Consume completions (blocking generator). Ack each to drain PERSISTING.
 for completion in client.completions():
     process(completion)                                 # resolve outputs from CAS
@@ -49,6 +54,12 @@ for completion in client.completions():
 (e.g. `"127.0.0.1:7701"`). Connections open lazily on first use.
 
 ## completions() semantics
+
+`job()` and `wait()` are independent of the completion subscription. Each wait
+owns a connection so other calls, including cancellation, can proceed on the same
+client. Network-plane waits return at PERSISTING for explicit application ack;
+local command queues wait through their automatic persistence ack and cancellation
+cleanup. Neither operation installs a job execution deadline.
 
 `completions()` owns a dedicated subscription connection. On connect the server
 delivers every `PERSISTING` job oldest-first, then live events. There is **no

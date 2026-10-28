@@ -46,6 +46,9 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 			}
 
 			pol := ResolvePolicy(ej.Policy)
+			if d.cfg.Lane(ej.Lane).SingleAttempt {
+				pol.MaxAttempts, pol.ReleaseCap = 1, 1
+			}
 			cost, err := parseUSD(ej.CostEstimateUSD)
 			if err != nil {
 				budgetErr = &wire.Error{Code: wire.CodeInvalid, Message: "enqueue: " + err.Error()}

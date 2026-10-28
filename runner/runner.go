@@ -13,25 +13,28 @@ import (
 // and its compute container share the WorkRoot volume and the compute serves on
 // ComputeAddr (INVOKE_ADDR).
 type Config struct {
-	RunnerID        string   // public-key fingerprint (identity)
-	Node            string   // human node name
-	Version         string   // runner version string
-	DispatcherAddr  string   // runner surface (PEP in prod, dispatcher directly in tests)
-	CASBaseURL      string   // PEP CAS surface base URL
-	ComputeAddr     string   // paired compute container INVOKE_ADDR
-	WorkRoot        string   // shared workdir volume root
-	Lanes           []string // lanes this runner serves
-	Capacity        int      // concurrent slots (this build serves them sequentially per conn)
-	LeaseWaitS      int      // long-poll wait
-	MaxJobDurationS int      // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
-	GPU             string   // optional GPU descriptor for the fleet view
+	RunnerID        string             // public-key fingerprint (identity)
+	Node            string             // human node name
+	Version         string             // runner version string
+	DispatcherAddr  string             // runner surface (PEP in prod, dispatcher directly in tests)
+	CASBaseURL      string             // PEP CAS surface base URL
+	ComputeAddr     string             // paired compute container INVOKE_ADDR
+	WorkRoot        string             // shared workdir volume root
+	Lanes           []string           // lanes this runner serves
+	Capacity        int                // concurrent slots (this build serves them sequentially per conn)
+	LeaseWaitS      int                // long-poll wait
+	MaxJobDurationS int                // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
+	NoDeadline      bool               // Explicitly permit unbounded execution; cancellation still applies.
+	Command         []string           // Trusted local executor; absent selects the HTTP compute contract.
+	OnSettled       func(string) error // Local owner observes that execution and cleanup have ended.
+	GPU             string             // optional GPU descriptor for the fleet view
 }
 
 // Runner is the worker client aggregate.
 type Runner struct {
 	cfg     Config
 	cas     *CAS
-	invoke  *InvokeClient
+	invoke  executor
 	log     *slog.Logger
 	wrapper FrameWrapper // nil in direct mode
 
@@ -127,10 +130,14 @@ func New(cfg Config, signer Signer, wrapper FrameWrapper, log *slog.Logger) *Run
 	if cfg.MaxJobDurationS <= 0 {
 		cfg.MaxJobDurationS = 7200 // 2h backstop; real cancellation is the heartbeat abandon
 	}
+	var invoke executor = NewInvokeClient(cfg.ComputeAddr)
+	if len(cfg.Command) != 0 {
+		invoke = &commandExecutor{args: cfg.Command, id: cfg.RunnerID, node: cfg.Node}
+	}
 	return &Runner{
 		cfg:     cfg,
 		cas:     NewCAS(cfg.CASBaseURL, &http.Client{}, signer),
-		invoke:  NewInvokeClient(cfg.ComputeAddr),
+		invoke:  invoke,
 		log:     log,
 		wrapper: wrapper,
 		gpu:     cfg.GPU, // compute-reported GPU overrides this on the first heartbeat

@@ -153,6 +153,13 @@ func (r *Runner) jobBudget(g *wire.Grant) time.Duration {
 // appropriate terminal verb. It never returns an error; failures are reported to
 // the dispatcher.
 func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Grant) {
+	if r.cfg.OnSettled != nil {
+		defer func() {
+			if err := r.cfg.OnSettled(g.Job.JobID); err != nil {
+				r.log.Error("execution settlement failed", "job", g.Job.JobID, "err", err)
+			}
+		}()
+	}
 	// The job's execution budget is per-job (jobBudget) — NOT the lease deadline. The
 	// lease TTL (g.Lease.DeadlineTS) is a crash-detection timer the heartbeat renews
 	// every interval; using it as the job deadline would cancel any op longer than one
@@ -160,8 +167,13 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	// running an orphan. Cancellation for real arrives out of band via the heartbeat's
 	// abandon directive (markAbandoned); this deadline is only a backstop against a
 	// wedged compute.
-	deadline := time.Now().Add(r.jobBudget(g))
-	jobCtx, cancel := context.WithDeadline(ctx, deadline)
+	deadline := time.Time{}
+	jobCtx, cancel := context.WithCancel(ctx)
+	if !r.cfg.NoDeadline {
+		cancel()
+		deadline = time.Now().Add(r.jobBudget(g))
+		jobCtx, cancel = context.WithDeadline(ctx, deadline)
+	}
 	defer cancel()
 	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})
 	defer r.clearCurrent()
@@ -203,13 +215,17 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	for name := range inv.Inputs {
 		inputs[name] = filepath.ToSlash(filepath.Join("inputs", name))
 	}
+	deadlineTS := int64(0)
+	if !deadline.IsZero() {
+		deadlineTS = deadline.UnixMilli()
+	}
 	res, failure, ierr := r.invokeWaitingForFreeCompute(jobCtx, g, InvokeRequest{
 		JobID:      g.Job.JobID,
 		Invocation: invBytes,
 		Workdir:    workdir,
 		Inputs:     inputs,
 		OutputsDir: "outputs",
-		DeadlineTS: deadline.UnixMilli(), // the job budget, not the lease TTL
+		DeadlineTS: deadlineTS, // zero explicitly means no execution deadline
 	})
 	if ierr != nil {
 		// Transport/protocol fault. If we were told to abandon (ctx cancelled),

@@ -29,7 +29,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 _ADDRESS_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -186,7 +186,12 @@ class CasClient:
         """Fetch a blob fully into memory, verifying on read."""
         h = hashlib.sha256()
         chunks: list[bytes] = []
-        self._stream_get(address, lambda b: (h.update(b), chunks.append(b)))
+
+        def collect(block: bytes) -> None:
+            h.update(block)
+            chunks.append(block)
+
+        self._stream_get(address, collect)
         if "sha256:" + h.hexdigest() != address:
             raise CasIntegrityError(address)
         return b"".join(chunks)
@@ -220,7 +225,7 @@ class CasClient:
         finally:
             tmp.unlink(missing_ok=True)
 
-    def _stream_get(self, address: str, sink) -> None:
+    def _stream_get(self, address: str, sink: Callable[[bytes], None]) -> None:
         path = self._blob_path(address)
         conn = self._conn()
         try:
@@ -288,13 +293,13 @@ class CasClient:
         finally:
             conn.close()
 
-    def put_json(self, obj) -> str:
+    def put_json(self, obj: Any) -> str:
         """Store an object as canonical JSON (sorted keys, tight separators) —
         the app-side canonicalization SHOULD that keeps invocation addresses
         stable across rebuilds. Returns the address."""
         data = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return self.put(data)
 
-    def get_json(self, address: str):
+    def get_json(self, address: str) -> Any:
         """Fetch + verify a blob and parse it as JSON."""
         return json.loads(self.get(address).decode("utf-8"))

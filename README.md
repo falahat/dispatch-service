@@ -19,10 +19,23 @@ design lives in easy-podcast's
 | `dispatchctl/` | Operator commands for queue and fleet state |
 | `deploy/smokescreen/` | Source-network egress roles and destination policy |
 | `deploy/remote-runner/` | Install an application's runner/compute pair on an approved tailworker machine |
+| `cmd/dispatch-local/` | Compose this dispatcher and runner for trusted local command executors, using private Unix sockets and a local byte store |
 | `compute/echo/` | Credential-free fixture compute used by integration tests |
 
 The schemas under `contracts/` are normative. Components reject unsupported contract
 versions rather than negotiating mixed deployments.
+
+## Local command queues
+
+An application that already owns a trusted command executor can use
+`dispatch-local`; it uses the same dispatcher, SQLite transactions, leases and
+runner as the network plane. It is the application's only queue. It creates no
+machine, opens no TCP listener and installs no environment or firewall policy.
+Tailworker owns environment setup; applications own their workload commands.
+
+Build `./cmd/dispatch-local` in the reviewed Linux build environment and install
+its binary together with `client/dispatch_client`. See
+[the local command interface](contracts/LOCAL.md) for setup and execution semantics.
 
 ## Local integration
 

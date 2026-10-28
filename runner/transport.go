@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +34,11 @@ type dispatcherConn struct {
 // server parameters (heartbeat interval, wait bounds).
 func dialDispatcher(ctx context.Context, addr string, ident wire.RunnerIdent, wrapper FrameWrapper) (*dispatcherConn, wire.HelloOK, error) {
 	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	network := "tcp"
+	if strings.HasPrefix(addr, "unix:") {
+		network, addr = "unix", strings.TrimPrefix(addr, "unix:")
+	}
+	conn, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, wire.HelloOK{}, fmt.Errorf("dial dispatcher %s: %w", addr, err)
 	}

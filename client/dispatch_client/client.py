@@ -20,7 +20,7 @@ from __future__ import annotations
 import itertools
 import socket
 import threading
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, cast
 
 from . import frame
 
@@ -86,9 +86,12 @@ class DispatchClient:
     ``None`` (the default) keeps today's fully-blocking behaviour for long-lived clients.
     """
 
-    def __init__(self, address: str, *, timeout: Optional[float] = None):
+    def __init__(
+        self, address: str, *, timeout: Optional[float] = None, retry_requests: bool = True
+    ):
         self._address = address
         self._timeout = timeout
+        self._retry_requests = retry_requests
         self._req_lock = threading.Lock()
         self._req_sock: Optional[socket.socket] = None
         self._ids = itertools.count(1)
@@ -115,7 +118,7 @@ class DispatchClient:
             finally:
                 self._req_sock = None
 
-    def _request(self, msg_type: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _request(self, msg_type: str, body: dict[str, Any]) -> frame.Envelope:
         """Send one request on the shared request/reply connection, return the
         reply envelope. Raises :class:`DispatchError` on an ``error`` reply.
 
@@ -124,7 +127,8 @@ class DispatchClient:
         may have been reaped; the app verbs are all idempotent or read-only).
         """
         with self._req_lock:
-            for attempt in (1, 2):
+            attempts = 2 if self._retry_requests else 1
+            for attempt in range(1, attempts + 1):
                 sock = self._ensure_req_sock()
                 req_id = self._next_id()
                 try:
@@ -132,7 +136,7 @@ class DispatchClient:
                     env = frame.read_message(sock)
                 except (OSError, ConnectionError, frame.FrameError):
                     self._drop_req_sock()
-                    if attempt == 2:
+                    if attempt == attempts:
                         raise
                     continue
                 if env["type"] == "error":
@@ -147,6 +151,18 @@ class DispatchClient:
 
     # --- app verbs ---
 
+    def job(self, job_id: str) -> dict[str, Any]:
+        """Read one job without paging the fleet's entire history."""
+        return self._request("job", {"job_id": job_id})["body"]
+
+    def wait(self, job_id: str) -> dict[str, Any]:
+        """Block until execution ends, independently of the completion subscriber."""
+        observer = DispatchClient(self._address, timeout=self._timeout, retry_requests=False)
+        try:
+            return observer._request("wait", {"job_id": job_id})["body"]
+        finally:
+            observer.close()
+
     def enqueue(self, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Enqueue a batch of jobs. Idempotent on a live ``job_key``: a repeat
         returns the existing ``job_id`` with ``created=False``.
@@ -156,7 +172,7 @@ class DispatchClient:
         ``{"job_key", "job_id", "created"}``.
         """
         env = self._request("enqueue", {"jobs": jobs})
-        return env["body"]["results"]
+        return cast(list[dict[str, Any]], env["body"]["results"])
 
     def ack(self, job_id: str, disposition: str, reason: Optional[str] = None) -> None:
         """Drain a job from the PERSISTING inbox. ``disposition`` is
@@ -199,7 +215,7 @@ class DispatchClient:
     def fleet(self) -> list[dict[str, Any]]:
         """Return the per-runner fleet snapshot."""
         # An empty fleet marshals `runners` as JSON null on the Go side.
-        return self._request("fleet", {})["body"]["runners"] or []
+        return cast(list[dict[str, Any]], self._request("fleet", {})["body"]["runners"] or [])
 
     def budget(self) -> dict[str, Any]:
         """Return the budget snapshot (cap, reserved, spent, ledger)."""

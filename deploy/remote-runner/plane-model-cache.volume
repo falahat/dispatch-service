@@ -1,2 +1,2 @@
 [Volume]
-VolumeName=plane-model-cache
+VolumeName=@NAME@-model-cache

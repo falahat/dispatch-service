@@ -3,8 +3,8 @@ Description=Model-download egress guard
 
 [Container]
 Image=@SMOKESCREEN_IMAGE@
-ContainerName=plane-smokescreen
-NetworkAlias=plane-smokescreen
+ContainerName=@NAME@-smokescreen
+NetworkAlias=@NAME@-smokescreen
 User=1000
 Group=1000
 UserNS=keep-id:uid=1000,gid=1000
@@ -13,9 +13,9 @@ NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
 Pull=never
-Network=plane-edge.network
-Network=plane-model.network
-Volume=%h/.config/plane-runner/smokescreen:/etc/smokescreen:ro
+Network=@NAME@-edge.network
+Network=@NAME@-model.network
+Volume=%h/.config/plane-runners/@NAME@/smokescreen:/etc/smokescreen:ro
 Environment=SMOKESCREEN_ROLE_NETS=@MODEL_SUBNET@=model
 Exec=--config-file=/etc/smokescreen/config.yaml --listen-ip=0.0.0.0 --listen-port=4750 --egress-acl-file=/etc/smokescreen/allowlist.yaml
 

@@ -18,6 +18,7 @@ design lives in easy-podcast's
 | `client/` | Python application client for the dispatcher's Unix socket |
 | `dispatchctl/` | Operator commands for queue and fleet state |
 | `deploy/smokescreen/` | Source-network egress roles and destination policy |
+| `deploy/remote-runner/` | Install an application's runner/compute pair on an approved tailworker machine |
 | `compute/echo/` | Credential-free fixture compute used by integration tests |
 
 The schemas under `contracts/` are normative. Components reject unsupported contract
@@ -36,6 +37,31 @@ Production is not launched from this repository. The consuming application owns 
 Compose topology, credentials, egress policy, and release record. easy-podcast uses
 [`deploy/easypod`](https://github.com/falahat/easy-podcast/blob/main/deploy/easypod) as its
 only production path.
+
+## Add a worker
+
+Use the consuming application's setup command. It supplies its public image/lane
+settings and its existing signer to this shared kit:
+
+```sh
+bash deploy/remote-runner/install.sh --env APP.env --machine MACHINE
+bash deploy/remote-runner/enroll.sh --name APP --machine MACHINE --signer COMMAND --lanes LANES --note NOTE
+```
+
+Tailworker resolves the approved machine and transfers images; the kit installs
+rootless Quadlet units pinned to their image IDs. `NAME` isolates each application's
+containers, networks, volumes and credentials, so applications can share a machine.
+The worker creates its own seed. Only its public key and the application's signed
+capability cross SSH; compute never mounts the runner credential. Optional
+`--secret NAME FILE` copies an owned mode-0600 provider secret into a namespaced
+Podman secret. Public settings contain secret references, never their contents.
+
+Installation starts nothing. Enrollment starts only this application's units and
+refuses an existing credential. Updating installed units requires explicitly
+stopping that application's runner first. Private tailnet access and the app's
+authenticated runner/CAS doors must already be configured. No machine is provisioned
+and no cloud API is called. `bash deploy/remote-runner/test-install.sh` checks the
+positive setup path without starting services or using real credentials.
 
 ## Gates
 

@@ -3,6 +3,9 @@
 set -euo pipefail
 set +x
 umask 077
+resolve() {
+    tailworker resolve "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["host"])'
+}
 remote() {
     local destination=$1; shift
     if [[ $destination == local ]]; then "$@"; return; fi

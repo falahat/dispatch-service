@@ -1,11 +1,11 @@
 [Unit]
 Description=Authenticated application-plane runner
-Requires=plane-compute.service
-After=plane-compute.service
+Requires=@NAME@-compute.service
+After=@NAME@-compute.service
 
 [Container]
 Image=@RUNNER_IMAGE@
-ContainerName=plane-runner
+ContainerName=@NAME@-runner
 User=1000
 Group=1000
 UserNS=keep-id:uid=1000,gid=1000
@@ -14,13 +14,13 @@ NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
 Pull=never
-Network=plane-edge.network
-Network=plane-invoke.network
-Volume=plane-work.volume:/work
-Volume=%h/.config/plane-runner/cred:/run/plane-cred:ro
+Network=@NAME@-edge.network
+Network=@NAME@-invoke.network
+Volume=@NAME@-work.volume:/work
+Volume=%h/.config/plane-runners/@NAME@/cred:/run/plane-cred:ro
 Environment=DISPATCHER_ADDR=@PLANE_ADDR@:7443
 Environment=CAS_URL=http://@PLANE_ADDR@:8443
-Environment=INVOKE_ADDR=plane-compute:8080
+Environment=INVOKE_ADDR=@NAME@-compute:8080
 Environment=WORK_ROOT=/work
 Environment=LANES=@LANES@
 Environment=CREDENTIAL=/run/plane-cred/runner.json

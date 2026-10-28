@@ -3,8 +3,8 @@ Description=Credential-free application compute
 
 [Container]
 Image=@COMPUTE_IMAGE@
-ContainerName=plane-compute
-NetworkAlias=plane-compute
+ContainerName=@NAME@-compute
+NetworkAlias=@NAME@-compute
 User=1000
 Group=1000
 UserNS=keep-id:uid=1000,gid=1000
@@ -13,8 +13,8 @@ NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
 Pull=never
-Network=plane-invoke.network
-Volume=plane-work.volume:/work
+Network=@NAME@-invoke.network
+Volume=@NAME@-work.volume:/work
 Environment=INVOKE_ADDR=0.0.0.0:8080
 @COMPUTE_OPTIONS@
 

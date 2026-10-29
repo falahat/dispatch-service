@@ -49,11 +49,13 @@ args += ['--', *command]
 (stage / 'runner.service').write_text('''[Unit]
 Description=Authenticated command worker
 After=network-online.target
+StartLimitIntervalSec=0
 [Service]
 ExecStart="@BASE@/runner" ''' + ' '.join(json.dumps(arg) for arg in args) + '''
 KillMode=process
 TimeoutStopSec=infinity
 Restart=on-failure
+RestartSec=5s
 UMask=0077
 [Install]
 WantedBy=default.target

@@ -57,10 +57,7 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	r.refreshGPU(probe) // fold in the compute's live GPU/VRAM before we send
 	cancel()
 	status, lease := r.currentStatus()
-	chunk, err := r.logChunk(ctx)
-	if err != nil {
-		return err
-	}
+	chunk, logErr := r.logChunk(ctx)
 	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk})
 	if err != nil {
 		return err // dead connection -> caller reconnects so lease renewal resumes
@@ -73,16 +70,6 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	if err != nil {
 		r.log.Warn("heartbeat decode", "err", err)
 		return nil
-	}
-	if chunk != nil {
-		if beat.LogOffset == nil || *beat.LogOffset != chunk.Offset+chunk.Size {
-			return fmt.Errorf("dispatcher did not acknowledge the command log chunk")
-		}
-		r.mu.Lock()
-		if r.current != nil && r.current.jobID == status.CurrentJobID {
-			r.current.logOffset = *beat.LogOffset
-		}
-		r.mu.Unlock()
 	}
 	for _, dir := range beat.Directives {
 		switch dir.Kind {
@@ -97,6 +84,19 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 				r.setLeaseAfter(*dir.LeaseAfterTS)
 			}
 		}
+	}
+	if logErr != nil {
+		return logErr
+	}
+	if chunk != nil {
+		if beat.LogOffset == nil || *beat.LogOffset != chunk.Offset+chunk.Size {
+			return fmt.Errorf("dispatcher did not acknowledge the command log chunk")
+		}
+		r.mu.Lock()
+		if r.current != nil && r.current.jobID == status.CurrentJobID {
+			r.current.logOffset = *beat.LogOffset
+		}
+		r.mu.Unlock()
 	}
 	return nil
 }

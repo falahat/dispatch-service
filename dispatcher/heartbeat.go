@@ -93,10 +93,15 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 					next := req.Log.Offset + req.Log.Size
 					out.LogOffset = &next
 				}
-			} else if jobID != "" {
+			} else {
 				// The lease is no longer live (cancelled, expired, or superseded):
 				// tell the runner to stop working on it.
-				out.Directives = append(out.Directives, wire.Directive{Kind: wire.DirectiveAbandon, JobID: jobID})
+				if jobID == "" {
+					jobID = req.Status.CurrentJobID
+				}
+				if jobID != "" {
+					out.Directives = append(out.Directives, wire.Directive{Kind: wire.DirectiveAbandon, JobID: jobID})
+				}
 			}
 		}
 		return nil

@@ -90,3 +90,19 @@ func TestIdleClaimDoesNotWakeItself(t *testing.T) {
 	default:
 	}
 }
+
+func TestLostQueueStateAbandonsPreviouslyGrantedWork(t *testing.T) {
+	before, _ := newTestDispatcher(t)
+	id := enqueueOne(t, before, "lost-state", "embed", invAddr("lost-state"), nil)
+	hello(t, before, "worker", "embed")
+	grant, _ := leaseOne(t, before, "worker", "embed")
+	after, _ := newTestDispatcher(t)
+	hello(t, after, "worker", "embed")
+	beat, err := after.Heartbeat("worker", wire.Heartbeat{
+		Status:  wire.HeartbeatStatus{Node: "worker", Lanes: []string{"embed"}, Capacity: 1, CurrentJobID: id},
+		LeaseID: grant.Lease.LeaseID,
+	})
+	if err != nil || len(beat.Directives) != 1 || beat.Directives[0].Kind != wire.DirectiveAbandon || beat.Directives[0].JobID != id {
+		t.Fatalf("lost lease must stop the previously granted executor: %+v %v", beat, err)
+	}
+}

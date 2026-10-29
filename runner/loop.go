@@ -27,7 +27,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer work.close()
+	defer func() {
+		if work != nil {
+			work.close()
+		}
+	}()
 
 	hb, _, err := dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)
 	if err != nil {
@@ -68,8 +72,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			r.log.Warn("lease error; reconnecting", "err", err)
 			work.close()
-			work, err = r.redial(ctx)
-			if err != nil {
+			for {
+				work, err = r.redial(ctx)
+				if err == nil {
+					break
+				}
 				if ctx.Err() != nil {
 					return nil
 				}

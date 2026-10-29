@@ -22,6 +22,11 @@ CAS-addressed chunks through its heartbeat, with byte offsets acknowledged by th
 dispatcher. The app-only `logs` verb reads these chunks independently of completion
 subscriptions. Bytes are verified by the existing CAS client, never executed.
 
+The executor may atomically replace `invoke-progress.json` with a JSON object
+of at most 16 KiB, outside workload mounts. Heartbeats publish this opaque object;
+`job` and `wait` return the latest `progress` for the current attempt. The application
+owns its meaning. Progress does not complete a job or change its queue state.
+
 `--no-deadline` supplies `deadline_ts=0` and adds no execution watchdog. A
 `single_attempt` lane makes execution, shipping and lease-loss failures terminal.
 The command handles SIGTERM by stopping and reaping only its own children and

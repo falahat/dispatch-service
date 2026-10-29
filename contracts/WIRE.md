@@ -118,7 +118,9 @@ policy: {
 Staleness (`on_drift`) is **deliberately absent** — it is reconciler (app) policy, enforced
 app-side by digest comparison + `cancel`; the dispatcher never evaluates domain freshness.
 
-Command workers may include `log:{offset,address,size}` in a live-lease heartbeat.
+Command workers may include `log:{offset,address,size}` and an opaque `progress`
+JSON object (at most 16 KiB) in a live-lease heartbeat. `job` / `wait` expose the
+latest `progress` for the current attempt; its meaning belongs to the application.
 The signed heartbeat binds this CAS address to the current lease and runner.
 Chunks are contiguous, 1–1,048,576 bytes; exact replay is idempotent. `beat_ok`
 returns `log_offset`, the acknowledged byte end. The runner flushes all chunks

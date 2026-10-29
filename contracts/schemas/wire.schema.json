@@ -138,6 +138,10 @@
         "size": { "type": "integer", "minimum": 1, "maximum": 1048576 }
       }
     },
+    "progress": {
+      "type": "object",
+      "$comment": "Opaque application progress, at most 16384 encoded JSON bytes; only the live lease holder may publish it."
+    },
     "heartbeat": {
       "type": "object",
       "additionalProperties": false,
@@ -157,7 +161,8 @@
           }
         },
         "lease_id": { "$ref": "#/$defs/lease_id" },
-        "log": { "$ref": "#/$defs/log_chunk" }
+        "log": { "$ref": "#/$defs/log_chunk" },
+        "progress": { "$ref": "#/$defs/progress" }
       }
     },
     "beat_ok": {

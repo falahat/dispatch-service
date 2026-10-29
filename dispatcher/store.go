@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS job_logs (
   PRIMARY KEY(job_id,offset)
 ) WITHOUT ROWID;
 
+CREATE TABLE IF NOT EXISTS job_progress (
+  job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,
+  attempt INTEGER NOT NULL,
+  payload TEXT NOT NULL
+);
+
 -- Per-attempt timeline: the dead-letter view and the quarantine witness source.
 CREATE TABLE IF NOT EXISTS attempts (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

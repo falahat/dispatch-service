@@ -30,6 +30,7 @@ The existing network runner can invoke either a paired HTTP compute container
 or an owner-installed command. Both use the same PEP, CAS, queue, leases and
 completion acknowledgements. Tailworker owns environment setup; the application
 owns its workload command and persistence. See [the command contract](contracts/COMMAND.md).
+The executor can publish opaque progress during execution without completing the job.
 
 ## Local integration
 

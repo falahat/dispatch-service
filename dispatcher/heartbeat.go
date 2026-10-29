@@ -42,6 +42,12 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 	if req.Log != nil && (req.LeaseID == "" || req.Log.Offset < 0 || req.Log.Size < 1 || req.Log.Size > 1<<20 || req.Log.Offset > math.MaxInt64-req.Log.Size || req.Log.Address.Validate() != nil) {
 		return out, &wire.Error{Code: wire.CodeInvalid, Message: "invalid log chunk"}
 	}
+	if req.Progress != nil {
+		var object map[string]json.RawMessage
+		if req.LeaseID == "" || len(req.Progress) > 1<<14 || json.Unmarshal(req.Progress, &object) != nil || object == nil {
+			return out, &wire.Error{Code: wire.CodeInvalid, Message: "progress must be an object of at most 16 KiB on a live lease"}
+		}
+	}
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		now := d.now()
 		if err := upsertRunner(tx, runnerID, req.Status, "", now); err != nil {
@@ -93,6 +99,13 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 					next := req.Log.Offset + req.Log.Size
 					out.LogOffset = &next
 				}
+				if req.Progress != nil {
+					if _, err := tx.Exec(`INSERT INTO job_progress(job_id,attempt,payload) VALUES(?,?,?)
+						ON CONFLICT(job_id) DO UPDATE SET attempt=excluded.attempt,payload=excluded.payload`,
+						jobID, live.Attempt, string(req.Progress)); err != nil {
+						return err
+					}
+				}
 			} else {
 				// The lease is no longer live (cancelled, expired, or superseded):
 				// tell the runner to stop working on it.
@@ -109,7 +122,7 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 	if err != nil {
 		return wire.BeatOK{}, &wire.Error{Code: wire.CodeInternal, Message: "heartbeat: " + err.Error()}
 	}
-	if req.Log != nil {
+	if req.Log != nil || req.Progress != nil {
 		d.wakeLeases()
 	}
 	return out, nil

@@ -202,9 +202,10 @@ type HeartbeatStatus struct {
 }
 
 type Heartbeat struct {
-	Status  HeartbeatStatus `json:"status"`
-	LeaseID string          `json:"lease_id,omitempty"`
-	Log     *LogChunk       `json:"log,omitempty"`
+	Status   HeartbeatStatus `json:"status"`
+	LeaseID  string          `json:"lease_id,omitempty"`
+	Log      *LogChunk       `json:"log,omitempty"`
+	Progress json.RawMessage `json:"progress,omitempty"`
 }
 
 // LogChunk addresses bytes uploaded through the existing authenticated CAS.

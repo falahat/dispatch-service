@@ -36,6 +36,14 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (map[string]
 			if job.ResultJSON != "" {
 				result["action_result"] = json.RawMessage(job.ResultJSON)
 			}
+			var progress string
+			err := d.store.db.QueryRow(`SELECT payload FROM job_progress WHERE job_id=? AND attempt=?`, id, job.Attempt).Scan(&progress)
+			if err != nil && err != sql.ErrNoRows {
+				return nil, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
+			}
+			if err == nil {
+				result["progress"] = json.RawMessage(progress)
+			}
 			return result, nil
 		}
 		select {

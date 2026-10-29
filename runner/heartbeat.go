@@ -58,7 +58,8 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	cancel()
 	status, lease := r.currentStatus()
 	chunk, logErr := r.logChunk(ctx)
-	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk})
+	progress, progressErr := r.commandProgress(status.CurrentJobID)
+	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk, Progress: progress})
 	if err != nil {
 		return err // dead connection -> caller reconnects so lease renewal resumes
 	}
@@ -87,6 +88,9 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	}
 	if logErr != nil {
 		return logErr
+	}
+	if progressErr != nil {
+		return progressErr
 	}
 	if chunk != nil {
 		if beat.LogOffset == nil || *beat.LogOffset != chunk.Offset+chunk.Size {

@@ -2,10 +2,31 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/falahat/dispatch-service/internal/wire"
 )
+
+func TestProgressVisibleDuringExecution(t *testing.T) {
+	d, _ := newTestDispatcher(t)
+	id := enqueueOne(t, d, "progress", "embed", invAddr("progress"), nil)
+	hello(t, d, "worker", "embed")
+	grant, _ := leaseOne(t, d, "worker", "embed")
+	for _, payload := range []string{`{"stage":"first"}`, `{"stage":"second","completed":1}`} {
+		_, err := d.Heartbeat("worker", wire.Heartbeat{
+			Status:  wire.HeartbeatStatus{Node: "worker", Lanes: []string{"embed"}, Capacity: 1, CurrentJobID: id},
+			LeaseID: grant.Lease.LeaseID, Progress: json.RawMessage(payload),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := d.job(context.Background(), id, false)
+		if err != nil || result["state"] != "RUNNING" || string(result["progress"].(json.RawMessage)) != payload {
+			t.Fatalf("progress must be visible before completion: %v %v", result, err)
+		}
+	}
+}
 
 func TestSingleAttemptIncludesInfrastructureAndLeaseLoss(t *testing.T) {
 	for _, outcome := range []string{"fail", "release", "lease_loss"} {

@@ -187,6 +187,26 @@ func replyErr(conn net.Conn, id string, e *wire.Error) error {
 	return wire.WriteMessage(conn, id, wire.TypeError, e)
 }
 
+// serve decodes one contract request and writes one correlated result or error.
+func serve[Request, Result any](conn net.Conn, env wire.Envelope, resultType string, handle func(Request) (Result, *wire.Error)) error {
+	req, err := wire.DecodeBody[Request](env)
+	if err != nil {
+		return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
+	}
+	result, failure := handle(req)
+	if failure != nil {
+		return replyErr(conn, env.ID, failure)
+	}
+	return reply(conn, env.ID, resultType, result)
+}
+
+// apply is the same exchange for mutations whose success body is empty.
+func apply[Request any](conn net.Conn, env wire.Envelope, handle func(Request) *wire.Error) error {
+	return serve(conn, env, wire.TypeOK, func(req Request) (wire.OK, *wire.Error) {
+		return wire.OK{}, handle(req)
+	})
+}
+
 // handleRunnerConn serves one runner connection: hello, then a request loop.
 // In production this connection is the PEP's loopback forward for exactly one
 // authenticated runner; hello.runner.id is that verified identity.
@@ -241,42 +261,21 @@ func (s *Server) serveRunnerFrame(conn net.Conn, runnerID string, env wire.Envel
 		}
 		return reply(conn, env.ID, wire.TypeEmpty, empty)
 	case wire.TypeHeartbeat:
-		req, err := wire.DecodeBody[wire.Heartbeat](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		beat, werr := s.d.Heartbeat(runnerID, req)
-		if werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeBeatOK, beat)
+		return serve(conn, env, wire.TypeBeatOK, func(req wire.Heartbeat) (wire.BeatOK, *wire.Error) {
+			return s.d.Heartbeat(runnerID, req)
+		})
 	case wire.TypeComplete:
-		req, err := wire.DecodeBody[wire.Complete](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Complete(runnerID, req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, func(req wire.Complete) *wire.Error {
+			return s.d.Complete(runnerID, req)
+		})
 	case wire.TypeFail:
-		req, err := wire.DecodeBody[wire.Fail](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Fail(runnerID, req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, func(req wire.Fail) *wire.Error {
+			return s.d.Fail(runnerID, req)
+		})
 	case wire.TypeRelease:
-		req, err := wire.DecodeBody[wire.Release](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Release(runnerID, req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, func(req wire.Release) *wire.Error {
+			return s.d.Release(runnerID, req)
+		})
 	default:
 		return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: "unknown runner verb " + env.Type})
 	}
@@ -315,15 +314,9 @@ func (s *Server) handleAppConn(conn net.Conn) {
 func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 	switch env.Type {
 	case "logs":
-		req, err := wire.DecodeBody[logsRequest](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		result, werr := s.d.logs(s.ctx, req)
-		if werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, "log_result", result)
+		return serve(conn, env, "log_result", func(req logsRequest) (logsResult, *wire.Error) {
+			return s.d.logs(s.ctx, req)
+		})
 	case "job", "wait", "lookup":
 		req, err := wire.DecodeBody[map[string]string](env)
 		field := "job_id"
@@ -347,51 +340,15 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 		}
 		return reply(conn, env.ID, "job_result", result)
 	case wire.TypeEnqueue:
-		req, err := wire.DecodeBody[wire.Enqueue](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		res, werr := s.d.Enqueue(req)
-		if werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeEnqueueResult, res)
+		return serve(conn, env, wire.TypeEnqueueResult, s.d.Enqueue)
 	case wire.TypeAck:
-		req, err := wire.DecodeBody[wire.Ack](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Ack(req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, s.d.Ack)
 	case wire.TypeApprove:
-		req, err := wire.DecodeBody[wire.Approval](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Approve(req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, s.d.Approve)
 	case wire.TypeReject:
-		req, err := wire.DecodeBody[wire.Approval](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Reject(req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, s.d.Reject)
 	case wire.TypeCancel:
-		req, err := wire.DecodeBody[wire.Cancel](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
-		}
-		if werr := s.d.Cancel(req); werr != nil {
-			return replyErr(conn, env.ID, werr)
-		}
-		return reply(conn, env.ID, wire.TypeOK, wire.OK{})
+		return apply(conn, env, s.d.Cancel)
 	case wire.TypeJobs:
 		req, err := wire.DecodeBody[jobsRequest](env)
 		if err != nil {

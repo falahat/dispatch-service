@@ -7,13 +7,6 @@ import (
 	"strings"
 )
 
-// AttemptView is one row of a job's attempt/release timeline.
-type AttemptView = wire.AttemptView
-
-// JobView is the read projection of a job, including its full timeline (the
-// dead-letter view is jobs{state: FAILED}).
-type JobView = wire.JobView
-
 // JobsFilter narrows a jobs query.
 type JobsFilter struct {
 	State        string
@@ -23,11 +16,8 @@ type JobsFilter struct {
 	Offset       int
 }
 
-// JobsResult is a page of jobs.
-type JobsResult = wire.JobsResult
-
 // Jobs returns a filtered, paged view of jobs, newest first.
-func (d *Dispatcher) Jobs(f JobsFilter) (JobsResult, error) {
+func (d *Dispatcher) Jobs(f JobsFilter) (wire.JobsResult, error) {
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 100
 	}
@@ -54,22 +44,22 @@ func (d *Dispatcher) Jobs(f JobsFilter) (JobsResult, error) {
 	rows, err := d.store.db.Query(
 		`SELECT `+jobColumns+` FROM jobs `+clause+` ORDER BY created_ts DESC, job_id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
-		return JobsResult{}, err
+		return wire.JobsResult{}, err
 	}
 	defer rows.Close()
 	var jobs []Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
-			return JobsResult{}, err
+			return wire.JobsResult{}, err
 		}
 		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
-		return JobsResult{}, err
+		return wire.JobsResult{}, err
 	}
 	rows.Close()
-	out := JobsResult{Jobs: []JobView{}}
+	out := wire.JobsResult{Jobs: []wire.JobView{}}
 	if len(jobs) > f.Limit {
 		jobs = jobs[:f.Limit]
 		next := f.Offset + f.Limit
@@ -78,15 +68,15 @@ func (d *Dispatcher) Jobs(f JobsFilter) (JobsResult, error) {
 	for _, job := range jobs {
 		view, err := d.jobView(job)
 		if err != nil {
-			return JobsResult{}, err
+			return wire.JobsResult{}, err
 		}
 		out.Jobs = append(out.Jobs, view)
 	}
 	return out, nil
 }
 
-func (d *Dispatcher) jobView(j Job) (JobView, error) {
-	view := JobView{JobID: j.JobID, JobKey: j.JobKey, Lane: j.Lane, State: j.State,
+func (d *Dispatcher) jobView(j Job) (wire.JobView, error) {
+	view := wire.JobView{JobID: j.JobID, JobKey: j.JobKey, Lane: j.Lane, State: j.State,
 		Attempt: j.Attempt, ReleaseCount: j.ReleaseCount, InvocationAddress: j.InvocationAddress,
 		NextAttemptAt: j.NextAttemptAt, CostUSD: j.CostCents.String(), Reason: j.Reason,
 		CreatedTS: j.CreatedTS, UpdatedTS: j.UpdatedTS, RunnerID: j.LeaseRunnerID,
@@ -103,7 +93,7 @@ func (d *Dispatcher) jobView(j Job) (JobView, error) {
 	return view, err
 }
 
-func (d *Dispatcher) timeline(jobID string) ([]AttemptView, error) {
+func (d *Dispatcher) timeline(jobID string) ([]wire.AttemptView, error) {
 	rows, err := d.store.db.Query(
 		`SELECT attempt, runner_id, lease_id, outcome, error_class, reason, COALESCE(ended_ts, started_ts, 0)
 		 FROM attempts WHERE job_id=? ORDER BY id`, jobID)
@@ -111,9 +101,9 @@ func (d *Dispatcher) timeline(jobID string) ([]AttemptView, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []AttemptView
+	var out []wire.AttemptView
 	for rows.Next() {
-		var av AttemptView
+		var av wire.AttemptView
 		var runner, lease, class, reason sql.NullString
 		if err := rows.Scan(&av.Attempt, &runner, &lease, &av.Outcome, &class, &reason, &av.TS); err != nil {
 			return nil, err
@@ -124,11 +114,8 @@ func (d *Dispatcher) timeline(jobID string) ([]AttemptView, error) {
 	return out, rows.Err()
 }
 
-// RunnerView is a fleet snapshot row.
-type RunnerView = wire.RunnerView
-
 // Fleet returns per-runner health.
-func (d *Dispatcher) Fleet() ([]RunnerView, error) {
+func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 	rows, err := d.store.db.Query(
 		`SELECT runner_id, node, version, lanes, capacity, gpu, vram_free_mb, last_seen_ts,
 			quarantined, quarantine_reason, draining, corroborated_failures FROM runners ORDER BY runner_id`)
@@ -136,9 +123,9 @@ func (d *Dispatcher) Fleet() ([]RunnerView, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []RunnerView
+	var out []wire.RunnerView
 	for rows.Next() {
-		var rv RunnerView
+		var rv wire.RunnerView
 		var node, version, lanesJSON, gpu, qreason sql.NullString
 		var capacity, vram sql.NullInt64
 		var quarantined, draining int
@@ -168,29 +155,23 @@ func (d *Dispatcher) Fleet() ([]RunnerView, error) {
 	return out, nil
 }
 
-// BudgetLedgerItem is one priced job's contribution.
-type BudgetLedgerItem = wire.BudgetLedgerItem
-
-// BudgetView is the cost snapshot.
-type BudgetView = wire.BudgetView
-
 // Budget returns the cost gate snapshot.
-func (d *Dispatcher) Budget() (BudgetView, error) {
+func (d *Dispatcher) Budget() (wire.BudgetView, error) {
 	var cap, reserved, spent int64
 	if err := d.store.db.QueryRow(`SELECT cap_cents, reserved_cents, spent_cents FROM budget WHERE id=1`).Scan(&cap, &reserved, &spent); err != nil {
-		return BudgetView{}, err
+		return wire.BudgetView{}, err
 	}
-	out := BudgetView{CapUSD: Money(cap).String(), ReservedUSD: Money(reserved).String(), SpentUSD: Money(spent).String()}
+	out := wire.BudgetView{CapUSD: Money(cap).String(), ReservedUSD: Money(reserved).String(), SpentUSD: Money(spent).String()}
 	rows, err := d.store.db.Query(`SELECT job_id, job_key, state, cost_cents FROM jobs WHERE cost_cents > 0 ORDER BY created_ts DESC LIMIT 200`)
 	if err != nil {
-		return BudgetView{}, err
+		return wire.BudgetView{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var it BudgetLedgerItem
+		var it wire.BudgetLedgerItem
 		var cents int64
 		if err := rows.Scan(&it.JobID, &it.JobKey, &it.State, &cents); err != nil {
-			return BudgetView{}, err
+			return wire.BudgetView{}, err
 		}
 		it.CostUSD = Money(cents).String()
 		out.Ledger = append(out.Ledger, it)

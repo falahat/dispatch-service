@@ -74,7 +74,7 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 	if _, err := d.job(ctx, id, true); err == nil {
 		t.Fatal("cancellation returned before the executor settled")
 	}
-	results := make(chan JobView, 2)
+	results := make(chan wire.JobView, 2)
 	for range 2 {
 		go func() {
 			result, err := d.job(context.Background(), id, true)

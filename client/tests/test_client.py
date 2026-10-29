@@ -357,3 +357,97 @@ def test_subscription_takeover(dispatcher):
 
     sub1.close()
     sub2.close()
+
+
+def test_operator_commands_use_the_application_client(dispatcher, capsys):
+    from dispatch_client.cli import main
+
+    def call(*args):
+        assert main(["-addr", dispatcher.app_addr, *args]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    args = (
+        "enqueue",
+        "--key",
+        "cli-one",
+        "--lane",
+        "embed",
+        "--inv",
+        DUMMY_ADDR,
+        "--submission",
+        "cli-submission",
+    )
+    first = call(*args)["results"][0]
+    assert first["created"]
+    assert not call(*args)["results"][0]["created"]
+    job_id = first["job_id"]
+    view = call("job", job_id)
+    assert view == call("jobs", "--lane", "embed", "--prefix", "cli-")["jobs"][0]
+    assert view == call("lookup", "cli-submission") == call("trace", job_id)
+    assert view["timeline"][0]["outcome"] == "enqueue"
+    call("enqueue", "--key", "other", "--lane", "transcribe", "--inv", DUMMY_ADDR)
+    assert [job["job_key"] for job in call("jobs", "--lane", "transcribe")["jobs"]] == ["other"]
+    assert call("jobs", "--page", "100")["jobs"] == []
+    call("cancel", job_id, "--reason", "owner request")
+    assert call("wait", job_id) == call("job", job_id)
+    assert call("job", job_id)["state"] == "CANCELLED"
+    assert "runners" in call("fleet")
+    assert call("budget")["cap_usd"] == "100.00"
+    stats = call("stats", "--window", "120")
+    assert stats["window_s"] == 120 and any(job["state"] == "CANCELLED" for job in stats["jobs"])
+    assert any(event["outcome"] == "cancel" for event in stats["attempts"])
+    assert stats["oldest_queued_age_s"] >= 0
+    assert {"recovered", "expired", "gc_candidates", "pruned"} <= call("sweep").keys()
+    for operation, state in (("approve", "QUEUED"), ("reject", "REJECTED")):
+        priced = call(
+            "enqueue", "--key", operation, "--lane", "embed", "--inv", DUMMY_ADDR, "--cost", "1.00"
+        )["results"][0]["job_id"]
+        assert call("job", priced)["state"] == "AWAITING_APPROVAL"
+        call(operation, priced, "--author", "owner", "--reason", "fixture")
+        assert call("job", priced)["state"] == state
+    assert main(["-addr", dispatcher.app_addr, "cancel", "not-a-job"]) == 1
+    assert "invalid" in capsys.readouterr().err
+
+
+def test_operator_ack_arguments():
+    from dispatch_client.cli import request
+
+    assert request(["-addr", "unix:/unused", "ack", "id", "persisted", "--reason", "stored"]) == (
+        "unix:/unused",
+        "ack",
+        {"job_id": "id", "disposition": "persisted", "reason": "stored"},
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["job"],
+        ["fleet", "extra"],
+        ["jobs", "--page", "NaN"],
+        ["approve", "id"],
+        ["enqueue", "--key", "only"],
+        ["cancel", "id", "--unknown", "x"],
+    ],
+)
+def test_operator_rejects_invalid_arguments(args):
+    from dispatch_client.cli import request
+
+    with pytest.raises(SystemExit):
+        request(["-addr", "unix:/unused", *args])
+
+
+def test_client_rejects_reply_from_another_request(dispatcher, monkeypatch):
+    monkeypatch.setattr(
+        frame,
+        "read_message",
+        lambda sock: {
+            "v": "0.1",
+            "type": "fleet_result",
+            "id": "different",
+            "body": {"runners": []},
+        },
+    )
+    with DispatchClient(dispatcher.app_addr, retry_requests=False) as client:
+        with pytest.raises(frame.FrameError, match="reply ID"):
+            client.fleet()

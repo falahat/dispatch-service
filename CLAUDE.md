@@ -59,7 +59,7 @@ bar is clean, elegant, readable code + utmost security and privacy.
 
 ## Gates & mechanics
 
-- **Go** (`dispatcher/`, `runner/`, `dispatchctl/`, `internal/`, `deploy/smokescreen/`):
+- **Go** (`dispatcher/`, `runner/`, `internal/`, `deploy/smokescreen/`):
   `gofmt`/`go vet`/`go build`/`go test` all clean. Builds for the plane happen in Docker
   on bigboi; the local Go SDK is at `C:\Users\aryan\go-sdk\go\bin` (no gcc, so no `-race`
   locally — the CI/Docker path covers it).

@@ -28,26 +28,10 @@ type StatsRequest struct {
 	WindowS int `json:"window_s,omitempty"`
 }
 
-// JobCount is one (lane, state) cell of the queue snapshot.
-type JobCount = wire.JobCount
-
-// AttemptCount is one (lane, outcome) cell of the trailing window: outcome is
-// the attempts-log verb (enqueue | complete | fail | release | lease_expired |
-// ack | cancel). In-flight `claimed` rows carry no ended_ts and are excluded —
-// this is the settled-event rate, not a busyness meter.
-type AttemptCount = wire.AttemptCount
-
-// FailureCount is one grouped recent-failure row — the "why is it failing"
-// column of the drain view.
-type FailureCount = wire.FailureCount
-
-// StatsView is the whole drain-health snapshot.
-type StatsView = wire.StatsView
-
 // Stats builds the drain-health snapshot: job counts by (lane, state), attempt
 // outcomes over the trailing window, the grouped top failure reasons, and the
 // age of the oldest QUEUED job (0 when the queue is empty). Read-only.
-func (d *Dispatcher) Stats(req StatsRequest) (StatsView, error) {
+func (d *Dispatcher) Stats(req StatsRequest) (wire.StatsView, error) {
 	windowS := req.WindowS
 	if windowS <= 0 {
 		windowS = statsWindowDefaultS
@@ -56,17 +40,17 @@ func (d *Dispatcher) Stats(req StatsRequest) (StatsView, error) {
 		windowS = statsWindowMaxS
 	}
 	now := d.now()
-	out := StatsView{ServerTS: now, WindowS: windowS}
+	out := wire.StatsView{ServerTS: now, WindowS: windowS}
 	cutoff := now - int64(windowS)*1000
 
 	if err := d.statsJobs(&out); err != nil {
-		return StatsView{}, err
+		return wire.StatsView{}, err
 	}
 	if err := d.statsAttempts(&out, cutoff); err != nil {
-		return StatsView{}, err
+		return wire.StatsView{}, err
 	}
 	if err := d.statsFailures(&out, cutoff); err != nil {
-		return StatsView{}, err
+		return wire.StatsView{}, err
 	}
 
 	// Oldest QUEUED age: how long the head of the queue has been waiting since
@@ -74,7 +58,7 @@ func (d *Dispatcher) Stats(req StatsRequest) (StatsView, error) {
 	var oldest int64
 	if err := d.store.db.QueryRow(
 		`SELECT COALESCE(MIN(created_ts), 0) FROM jobs WHERE state='QUEUED'`).Scan(&oldest); err != nil {
-		return StatsView{}, err
+		return wire.StatsView{}, err
 	}
 	if oldest > 0 {
 		out.OldestQueuedAgeS = (now - oldest) / 1000
@@ -83,7 +67,7 @@ func (d *Dispatcher) Stats(req StatsRequest) (StatsView, error) {
 }
 
 // statsJobs fills the (lane, state) queue snapshot.
-func (d *Dispatcher) statsJobs(out *StatsView) error {
+func (d *Dispatcher) statsJobs(out *wire.StatsView) error {
 	rows, err := d.store.db.Query(
 		`SELECT lane, state, COUNT(*) FROM jobs GROUP BY lane, state ORDER BY lane, state`)
 	if err != nil {
@@ -91,7 +75,7 @@ func (d *Dispatcher) statsJobs(out *StatsView) error {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var jc JobCount
+		var jc wire.JobCount
 		if err := rows.Scan(&jc.Lane, &jc.State, &jc.Count); err != nil {
 			return err
 		}
@@ -105,7 +89,7 @@ func (d *Dispatcher) statsJobs(out *StatsView) error {
 // the time filter naturally excludes them. Lane comes from the job row; a job
 // pruned by retention takes its attempts with it, and the retention window
 // (days) dwarfs any stats window, so the join cannot undercount live health.
-func (d *Dispatcher) statsAttempts(out *StatsView, cutoff int64) error {
+func (d *Dispatcher) statsAttempts(out *wire.StatsView, cutoff int64) error {
 	rows, err := d.store.db.Query(
 		`SELECT j.lane, a.outcome, COUNT(*) FROM attempts a
 		 JOIN jobs j ON j.job_id = a.job_id
@@ -115,7 +99,7 @@ func (d *Dispatcher) statsAttempts(out *StatsView, cutoff int64) error {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var ac AttemptCount
+		var ac wire.AttemptCount
 		if err := rows.Scan(&ac.Lane, &ac.Outcome, &ac.Count); err != nil {
 			return err
 		}
@@ -125,7 +109,7 @@ func (d *Dispatcher) statsAttempts(out *StatsView, cutoff int64) error {
 }
 
 // statsFailures fills the grouped recent-failure rows, worst offenders first.
-func (d *Dispatcher) statsFailures(out *StatsView, cutoff int64) error {
+func (d *Dispatcher) statsFailures(out *wire.StatsView, cutoff int64) error {
 	rows, err := d.store.db.Query(
 		`SELECT j.lane, a.error_class, a.reason, COUNT(*) AS n FROM attempts a
 		 JOIN jobs j ON j.job_id = a.job_id
@@ -137,7 +121,7 @@ func (d *Dispatcher) statsFailures(out *StatsView, cutoff int64) error {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var fc FailureCount
+		var fc wire.FailureCount
 		var class, reason sql.NullString
 		if err := rows.Scan(&fc.Lane, &class, &reason, &fc.Count); err != nil {
 			return err

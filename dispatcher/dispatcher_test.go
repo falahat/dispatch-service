@@ -551,7 +551,7 @@ func TestTwoWitnessQuarantine(t *testing.T) {
 	}
 }
 
-func quarantinedOf(fleet []RunnerView, id string) bool {
+func quarantinedOf(fleet []wire.RunnerView, id string) bool {
 	for _, r := range fleet {
 		if r.RunnerID == id {
 			return r.Quarantined

@@ -15,8 +15,7 @@ design lives in easy-podcast's
 | `dispatcher/` | Durable queue, leases, fencing, retries, admission, and fleet state |
 | `runner/` | Authenticated lease client, CAS transfer, and compute invocation |
 | `auth/` | Biscuit/PoP PEPs, nonce and revocation stores, and isolated signer |
-| `client/` | Python application client for the dispatcher's Unix socket |
-| `dispatchctl/` | Operator commands for queue and fleet state |
+| `client/` | Application socket client and operator CLI |
 | `deploy/smokescreen/` | Source-network egress roles and destination policy |
 | `deploy/remote-runner/` | Install an application's runner/compute pair on an approved tailworker machine |
 | `compute/echo/` | Credential-free fixture compute used by integration tests |
@@ -34,6 +33,10 @@ The executor can publish opaque progress during execution without completing the
 `job`, `jobs`, `wait` and exact submission `lookup` expose the same job view.
 The operator CLI prints these native JSON results; `trace JOB` is an alias for
 `job JOB`, including its full attempt timeline.
+Install `client/` to get `dispatchctl -addr ADDRESS COMMAND [arguments]`.
+It uses the same standard-library client as applications, with no automatic replay.
+Run it in the application environment that owns access to the private app socket;
+the dispatcher image contains only the dispatcher. See [operator usage](client/README.md#operator-commands).
 
 ## Coordinator setup
 

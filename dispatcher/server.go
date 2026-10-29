@@ -295,10 +295,6 @@ type jobsRequest struct {
 	Page   *int            `json:"page,omitempty"`
 }
 
-type fleetResult struct {
-	Runners []RunnerView `json:"runners"`
-}
-
 func (s *Server) handleAppConn(conn net.Conn) {
 	for {
 		env, err := wire.ReadMessage(conn)
@@ -418,7 +414,7 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 		if err != nil {
 			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInternal, Message: err.Error()})
 		}
-		return reply(conn, env.ID, typeFleetResult, fleetResult{Runners: fleet})
+		return reply(conn, env.ID, typeFleetResult, wire.FleetResult{Runners: fleet})
 	case wire.TypeBudget:
 		b, err := s.d.Budget()
 		if err != nil {

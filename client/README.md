@@ -74,3 +74,23 @@ write-only from the server; `ack` (and every other verb) travels the client's
 request/reply connection, so it is safe to call `client.ack(...)` from another
 thread while iterating `completions()`. The single `DispatchClient` is
 thread-safe for this pattern.
+
+## Operator commands
+
+The installed SDK provides `dispatchctl`; `python -m dispatch_client.cli` is the
+same entry point. Run it in the application's Python environment with access
+to its private app socket, including the application container when deployed:
+
+```sh
+dispatchctl -addr unix:/run/dispatch/app.sock jobs --state RUNNING
+dispatchctl -addr unix:/run/dispatch/app.sock job JOB_ID
+dispatchctl -addr unix:/run/dispatch/app.sock wait JOB_ID
+dispatchctl -addr unix:/run/dispatch/app.sock lookup SUBMISSION_KEY
+```
+
+`COMMAND --help` lists arguments. The existing jobs, job, trace, wait, lookup,
+fleet, stats, budget, cancel, approve, reject, ack, sweep and enqueue commands
+all print native JSON. `trace JOB_ID` uses the same complete view as `job`.
+Commands use the SDK's connection and framing with no implicit request replay
+or deadline. The dispatcher image contains only the Go server; it requires no
+Python runtime. The application environment owns the operator client.

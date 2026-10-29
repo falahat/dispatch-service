@@ -134,6 +134,8 @@ class DispatchClient:
                 try:
                     frame.write_message(sock, req_id, msg_type, body)
                     env = frame.read_message(sock)
+                    if env["id"] != req_id:
+                        raise frame.FrameError("reply ID differs from request")
                 except (OSError, ConnectionError, frame.FrameError):
                     self._drop_req_sock()
                     if attempt == attempts:

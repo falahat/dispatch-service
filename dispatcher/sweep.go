@@ -10,9 +10,6 @@ import (
 	"github.com/falahat/dispatch-service/internal/artifact"
 )
 
-// SweepResult reports what a timer pass recovered.
-type SweepResult = wire.SweepResult
-
 // retentionBatch bounds how many terminal jobs one sweep prunes, so a large
 // backlog drains over several passes without holding a long write lock.
 const retentionBatch = 500
@@ -20,8 +17,8 @@ const retentionBatch = 500
 // Sweep runs the timer pass: expired leases are recovered. A silent death is
 // presumed a crash, so lease_expired burns an attempt (attempt+1) — this is what
 // catches crash-loops via the poison cap.
-func (d *Dispatcher) Sweep() (SweepResult, error) {
-	var out SweepResult
+func (d *Dispatcher) Sweep() (wire.SweepResult, error) {
+	var out wire.SweepResult
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		now := d.now()
 		rows, err := tx.Query(
@@ -87,7 +84,7 @@ func (d *Dispatcher) Sweep() (SweepResult, error) {
 		return nil
 	})
 	if err != nil {
-		return SweepResult{}, err
+		return wire.SweepResult{}, err
 	}
 	if out.Recovered > 0 || out.Expired > 0 {
 		d.wakeLeases()

@@ -7,7 +7,7 @@ import (
 )
 
 // findAttempt returns the count for a (lane, outcome) cell, 0 if absent.
-func findAttempt(v StatsView, lane, outcome string) int {
+func findAttempt(v wire.StatsView, lane, outcome string) int {
 	for _, a := range v.Attempts {
 		if a.Lane == lane && a.Outcome == outcome {
 			return a.Count
@@ -17,7 +17,7 @@ func findAttempt(v StatsView, lane, outcome string) int {
 }
 
 // findJobCount returns the count for a (lane, state) cell, 0 if absent.
-func findJobCount(v StatsView, lane, state string) int {
+func findJobCount(v wire.StatsView, lane, state string) int {
 	for _, j := range v.Jobs {
 		if j.Lane == lane && j.State == state {
 			return j.Count

@@ -9,18 +9,18 @@ import (
 
 // Waiting clients have their own connections; none takes over the app's durable
 // completion subscription. Capture the wake channel before reading to avoid races.
-func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (JobView, *wire.Error) {
+func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (wire.JobView, *wire.Error) {
 	if !jobIDRe.MatchString(id) {
-		return JobView{}, &wire.Error{Code: wire.CodeInvalid, Message: "malformed job_id"}
+		return wire.JobView{}, &wire.Error{Code: wire.CodeInvalid, Message: "malformed job_id"}
 	}
 	for {
 		wake := d.leaseWake.wait()
 		job, err := d.GetJob(id)
 		if err == sql.ErrNoRows {
-			return JobView{}, &wire.Error{Code: wire.CodeGone, Message: "unknown job"}
+			return wire.JobView{}, &wire.Error{Code: wire.CodeGone, Message: "unknown job"}
 		}
 		if err != nil {
-			return JobView{}, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
+			return wire.JobView{}, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
 		}
 		pending := job.State == "QUEUED" || job.State == "RUNNING" || job.State == "AWAITING_APPROVAL"
 		pending = pending || d.cfg.WaitForExecutor && job.State == "PERSISTING"
@@ -34,7 +34,7 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (JobView, *w
 		select {
 		case <-wake:
 		case <-ctx.Done():
-			return JobView{}, &wire.Error{Code: wire.CodeGone, Message: "dispatcher shutting down"}
+			return wire.JobView{}, &wire.Error{Code: wire.CodeGone, Message: "dispatcher shutting down"}
 		}
 	}
 }

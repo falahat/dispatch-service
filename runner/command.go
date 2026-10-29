@@ -10,11 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 )
 
 type executor interface {
-	WaitReady(context.Context, time.Duration) (Health, error)
+	WaitReady(context.Context) (Health, error)
 	Healthz(context.Context) (Health, error)
 	Invoke(context.Context, InvokeRequest) (*InvokeResult, *InvokeFailure, error)
 }
@@ -31,7 +30,7 @@ func (c *commandExecutor) Healthz(context.Context) (Health, error) {
 	return Health{Ready: err == nil, Op: "command", OpVersion: 1}, err
 }
 
-func (c *commandExecutor) WaitReady(ctx context.Context, _ time.Duration) (Health, error) {
+func (c *commandExecutor) WaitReady(ctx context.Context) (Health, error) {
 	return c.Healthz(ctx)
 }
 

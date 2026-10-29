@@ -144,24 +144,17 @@ func (c *InvokeClient) Invoke(ctx context.Context, req InvokeRequest) (*InvokeRe
 	}
 }
 
-// WaitReady polls /healthz until ready or the deadline.
-func (c *InvokeClient) WaitReady(ctx context.Context, timeout time.Duration) (Health, error) {
-	deadline := time.Now().Add(timeout)
-	var last error
-	for time.Now().Before(deadline) {
+// WaitReady admits work only after warmup; the owner controls cancellation.
+func (c *InvokeClient) WaitReady(ctx context.Context) (Health, error) {
+	for {
 		h, err := c.Healthz(ctx)
 		if err == nil && h.Ready {
 			return h, nil
 		}
-		last = err
 		select {
 		case <-ctx.Done():
 			return Health{}, ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	if last == nil {
-		last = fmt.Errorf("not ready before timeout")
-	}
-	return Health{}, last
 }

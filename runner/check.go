@@ -80,7 +80,7 @@ func Check(ctx context.Context, image, fixtureDir string) (*CheckReport, error) 
 	ic := NewInvokeClient(fmt.Sprintf("127.0.0.1:%s", port))
 
 	// Health + op match.
-	h, err := ic.WaitReady(ctx, 60*time.Second)
+	h, err := ic.WaitReady(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("check: healthz never ready: %w", err)
 	}

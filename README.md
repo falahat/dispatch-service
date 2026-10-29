@@ -76,7 +76,8 @@ Compute keeps its root read-only; ephemeral `/run` supplies secret mountpoints.
 Apply validates settings, drains admission without cancelling current work, waits
 for clean runner exit, installs reviewed units and requires a fresh healthy heartbeat.
 An update preserves existing credentials only with unchanged coordinator and lane scope.
-HTTP compute declares explicit MEMORY and CPUS limits. Private tailnet access and the app's
+HTTP compute declares explicit MEMORY and CPUS limits. Runner admission waits for
+model warmup until cancelled, without a startup deadline. Private tailnet access and the app's
 authenticated runner/CAS doors must already be configured. No machine is provisioned
 and no cloud API is called. `bash deploy/remote-runner/test-install.sh` checks the
 positive setup path without starting services or using real credentials.

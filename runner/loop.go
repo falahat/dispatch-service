@@ -19,7 +19,7 @@ import (
 func (r *Runner) Run(ctx context.Context) error {
 	// Boot gate: the compute must be ready and serving the expected op before
 	// this runner joins the fleet (INVOKE.md).
-	if _, err := r.invoke.WaitReady(ctx, 60*time.Second); err != nil {
+	if _, err := r.invoke.WaitReady(ctx); err != nil {
 		return fmt.Errorf("runner: compute not ready: %w", err)
 	}
 

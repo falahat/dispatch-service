@@ -85,6 +85,8 @@ printf '%s\n' 'SMOKESCREEN_IMAGE=proxy:reviewed' 'MODEL_SUBNET=172.30.0.0/24' \
 printf 'fixture-only\n' >"$temporary/provider"; chmod 600 "$temporary/provider"
 bash "$here/install.sh" --env "$temporary/runner.env" --machine owned --secret provider "$temporary/provider"
 grep -Fx 'AddDevice=nvidia.com/gpu=all' "$units/first-compute.container"
+grep -Fx 'ReadOnly=true' "$units/first-compute.container"
+grep -Fx 'Tmpfs=/run:rw,nosuid,nodev,noexec,mode=0755' "$units/first-compute.container"
 grep -Fx 'Volume=/var/lib/tailworker/locks:/var/lib/tailworker/locks:ro' "$units/first-compute.container"
 grep -Fx 'Environment=SMOKESCREEN_ROLE_NETS=172.30.0.0/24=model' "$units/first-smokescreen.container"
 grep -Fx 'Exec="--public" "value"' "$units/first-compute.container"

@@ -1,5 +1,5 @@
 [Unit]
-Description=Credential-free application compute
+Description=Application compute
 
 [Container]
 Image=@COMPUTE_IMAGE@
@@ -12,6 +12,7 @@ ReadOnly=true
 NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
+Tmpfs=/run:rw,nosuid,nodev,noexec,mode=0755
 Pull=never
 PodmanArgs=--memory=@MEMORY@ --memory-swap=@MEMORY@ --cpus=@CPUS@ --pids-limit=8192
 Network=@NAME@-invoke.network

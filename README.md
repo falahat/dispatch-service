@@ -71,6 +71,7 @@ The worker creates its own seed. Only its public key and the application's signe
 capability cross SSH; compute never mounts the runner credential. Optional
 `--secret NAME FILE` copies an owned mode-0600 provider secret into a namespaced
 Podman secret. Public settings contain secret references, never their contents.
+Compute keeps its root read-only; ephemeral `/run` supplies secret mountpoints.
 
 Apply validates settings, drains admission without cancelling current work, waits
 for clean runner exit, installs reviewed units and requires a fresh healthy heartbeat.

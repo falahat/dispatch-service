@@ -24,7 +24,7 @@ subscriptions. Bytes are verified by the existing CAS client, never executed.
 
 The executor may atomically replace `invoke-progress.json` with a JSON object
 of at most 16 KiB, outside workload mounts. Heartbeats publish this opaque object;
-`job` and `wait` return the latest `progress` for the current attempt. The application
+`job`, `jobs` and `wait` return the latest `progress` for the current attempt. The application
 owns its meaning. Progress does not complete a job or change its queue state.
 
 `--no-deadline` supplies `deadline_ts=0` and adds no execution watchdog. A
@@ -39,7 +39,7 @@ the lease live until this cleanup returns a result and the app acknowledges it.
 reuse the worker's PoP authentication and content verification. Downloads publish
 atomically after verification and enforce the chosen size limit.
 
-The shared `deploy/remote-runner/install-command.sh` installs this fixed command;
-`enroll-command.sh` creates a unique credential for each consumer on the worker.
+The shared `deploy/remote-runner/install.sh --runner REVIEWED_BINARY` installs this fixed command;
+`enroll.sh` creates a unique credential for each consumer on the worker.
 The application's signer owns rights and lanes. SSH is setup transport only;
 runtime work uses the existing PEP runner and CAS doors over the private network.

@@ -31,7 +31,7 @@ esac
 SH
 cat >"$temporary/bin/systemctl" <<'SH'
 #!/bin/sh
-case "$2" in is-active) exit 3;; daemon-reload) exit 0;; start) echo "$3" >>"$HOME/started";; *) exit 91;; esac
+case "$2" in is-active) exit 3;; daemon-reload) exit 0;; enable) echo "$4" >>"$HOME/started";; start) echo "$3" >>"$HOME/started";; *) exit 91;; esac
 SH
 cat >"$temporary/bin/tailworker" <<'SH'
 #!/bin/sh
@@ -84,4 +84,34 @@ bash "$here/install.sh" --env "$temporary/runner.env" --machine owned
 test ! -e "$units/first-smokescreen.container"
 test ! -e "$units/first-model.network"
 cmp "$temporary/second.saved" "$units/second-runner.container"
+cat >"$temporary/runner" <<'SH'
+#!/bin/sh
+case "$1" in
+  keygen) test ! -e "$3"; touch "$3"; printf '%064d\n' 0;;
+  seal) test -f "$3"; cat >/dev/null;;
+  *) exit 92;;
+esac
+SH
+chmod 700 "$temporary/runner"
+cat >"$temporary/command.env" <<'ENV'
+NAME=command
+DISPATCHER_ADDR=100.64.0.1:7443
+CAS_URL=http://100.64.0.1:8443
+LANES=build
+RUNNER_NODE=worker
+WORK_ROOT=/work/jobs
+COMMAND='/usr/bin/python3 /work/executor.py'
+COUNT=2
+NO_DEADLINE=1
+ENV
+bash "$here/install.sh" --env "$temporary/command.env" --machine owned --runner "$temporary/runner"
+unit=$HOME/.config/systemd/user/command-runner@.service
+grep -F -- '--no-deadline' "$unit"
+grep -F -- '"/usr/bin/python3" "/work/executor.py"' "$unit"
+bash "$here/enroll.sh" --name command --machine owned --signer 'printf signed-fixture' --note command
+grep -Fx command-runner@1.service "$HOME/started"
+grep -Fx command-runner@2.service "$HOME/started"
+if bash "$here/enroll.sh" --name command --machine owned --signer 'printf signed-fixture' --note duplicate; then
+    echo 'existing credentials were replaced' >&2; exit 1
+fi
 echo 'remote-runner unit rendering: green'

@@ -23,8 +23,8 @@ check`).
 
 ## e2e/ — the whole plane, real flow + crashes
 
-`compose.dev.yml` brings up dispatcher + CAS + PEP + a fake app + the echo-compute image and
-drives full job flows: enqueue → lease → invoke → CAS → complete → persist → ack. Plus the
+The native dispatcher/runner fixtures and isolated installed-plane checks drive full
+job flows: enqueue → lease → invoke → CAS → complete → persist → ack. Plus the
 resilience claims, by **injecting crashes/kills** at each step and asserting the invariants:
 no lost job, no double-lease, no double-persist, exactly-once effect, correct
 release-vs-fail, backpressure pauses leasing, app-outage delays but never loses. A few

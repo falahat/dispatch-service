@@ -1,0 +1,15 @@
+[Unit]
+Description=Authenticated command worker
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart="@BASE@/runner" @COMMAND_ARGS@
+KillMode=process
+TimeoutStopSec=infinity
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=default.target

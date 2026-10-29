@@ -1,6 +1,9 @@
 package dispatcher
 
-import "database/sql"
+import (
+	"database/sql"
+	"github.com/falahat/dispatch-service/internal/wire"
+)
 
 // Drain-health snapshot: the counts that answer "is the queue draining?" in one
 // read-only pass. This is the verb behind `dispatchctl stats`, the app's
@@ -26,40 +29,20 @@ type StatsRequest struct {
 }
 
 // JobCount is one (lane, state) cell of the queue snapshot.
-type JobCount struct {
-	Lane  string `json:"lane"`
-	State string `json:"state"`
-	Count int    `json:"count"`
-}
+type JobCount = wire.JobCount
 
 // AttemptCount is one (lane, outcome) cell of the trailing window: outcome is
 // the attempts-log verb (enqueue | complete | fail | release | lease_expired |
 // ack | cancel). In-flight `claimed` rows carry no ended_ts and are excluded —
 // this is the settled-event rate, not a busyness meter.
-type AttemptCount struct {
-	Lane    string `json:"lane"`
-	Outcome string `json:"outcome"`
-	Count   int    `json:"count"`
-}
+type AttemptCount = wire.AttemptCount
 
 // FailureCount is one grouped recent-failure row — the "why is it failing"
 // column of the drain view.
-type FailureCount struct {
-	Lane       string `json:"lane"`
-	ErrorClass string `json:"error_class,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	Count      int    `json:"count"`
-}
+type FailureCount = wire.FailureCount
 
 // StatsView is the whole drain-health snapshot.
-type StatsView struct {
-	ServerTS         int64          `json:"server_ts"`
-	WindowS          int            `json:"window_s"`
-	Jobs             []JobCount     `json:"jobs"`
-	Attempts         []AttemptCount `json:"attempts"`
-	RecentFailures   []FailureCount `json:"recent_failures,omitempty"`
-	OldestQueuedAgeS int64          `json:"oldest_queued_age_s"`
-}
+type StatsView = wire.StatsView
 
 // Stats builds the drain-health snapshot: job counts by (lane, state), attempt
 // outcomes over the trailing window, the grouped top failure reasons, and the

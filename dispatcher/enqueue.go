@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -23,15 +24,27 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		now := d.now()
-		batchKeys := map[string]wire.EnqueueResultItem{} // dedup within the batch
 		for _, ej := range req.Jobs {
-			if item, ok := batchKeys[ej.JobKey]; ok {
-				out.Results = append(out.Results, wire.EnqueueResultItem{JobKey: ej.JobKey, JobID: item.JobID, Created: false})
-				continue
-			}
 			if err := validateEnqueueJob(ej); err != nil {
 				budgetErr = &wire.Error{Code: wire.CodeInvalid, Message: err.Error()}
 				return errAbortBatch
+			}
+			encoded, _ := json.Marshal(ej)
+			fingerprint := fmt.Sprintf("%x", sha256.Sum256(encoded))
+			if ej.SubmissionKey != "" {
+				var jobID, previous string
+				err := tx.QueryRow(`SELECT job_id,fingerprint FROM submissions WHERE submission_key=?`, ej.SubmissionKey).Scan(&jobID, &previous)
+				if err == nil {
+					if previous != fingerprint {
+						budgetErr = &wire.Error{Code: wire.CodeConflict, Message: "submission_key already names a different request"}
+						return errAbortBatch
+					}
+					out.Results = append(out.Results, wire.EnqueueResultItem{JobKey: ej.JobKey, JobID: jobID})
+					continue
+				}
+				if err != sql.ErrNoRows {
+					return err
+				}
 			}
 			// Idempotency: is there a live job for this key?
 			existing, err := liveJobIDForKey(tx, ej.JobKey)
@@ -39,9 +52,11 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 				return err
 			}
 			if existing != "" {
+				if err := saveSubmission(tx, ej.SubmissionKey, fingerprint, existing); err != nil {
+					return err
+				}
 				item := wire.EnqueueResultItem{JobKey: ej.JobKey, JobID: existing, Created: false}
 				out.Results = append(out.Results, item)
-				batchKeys[ej.JobKey] = item
 				continue
 			}
 
@@ -72,12 +87,14 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 			if err := insertJob(tx, jobID, ej, pol, cost, state, now); err != nil {
 				return err
 			}
+			if err := saveSubmission(tx, ej.SubmissionKey, fingerprint, jobID); err != nil {
+				return err
+			}
 			if err := insertAttempt(tx, jobID, 0, "", "", "enqueue", "", state, now, now); err != nil {
 				return err
 			}
 			item := wire.EnqueueResultItem{JobKey: ej.JobKey, JobID: jobID, Created: true}
 			out.Results = append(out.Results, item)
-			batchKeys[ej.JobKey] = item
 		}
 		return nil
 	})
@@ -96,6 +113,9 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 var errAbortBatch = errors.New("abort batch")
 
 func validateEnqueueJob(ej wire.EnqueueJob) error {
+	if len(ej.SubmissionKey) > 256 {
+		return fmt.Errorf("enqueue: submission_key length invalid")
+	}
 	if len(ej.JobKey) < 1 || len(ej.JobKey) > 256 {
 		return fmt.Errorf("enqueue: job_key length invalid")
 	}
@@ -111,6 +131,14 @@ func validateEnqueueJob(ej wire.EnqueueJob) error {
 		}
 	}
 	return nil
+}
+
+func saveSubmission(tx *sql.Tx, key, fingerprint, jobID string) error {
+	if key == "" {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT INTO submissions(submission_key,fingerprint,job_id) VALUES(?,?,?)`, key, fingerprint, jobID)
+	return err
 }
 
 func validatePolicy(p *wire.Policy) error {

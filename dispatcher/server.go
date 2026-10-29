@@ -328,12 +328,24 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 			return replyErr(conn, env.ID, werr)
 		}
 		return reply(conn, env.ID, "log_result", result)
-	case "job", "wait":
-		req, err := wire.DecodeBody[jobRequest](env)
-		if err != nil {
-			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
+	case "job", "wait", "lookup":
+		req, err := wire.DecodeBody[map[string]string](env)
+		field := "job_id"
+		if env.Type == "lookup" {
+			field = "submission_key"
 		}
-		result, werr := s.d.job(s.ctx, req.JobID, env.Type == "wait")
+		if err != nil || len(req) != 1 || req[field] == "" {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: "exactly one " + field + " required"})
+		}
+		id := req[field]
+		if env.Type == "lookup" {
+			var werr *wire.Error
+			id, werr = s.d.lookup(id)
+			if werr != nil {
+				return replyErr(conn, env.ID, werr)
+			}
+		}
+		result, werr := s.d.job(s.ctx, id, env.Type == "wait")
 		if werr != nil {
 			return replyErr(conn, env.ID, werr)
 		}

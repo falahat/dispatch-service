@@ -50,10 +50,12 @@ func (c *client) call(typ string, body any) (wire.Envelope, error) {
 	if err := wire.WriteMessage(c.conn, id, typ, body); err != nil {
 		return wire.Envelope{}, fmt.Errorf("write %s: %w", typ, err)
 	}
-	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	env, err := wire.ReadMessage(c.conn)
 	if err != nil {
 		return wire.Envelope{}, fmt.Errorf("read reply to %s: %w", typ, err)
+	}
+	if env.ID != id {
+		return env, fmt.Errorf("reply ID differs from request")
 	}
 	if env.Type == wire.TypeError {
 		e, derr := wire.DecodeBody[wire.Error](env)

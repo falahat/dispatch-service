@@ -4,18 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/falahat/dispatch-service/internal/wire"
 	"time"
 
 	"github.com/falahat/dispatch-service/internal/artifact"
 )
 
 // SweepResult reports what a timer pass recovered.
-type SweepResult struct {
-	Recovered    int `json:"recovered"`     // expired leases requeued (presumed crash)
-	Expired      int `json:"expired"`       // expired leases that hit max_attempts -> FAILED
-	GCCandidates int `json:"gc_candidates"` // terminal jobs whose CAS pins are released
-	Pruned       int `json:"pruned"`        // terminal jobs deleted by the retention window (0 = no TTL)
-}
+type SweepResult = wire.SweepResult
 
 // retentionBatch bounds how many terminal jobs one sweep prunes, so a large
 // backlog drains over several passes without holding a long write lock.

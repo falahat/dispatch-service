@@ -3,37 +3,16 @@ package dispatcher
 import (
 	"database/sql"
 	"encoding/json"
+	"github.com/falahat/dispatch-service/internal/wire"
 	"strings"
 )
 
 // AttemptView is one row of a job's attempt/release timeline.
-type AttemptView struct {
-	Attempt    int    `json:"attempt"`
-	RunnerID   string `json:"runner_id,omitempty"`
-	LeaseID    string `json:"lease_id,omitempty"`
-	Outcome    string `json:"outcome"`
-	ErrorClass string `json:"error_class,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	TS         int64  `json:"ts"`
-}
+type AttemptView = wire.AttemptView
 
 // JobView is the read projection of a job, including its full timeline (the
 // dead-letter view is jobs{state: FAILED}).
-type JobView struct {
-	JobID             string        `json:"job_id"`
-	JobKey            string        `json:"job_key"`
-	Lane              string        `json:"lane"`
-	State             string        `json:"state"`
-	Attempt           int           `json:"attempt"`
-	ReleaseCount      int           `json:"release_count"`
-	InvocationAddress string        `json:"invocation_address"`
-	NextAttemptAt     int64         `json:"next_attempt_at"`
-	CostUSD           string        `json:"cost_usd"`
-	Reason            string        `json:"reason,omitempty"`
-	CreatedTS         int64         `json:"created_ts"`
-	UpdatedTS         int64         `json:"updated_ts"`
-	Timeline          []AttemptView `json:"timeline"`
-}
+type JobView = wire.JobView
 
 // JobsFilter narrows a jobs query.
 type JobsFilter struct {
@@ -45,10 +24,7 @@ type JobsFilter struct {
 }
 
 // JobsResult is a page of jobs.
-type JobsResult struct {
-	Jobs     []JobView `json:"jobs"`
-	NextPage *int      `json:"next_page,omitempty"`
-}
+type JobsResult = wire.JobsResult
 
 // Jobs returns a filtered, paged view of jobs, newest first.
 func (d *Dispatcher) Jobs(f JobsFilter) (JobsResult, error) {
@@ -81,36 +57,50 @@ func (d *Dispatcher) Jobs(f JobsFilter) (JobsResult, error) {
 		return JobsResult{}, err
 	}
 	defer rows.Close()
-	var out JobsResult
+	var jobs []Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
 			return JobsResult{}, err
 		}
-		out.Jobs = append(out.Jobs, JobView{
-			JobID: j.JobID, JobKey: j.JobKey, Lane: j.Lane, State: j.State,
-			Attempt: j.Attempt, ReleaseCount: j.ReleaseCount, InvocationAddress: j.InvocationAddress,
-			NextAttemptAt: j.NextAttemptAt, CostUSD: j.CostCents.String(), Reason: j.Reason,
-			CreatedTS: j.CreatedTS, UpdatedTS: j.UpdatedTS,
-		})
+		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
 		return JobsResult{}, err
 	}
-	if len(out.Jobs) > f.Limit {
-		out.Jobs = out.Jobs[:f.Limit]
+	rows.Close()
+	out := JobsResult{Jobs: []JobView{}}
+	if len(jobs) > f.Limit {
+		jobs = jobs[:f.Limit]
 		next := f.Offset + f.Limit
 		out.NextPage = &next
 	}
-	// Attach timelines.
-	for i := range out.Jobs {
-		tl, err := d.timeline(out.Jobs[i].JobID)
+	for _, job := range jobs {
+		view, err := d.jobView(job)
 		if err != nil {
 			return JobsResult{}, err
 		}
-		out.Jobs[i].Timeline = tl
+		out.Jobs = append(out.Jobs, view)
 	}
 	return out, nil
+}
+
+func (d *Dispatcher) jobView(j Job) (JobView, error) {
+	view := JobView{JobID: j.JobID, JobKey: j.JobKey, Lane: j.Lane, State: j.State,
+		Attempt: j.Attempt, ReleaseCount: j.ReleaseCount, InvocationAddress: j.InvocationAddress,
+		NextAttemptAt: j.NextAttemptAt, CostUSD: j.CostCents.String(), Reason: j.Reason,
+		CreatedTS: j.CreatedTS, UpdatedTS: j.UpdatedTS, RunnerID: j.LeaseRunnerID,
+		CancelRequested: j.CancelRequested, ActionResult: json.RawMessage(j.ResultJSON)}
+	var progress string
+	err := d.store.db.QueryRow(`SELECT payload FROM job_progress WHERE job_id=? AND attempt=?`, j.JobID, j.Attempt).Scan(&progress)
+	if err != nil && err != sql.ErrNoRows {
+		return view, err
+	}
+	if err == nil {
+		view.Progress = json.RawMessage(progress)
+	}
+	view.Timeline, err = d.timeline(j.JobID)
+	return view, err
 }
 
 func (d *Dispatcher) timeline(jobID string) ([]AttemptView, error) {
@@ -135,21 +125,7 @@ func (d *Dispatcher) timeline(jobID string) ([]AttemptView, error) {
 }
 
 // RunnerView is a fleet snapshot row.
-type RunnerView struct {
-	RunnerID             string   `json:"runner_id"`
-	Node                 string   `json:"node"`
-	Version              string   `json:"version"`
-	Lanes                []string `json:"lanes"`
-	Capacity             int      `json:"capacity"`
-	GPU                  string   `json:"gpu,omitempty"`
-	VRAMFreeMB           int      `json:"vram_free_mb,omitempty"`
-	LastSeenTS           int64    `json:"last_seen_ts"`
-	Quarantined          bool     `json:"quarantined"`
-	QuarantineReason     string   `json:"quarantine_reason,omitempty"`
-	Draining             bool     `json:"draining"`
-	CorroboratedFailures int      `json:"corroborated_failures"`
-	RunningJobs          int      `json:"running_jobs"`
-}
+type RunnerView = wire.RunnerView
 
 // Fleet returns per-runner health.
 func (d *Dispatcher) Fleet() ([]RunnerView, error) {
@@ -193,20 +169,10 @@ func (d *Dispatcher) Fleet() ([]RunnerView, error) {
 }
 
 // BudgetLedgerItem is one priced job's contribution.
-type BudgetLedgerItem struct {
-	JobID   string `json:"job_id"`
-	JobKey  string `json:"job_key"`
-	State   string `json:"state"`
-	CostUSD string `json:"cost_usd"`
-}
+type BudgetLedgerItem = wire.BudgetLedgerItem
 
 // BudgetView is the cost snapshot.
-type BudgetView struct {
-	CapUSD      string             `json:"cap_usd"`
-	ReservedUSD string             `json:"reserved_usd"`
-	SpentUSD    string             `json:"spent_usd"`
-	Ledger      []BudgetLedgerItem `json:"ledger"`
-}
+type BudgetView = wire.BudgetView
 
 // Budget returns the cost gate snapshot.
 func (d *Dispatcher) Budget() (BudgetView, error) {

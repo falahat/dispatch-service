@@ -22,7 +22,7 @@ func TestProgressVisibleDuringExecution(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := d.job(context.Background(), id, false)
-		if err != nil || result["state"] != "RUNNING" || string(result["progress"].(json.RawMessage)) != payload {
+		if err != nil || result.State != "RUNNING" || string(result.Progress) != payload {
 			t.Fatalf("progress must be visible before completion: %v %v", result, err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 	if _, err := d.job(ctx, id, true); err == nil {
 		t.Fatal("cancellation returned before the executor settled")
 	}
-	results := make(chan map[string]any, 2)
+	results := make(chan JobView, 2)
 	for range 2 {
 		go func() {
 			result, err := d.job(context.Background(), id, true)
@@ -91,7 +91,7 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if result := <-results; result["state"] != "CANCELLED" {
+		if result := <-results; result.State != "CANCELLED" {
 			t.Fatalf("both clients must observe cancellation: %v", result)
 		}
 	}

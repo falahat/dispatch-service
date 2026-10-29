@@ -89,6 +89,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_claimable ON jobs(lane, state, priority, cre
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
 CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(lease_id);
 
+CREATE TABLE IF NOT EXISTS submissions (
+  submission_key TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS job_logs (
   job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
   offset INTEGER NOT NULL,

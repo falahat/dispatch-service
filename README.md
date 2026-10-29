@@ -31,20 +31,18 @@ or an owner-installed command. Both use the same PEP, CAS, queue, leases and
 completion acknowledgements. Tailworker owns environment setup; the application
 owns its workload command and persistence. See [the command contract](contracts/COMMAND.md).
 The executor can publish opaque progress during execution without completing the job.
+`job`, `jobs`, `wait` and exact submission `lookup` expose the same job view.
+The operator CLI prints these native JSON results; `trace JOB` is an alias for
+`job JOB`, including its full attempt timeline.
 
-## Local integration
+## Coordinator setup
 
-The standalone stack uses the echo compute and has no internet egress:
-
-```sh
-./deploy/bootstrap.sh embed
-docker compose -f compose.dev.yml up --build
-```
-
-Production is not launched from this repository. The consuming application owns its
-Compose topology, credentials, egress policy, and release record. easy-podcast uses
-[`deploy/easypod`](https://github.com/falahat/easy-podcast/blob/main/deploy/easypod) as its
-only production path.
+Applications own their topology, queue policy and state. The shared rootless
+`deploy/remote-runner/plane.sh ROOT init` installs the dispatcher, authenticated
+CAS and signer from reviewed local images. Its public `plane.json` declares
+private bind addresses and images; the application's `plane.toml` supplies queue
+policy. State and credentials stay in an owned private directory outside Git.
+See [deployment](deploy/README.md). No cloud resource is created.
 
 ## Add a worker
 
@@ -57,8 +55,8 @@ bash deploy/remote-runner/enroll.sh --name APP --machine MACHINE --signer COMMAN
 ```
 
 For a trusted host command that launches its own isolated workloads, use
-`install-command.sh --env APP.env --machine MACHINE --runner REVIEWED_BINARY`, then
-`enroll-command.sh --name APP --machine MACHINE --signer COMMAND --note NOTE`.
+`install.sh --env APP.env --machine MACHINE --runner REVIEWED_BINARY`, then
+the same `enroll.sh` command.
 The public profile contains NAME, DISPATCHER_ADDR, CAS_URL, LANES, RUNNER_NODE,
 WORK_ROOT, COMMAND (absolute executable plus fixed arguments), COUNT and optional
 NO_DEADLINE=1. Each instance receives a unique credential on the worker. Runtime
@@ -85,7 +83,7 @@ positive setup path without starting services or using real credentials.
 go test ./...
 (cd deploy/smokescreen && go test ./...)
 cargo test --manifest-path auth/Cargo.toml
-docker compose -f compose.dev.yml config --quiet
+bash deploy/remote-runner/test-install.sh
 ```
 
 The Rust PEP is the only credential-verification engine. Backends receive verified

@@ -3,7 +3,7 @@ package main
 import (
 	"log/slog"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 
 	"github.com/falahat/dispatch-service/dispatcher"
@@ -75,7 +75,7 @@ func TestEnqueueListCancel(t *testing.T) {
 	if env.Type != wire.TypeEnqueueResult {
 		t.Fatalf("enqueue reply type %q", env.Type)
 	}
-	er, err := wire.DecodeBody[enqueueResult](env)
+	er, err := wire.DecodeBody[wire.EnqueueResult](env)
 	if err != nil {
 		t.Fatalf("decode enqueue: %v", err)
 	}
@@ -85,14 +85,14 @@ func TestEnqueueListCancel(t *testing.T) {
 	jobID := er.Results[0].JobID
 
 	// list + find via the CLI helper
-	res, err := fetchJobs(c, jobsRequest{})
+	res, err := callJobs(c)
 	if err != nil {
 		t.Fatalf("jobs: %v", err)
 	}
 	if !hasJob(res, jobID) {
 		t.Fatalf("job %s not in listing %+v", jobID, res.Jobs)
 	}
-	j, err := findJob(c, jobID)
+	j, err := callJob(c, jobID)
 	if err != nil {
 		t.Fatalf("findJob: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestEnqueueListCancel(t *testing.T) {
 	}
 
 	// re-fetch: job is now CANCELLED
-	j, err = findJob(c, jobID)
+	j, err = callJob(c, jobID)
 	if err != nil {
 		t.Fatalf("findJob after cancel: %v", err)
 	}
@@ -122,13 +122,6 @@ func TestEnqueueListCancel(t *testing.T) {
 		t.Fatalf("state after cancel = %q, want CANCELLED", j.State)
 	}
 
-	// render paths should not panic and should mention the job.
-	if out := renderJobs(res); !strings.Contains(out, jobID) {
-		t.Fatalf("renderJobs missing job id:\n%s", out)
-	}
-	if out := renderTimeline(j); !strings.Contains(out, "enqueued") {
-		t.Fatalf("renderTimeline missing enqueued line:\n%s", out)
-	}
 }
 
 // TestJobsFilter checks the filter/page request shape reaches the dispatcher and
@@ -138,7 +131,7 @@ func TestJobsFilter(t *testing.T) {
 	mustEnqueue(t, c, "a", "embed", invAddr("a"))
 	mustEnqueue(t, c, "b", "transcribe", invAddr("b"))
 
-	res, err := fetchJobs(c, jobsRequest{Filter: &jobsFilterWire{Lane: "transcribe"}})
+	res, err := callJobs(c, "--lane", "transcribe")
 	if err != nil {
 		t.Fatalf("jobs filter: %v", err)
 	}
@@ -146,7 +139,7 @@ func TestJobsFilter(t *testing.T) {
 		t.Fatalf("lane filter returned %+v", res.Jobs)
 	}
 
-	res, err = fetchJobs(c, jobsRequest{Filter: &jobsFilterWire{JobKeyPrefix: "a"}})
+	res, err = callJobs(c, "--prefix", "a")
 	if err != nil {
 		t.Fatalf("jobs prefix: %v", err)
 	}
@@ -167,7 +160,7 @@ func TestFleetBudgetSweep(t *testing.T) {
 	if fenv.Type != "fleet_result" {
 		t.Fatalf("fleet reply type %q", fenv.Type)
 	}
-	if _, err := wire.DecodeBody[fleetResult](fenv); err != nil {
+	if _, err := wire.DecodeBody[wire.FleetResult](fenv); err != nil {
 		t.Fatalf("decode fleet: %v", err)
 	}
 
@@ -178,7 +171,7 @@ func TestFleetBudgetSweep(t *testing.T) {
 	if benv.Type != "budget_result" {
 		t.Fatalf("budget reply type %q", benv.Type)
 	}
-	b, err := wire.DecodeBody[budgetView](benv)
+	b, err := wire.DecodeBody[wire.BudgetView](benv)
 	if err != nil {
 		t.Fatalf("decode budget: %v", err)
 	}
@@ -193,7 +186,7 @@ func TestFleetBudgetSweep(t *testing.T) {
 	if senv.Type != "sweep_result" {
 		t.Fatalf("sweep reply type %q", senv.Type)
 	}
-	if _, err := wire.DecodeBody[sweepResult](senv); err != nil {
+	if _, err := wire.DecodeBody[wire.SweepResult](senv); err != nil {
 		t.Fatalf("decode sweep: %v", err)
 	}
 }
@@ -209,14 +202,14 @@ func TestStats(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 
-	env, err := c.call(wire.TypeStats, statsRequest{})
+	env, err := c.call(wire.TypeStats, map[string]any{})
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
 	if env.Type != "stats_result" {
 		t.Fatalf("stats reply type %q", env.Type)
 	}
-	v, err := wire.DecodeBody[statsView](env)
+	v, err := wire.DecodeBody[wire.StatsView](env)
 	if err != nil {
 		t.Fatalf("decode stats: %v", err)
 	}
@@ -241,10 +234,6 @@ func TestStats(t *testing.T) {
 	}
 	if v.OldestQueuedAgeS < 0 {
 		t.Fatalf("oldest queued age = %d", v.OldestQueuedAgeS)
-	}
-	out := renderStats(v)
-	if !strings.Contains(out, "drain (15m):") || !strings.Contains(out, "QUEUED") {
-		t.Fatalf("renderStats output:\n%s", out)
 	}
 }
 
@@ -291,14 +280,14 @@ func mustEnqueue(t *testing.T, c *client, key, lane string, inv artifact.Address
 	if err != nil {
 		t.Fatalf("enqueue %s: %v", key, err)
 	}
-	er, err := wire.DecodeBody[enqueueResult](env)
+	er, err := wire.DecodeBody[wire.EnqueueResult](env)
 	if err != nil || len(er.Results) != 1 {
 		t.Fatalf("enqueue %s result: %+v err=%v", key, er, err)
 	}
 	return er.Results[0].JobID
 }
 
-func hasJob(res jobsResult, jobID string) bool {
+func hasJob(res wire.JobsResult, jobID string) bool {
 	for _, j := range res.Jobs {
 		if j.JobID == jobID {
 			return true
@@ -315,4 +304,61 @@ func asWireError(err error, out *wire.Error) bool {
 		return true
 	}
 	return false
+}
+
+func callJobs(c *client, args ...string) (wire.JobsResult, error) {
+	typ, body, err := request("jobs", args)
+	if err != nil {
+		return wire.JobsResult{}, err
+	}
+	env, err := c.call(typ, body)
+	if err != nil {
+		return wire.JobsResult{}, err
+	}
+	return wire.DecodeBody[wire.JobsResult](env)
+}
+
+func callJob(c *client, id string) (wire.JobView, error) {
+	typ, body, err := request("job", []string{id})
+	if err != nil {
+		return wire.JobView{}, err
+	}
+	env, err := c.call(typ, body)
+	if err != nil {
+		return wire.JobView{}, err
+	}
+	return wire.DecodeBody[wire.JobView](env)
+}
+
+func TestRequestArguments(t *testing.T) {
+	cases := []struct {
+		command string
+		args    []string
+		typ     string
+		body    map[string]any
+	}{
+		{"job", []string{"id"}, "job", map[string]any{"job_id": "id"}},
+		{"trace", []string{"id"}, "job", map[string]any{"job_id": "id"}},
+		{"wait", []string{"id"}, "wait", map[string]any{"job_id": "id"}},
+		{"lookup", []string{"submission"}, "lookup", map[string]any{"submission_key": "submission"}},
+		{"cancel", []string{"id", "--reason", "owner request"}, "cancel", map[string]any{"job_id": "id", "reason": "owner request"}},
+		{"approve", []string{"--author=owner", "id"}, "approve", map[string]any{"job_id": "id", "author": "owner"}},
+		{"ack", []string{"id", "persisted"}, "ack", map[string]any{"job_id": "id", "disposition": "persisted"}},
+		{"stats", []string{"--window", "120"}, "stats", map[string]any{"window_s": 120}},
+		{"jobs", []string{"--lane", "cpu", "--page", "4"}, "jobs", map[string]any{"filter": map[string]any{"lane": "cpu"}, "page": 4}},
+		{"enqueue", []string{"--key", "source", "--lane", "cpu", "--inv", "sha256:abc", "--submission", "nonce"}, "enqueue", map[string]any{"jobs": []any{map[string]any{"job_key": "source", "lane": "cpu", "invocation_address": "sha256:abc", "submission_key": "nonce"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			typ, body, err := request(tc.command, tc.args)
+			if err != nil || typ != tc.typ || !reflect.DeepEqual(body, tc.body) {
+				t.Fatalf("request=%s %#v, err=%v", typ, body, err)
+			}
+		})
+	}
+	for _, args := range [][]string{{"job"}, {"fleet", "extra"}, {"jobs", "--page", "NaN"}, {"approve", "id"}, {"enqueue", "--key", "only"}, {"cancel", "id", "--unknown", "x"}} {
+		if _, _, err := request(args[0], args[1:]); err == nil {
+			t.Fatalf("accepted invalid arguments %v", args)
+		}
+	}
 }

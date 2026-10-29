@@ -259,6 +259,7 @@ type Release struct {
 
 // EnqueueJob is one job in an enqueue batch.
 type EnqueueJob struct {
+	SubmissionKey     string           `json:"submission_key,omitempty"`
 	JobKey            string           `json:"job_key"`
 	Lane              string           `json:"lane"`
 	InvocationAddress artifact.Address `json:"invocation_address"`

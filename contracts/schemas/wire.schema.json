@@ -234,6 +234,7 @@
             "required": ["job_key", "lane", "invocation_address"],
             "properties": {
               "job_key": { "$ref": "#/$defs/job_key" },
+              "submission_key": { "type": "string", "maxLength": 256, "$comment": "Empty or absent disables durable submission lookup; runtime bound is UTF-8 bytes." },
               "lane": { "$ref": "#/$defs/lane" },
               "invocation_address": { "$ref": "#/$defs/address" },
               "policy": { "$ref": "#/$defs/policy" },
@@ -271,6 +272,56 @@
       "properties": { "job_id": { "$ref": "#/$defs/job_id" } }
     },
     "wait": { "$ref": "#/$defs/job" },
+    "lookup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["submission_key"],
+      "properties": { "submission_key": { "type": "string", "minLength": 1, "maxLength": 256 } }
+    },
+    "job_view": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_id", "job_key", "lane", "state", "invocation_address", "attempt", "release_count", "cancel_requested", "timeline", "created_ts", "updated_ts", "next_attempt_at", "cost_usd"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "job_key": { "$ref": "#/$defs/job_key" },
+        "lane": { "$ref": "#/$defs/lane" },
+        "state": { "enum": ["QUEUED", "RUNNING", "PERSISTING", "AWAITING_APPROVAL", "SUCCEEDED", "FAILED", "REJECTED", "CANCELLED"] },
+        "invocation_address": { "$ref": "#/$defs/address" },
+        "attempt": { "$ref": "#/$defs/attempt" },
+        "release_count": { "type": "integer", "minimum": 0 },
+        "cancel_requested": { "type": "boolean" },
+        "runner_id": { "type": "string" },
+        "reason": { "type": "string" },
+        "next_attempt_at": { "$ref": "#/$defs/ts" },
+        "created_ts": { "$ref": "#/$defs/ts" },
+        "updated_ts": { "$ref": "#/$defs/ts" },
+        "cost_usd": { "type": "string" },
+        "action_result": { "$ref": "artifacts.schema.json#/$defs/action_result" },
+        "progress": { "$ref": "#/$defs/progress" },
+        "timeline": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["attempt", "outcome", "ts"],
+            "properties": {
+              "attempt": { "type": "integer", "minimum": 0 },
+              "runner_id": { "type": "string" },
+              "lease_id": { "$ref": "#/$defs/lease_id" },
+              "outcome": { "type": "string" },
+              "error_class": { "$ref": "#/$defs/error_class" },
+              "reason": { "type": "string" },
+              "ts": { "$ref": "#/$defs/ts" }
+            }
+          }
+        }
+      }
+    },
+    "job_result": { "$ref": "#/$defs/job_view" },
+    "jobs_result": {
+      "type": "object", "additionalProperties": false, "required": ["jobs"],
+      "properties": {
+        "jobs": { "type": "array", "items": { "$ref": "#/$defs/job_view" } },
+        "next_page": { "type": "integer", "minimum": 1 }
+      }
+    },
     "logs": {
       "type": "object", "additionalProperties": false,
       "required": ["job_id", "after", "wait"],

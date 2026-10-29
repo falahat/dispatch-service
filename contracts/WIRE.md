@@ -75,7 +75,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 |---|---|---|
 | `enqueue` | `{jobs[1..256]: {job_key, lane, invocation_address, policy?, cost_estimate_usd?}}` → `{results[]: {job_key, job_id, created}}` | **Idempotent on live `job_key`**: an existing live job → its `job_id`, `created=false`, all other fields ignored. Priced jobs (`cost_estimate_usd > 0`) reserve against the budget and park in `AWAITING_APPROVAL`; reserve failure → per-job `error{budget}`. Terminal jobs do not block re-use of their `job_key`. |
 | `subscribe` | `{}` → stream of `completion {job_id, job_key, lane, attempt, action_result, completed_ts}` | the push subscription. On connect: every `PERSISTING` job is delivered oldest-first, then live events. **One active subscription**: a new `subscribe` wins; the old connection receives `takeover {}` and is closed. No cursor exists — `PERSISTING` is the inbox, `ack` empties it. |
-| `job` / `wait` | `{job_id}` → `job_result {job_id, job_key, state, invocation_address, runner_id, attempt, release_count, cancel_requested, reason, action_result?}` | app-only direct lookup / independent blocking wait. With `wait_for_executor=true`, waits include persistence acknowledgement and confirmed cancellation cleanup; otherwise they return at PERSISTING or a terminal state. No completion-subscription takeover. |
+| `job` / `wait` | `{job_id}` → `job_result` | app-only direct lookup / independent blocking wait, using the same `job_view` schema as `jobs`. With `wait_for_executor=true`, waits include persistence acknowledgement and confirmed cancellation cleanup; otherwise they return at PERSISTING or a terminal state. No completion-subscription takeover. |
+| `lookup` | `{submission_key}` → `job_result` | exact lookup of an accepted submission, including live-key deduplication onto another job. Unknown submissions return `gone`; this never submits work. |
 | `logs` | `{job_id, after, wait}` → `log_result {entries:[{offset,address,size}], next_offset, done}` | app-only ordered CAS log chunks, at most 32 per reply. Cursor is zero or an acknowledged chunk end. Wait blocks for bytes or execution settlement on its own connection. |
 | `ack` | `{job_id, disposition: persisted \| rejected, reason?}` → `ok` | `persisted` → `SUCCEEDED` (unpins the job's CAS blobs for GC); `rejected` (parse says the output is garbage) → `FAILED(bad_output)`, dead-lettered. Idempotent; only valid from `PERSISTING`. |
 | `approve` / `reject` | `{job_id, author, reason}` → `ok` | the priced-job gate; append-only approval facts; `reject` → `REJECTED` and releases the reservation. |
@@ -121,6 +122,14 @@ app-side by digest comparison + `cancel`; the dispatcher never evaluates domain 
 Command workers may include `log:{offset,address,size}` and an opaque `progress`
 JSON object (at most 16 KiB) in a live-lease heartbeat. `job` / `wait` expose the
 latest `progress` for the current attempt; its meaning belongs to the application.
+
+An enqueue entry may carry an opaque `submission_key` of at most 256 UTF-8 bytes.
+The dispatcher atomically binds it to the canonical job, whether created or deduplicated.
+The binding remains through terminal completion until that job's retention expires.
+Repeating the same submission returns that job; changing its request returns `conflict`.
+`job_key` still identifies live equivalent work. Applications can resolve a lost enqueue
+reply with `lookup`, without replaying the request or maintaining another execution ID.
+`job`, `jobs`, `wait` and `lookup` share one projection, including progress and results.
 The signed heartbeat binds this CAS address to the current lease and runner.
 Chunks are contiguous, 1–1,048,576 bytes; exact replay is idempotent. `beat_ok`
 returns `log_offset`, the acknowledged byte end. The runner flushes all chunks

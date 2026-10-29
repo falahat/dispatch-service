@@ -155,6 +155,10 @@ class DispatchClient:
         """Read one job without paging the fleet's entire history."""
         return self._request("job", {"job_id": job_id})["body"]
 
+    def lookup(self, submission_key: str) -> dict[str, Any]:
+        """Resolve one accepted submission, including one deduplicated onto another job."""
+        return self._request("lookup", {"submission_key": submission_key})["body"]
+
     def wait(self, job_id: str) -> dict[str, Any]:
         """Block until execution ends, independently of the completion subscriber."""
         observer = DispatchClient(self._address, timeout=self._timeout, retry_requests=False)

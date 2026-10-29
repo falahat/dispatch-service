@@ -53,13 +53,12 @@ Use the consuming application's setup command. It supplies its public image/lane
 settings and its existing signer to this shared kit:
 
 ```sh
-bash deploy/remote-runner/install.sh --env APP.env --machine MACHINE
-bash deploy/remote-runner/enroll.sh --name APP --machine MACHINE --signer COMMAND --lanes LANES --note NOTE
+bash deploy/remote-runner/worker.sh apply --env APP.env --machine MACHINE --signer COMMAND --client COMMAND --note NOTE
+bash deploy/remote-runner/worker.sh status --env APP.env --machine MACHINE --client COMMAND
 ```
 
-For a trusted host command that launches its own isolated workloads, use
-`install.sh --env APP.env --machine MACHINE --runner REVIEWED_BINARY`, then
-the same `enroll.sh` command.
+For a trusted host command that launches its own isolated workloads, add
+`--runner REVIEWED_BINARY` to the same apply command.
 The public profile contains NAME, DISPATCHER_ADDR, CAS_URL, LANES, RUNNER_NODE,
 WORK_ROOT, COMMAND (absolute executable plus fixed arguments), COUNT and optional
 NO_DEADLINE=1. Each instance receives a unique credential on the worker. Runtime
@@ -73,9 +72,10 @@ capability cross SSH; compute never mounts the runner credential. Optional
 `--secret NAME FILE` copies an owned mode-0600 provider secret into a namespaced
 Podman secret. Public settings contain secret references, never their contents.
 
-Installation starts nothing. Enrollment starts only this application's units and
-refuses an existing credential. Updating installed units requires explicitly
-stopping that application's runner first. Private tailnet access and the app's
+Apply validates settings, drains admission without cancelling current work, waits
+for clean runner exit, installs reviewed units and requires a fresh healthy heartbeat.
+An update preserves existing credentials only with unchanged coordinator and lane scope.
+HTTP compute declares explicit MEMORY and CPUS limits. Private tailnet access and the app's
 authenticated runner/CAS doors must already be configured. No machine is provisioned
 and no cloud API is called. `bash deploy/remote-runner/test-install.sh` checks the
 positive setup path without starting services or using real credentials.

@@ -294,6 +294,10 @@ type jobsRequest struct {
 	Page   *int            `json:"page,omitempty"`
 }
 
+type runnerRequest struct {
+	RunnerID string `json:"runner_id"`
+}
+
 func (s *Server) handleAppConn(conn net.Conn) {
 	for {
 		env, err := wire.ReadMessage(conn)
@@ -313,6 +317,10 @@ func (s *Server) handleAppConn(conn net.Conn) {
 
 func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 	switch env.Type {
+	case "drain", "resume":
+		return apply(conn, env, func(req runnerRequest) *wire.Error {
+			return s.d.drain(s.ctx, req.RunnerID, env.Type == "drain")
+		})
 	case "logs":
 		return serve(conn, env, "log_result", func(req logsRequest) (logsResult, *wire.Error) {
 			return s.d.logs(s.ctx, req)

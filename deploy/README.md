@@ -27,11 +27,11 @@ provides the shared signer adapter. Compute never receives issuer credentials.
 The same installer and enrollment lifecycle serve both executor types:
 
 ```sh
-bash deploy/remote-runner/install.sh --env APP.env --machine MACHINE
-bash deploy/remote-runner/enroll.sh --name APP --machine MACHINE --signer COMMAND --note NOTE
+bash deploy/remote-runner/worker.sh apply --env APP.env --machine MACHINE --signer COMMAND --client COMMAND --note NOTE
+bash deploy/remote-runner/worker.sh status --env APP.env --machine MACHINE --client COMMAND
 ```
 
-Add `--runner REVIEWED_BINARY` to install an owner-reviewed command executor;
+Add `--runner REVIEWED_BINARY` for an owner-reviewed command executor;
 HTTP compute instead declares its pinned runner/compute images. Public settings
 and supported fields are documented in the [README](../README.md#add-a-worker).
 No shell code or secret values belong in APP.env. Optional `--secret NAME FILE`
@@ -44,3 +44,17 @@ inspect partial setup before repeating it. Key revocation remains with the
 application signer. No cloud API, network-policy change or machine creation is
 part of this kit. `test-install.sh` tests both adapters without real credentials
 or services; the hand-written auth/egress tests remain unchanged.
+
+`worker.sh` is the shared lifecycle. It validates the public profile before
+draining, waits for the runners to exit cleanly, replaces only this profile's
+units, preserves credentials with unchanged coordinator/lane scope, then resumes
+admission and requires a fresh healthy fleet heartbeat. First enrollment still
+creates unique credentials. `--client` is the application's fixed private
+`dispatchctl` command prefix; the kit appends fleet/drain/resume arguments.
+HTTP profiles declare explicit `MEMORY` and `CPUS` limits. Images transfer only
+from rootless Podman, are pinned to local image IDs, and status checks both
+installed and running identities against the reviewed profile. Provider secret
+rotation replaces only the namespaced Podman secret while compute is stopped.
+Podman's `:U` option owns only the profile's named work/model volumes for its
+container user; host credential and policy mounts stay read-only.
+No execution deadline or automatic replay is added.

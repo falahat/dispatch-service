@@ -386,6 +386,13 @@
       }
     },
 
+    "runner_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runner_id"],
+      "properties": {"runner_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+      "$comment": "App-only drain/resume; drain waits for existing execution to settle."
+    },
     "ok": { "type": "object", "additionalProperties": false },
     "error": {
       "type": "object",

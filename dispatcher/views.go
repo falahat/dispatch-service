@@ -136,6 +136,7 @@ func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 		rv.Node, rv.Version, rv.GPU, rv.QuarantineReason = node.String, version.String, gpu.String, qreason.String
 		rv.Capacity, rv.VRAMFreeMB = int(capacity.Int64), int(vram.Int64)
 		rv.Quarantined, rv.Draining = quarantined != 0, draining != 0
+		rv.Online = rv.LastSeenTS > 0 && d.now()-rv.LastSeenTS < int64(d.cfg.LeaseTTLS)*1000
 		if lanesJSON.String != "" {
 			_ = json.Unmarshal([]byte(lanesJSON.String), &rv.Lanes)
 		}
@@ -177,16 +178,6 @@ func (d *Dispatcher) Budget() (wire.BudgetView, error) {
 		out.Ledger = append(out.Ledger, it)
 	}
 	return out, rows.Err()
-}
-
-// SetRunnerDraining flips a runner's drain flag (admin, via dispatchctl).
-func (d *Dispatcher) SetRunnerDraining(runnerID string, draining bool) error {
-	v := 0
-	if draining {
-		v = 1
-	}
-	_, err := d.store.db.Exec(`UPDATE runners SET draining=? WHERE runner_id=?`, v, runnerID)
-	return err
 }
 
 // ClearQuarantine lifts a runner's quarantine (admin, after remediation).

@@ -89,8 +89,13 @@ dispatchctl -addr unix:/run/dispatch/app.sock lookup SUBMISSION_KEY
 ```
 
 `COMMAND --help` lists arguments. The existing jobs, job, trace, wait, lookup,
-fleet, stats, budget, cancel, approve, reject, ack, sweep and enqueue commands
+fleet, drain, resume, stats, budget, cancel, approve, reject, ack, sweep and enqueue commands
 all print native JSON. `trace JOB_ID` uses the same complete view as `job`.
 Commands use the SDK's connection and framing with no implicit request replay
 or deadline. The dispatcher image contains only the Go server; it requires no
 Python runtime. The application environment owns the operator client.
+
+`drain RUNNER_ID` closes admission and blocks until its current job settles;
+it never cancels that job. The runner exits cleanly after finishing. `resume
+RUNNER_ID` reopens admission before the shared installer starts it again. Fleet
+`online` uses the coordinator's lease TTL and clock, not a client-side guess.

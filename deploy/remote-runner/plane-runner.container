@@ -14,9 +14,10 @@ NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
 Pull=never
+PodmanArgs=--memory=1g --memory-swap=1g --cpus=1 --pids-limit=512
 Network=@NAME@-edge.network
 Network=@NAME@-invoke.network
-Volume=@NAME@-work.volume:/work
+Volume=@NAME@-work.volume:/work:U
 Volume=%h/.config/plane-runners/@NAME@/cred:/run/plane-cred:ro
 Environment=DISPATCHER_ADDR=@PLANE_ADDR@:7443
 Environment=CAS_URL=http://@PLANE_ADDR@:8443

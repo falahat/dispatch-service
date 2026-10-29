@@ -119,6 +119,13 @@ func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, er
 		}
 		return &g, nil
 	case wire.TypeEmpty:
+		empty, err := wire.DecodeBody[wire.Empty](env)
+		if err != nil {
+			return nil, err
+		}
+		if empty.Reason == "drained" {
+			r.setDraining()
+		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("lease: unexpected reply %s", env.Type)

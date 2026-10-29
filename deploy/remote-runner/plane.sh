@@ -43,6 +43,7 @@ import json, pathlib, shlex, socket, sys
 root = pathlib.Path(sys.argv[1])
 print(json.dumps(dict(dispatcher=sys.argv[2], cas=sys.argv[3], kit=str(root/'dispatch/kit'),
     runner=str(root/'bin/runner'), node=socket.gethostname(),
+    client=shlex.join(['env', 'PYTHONPATH='+str(root/'bin'), 'python3', '-m', 'dispatch_client.cli', '-addr', 'unix:'+str(root/'dispatch/app.sock')]),
     signer=shlex.join(['bash', str(root/'bin/plane.sh'), str(root), 'sign']))))
 PY
         ;;

@@ -17,6 +17,8 @@ OPERATIONS = {
     "wait": (("job_id",), ()),
     "lookup": (("submission_key",), ()),
     "fleet": ((), ()),
+    "drain": (("runner_id",), ()),
+    "resume": (("runner_id",), ()),
     "stats": ((), ("window",)),
     "budget": ((), ()),
     "cancel": (("job_id",), ("reason",)),

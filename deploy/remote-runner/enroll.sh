@@ -3,13 +3,14 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/common.sh"
-machine= name= signer= lanes= note=
+machine= name= signer= lanes= note= reuse=0
 while (($#)); do
+    if [[ $1 == --reuse ]]; then reuse=1; shift; continue; fi
     [[ $# -ge 2 ]] || exit 2
     case $1 in --machine) machine=$2;; --name) name=$2;; --signer) signer=$2;; --lanes) lanes=$2;; --note) note=$2;; *) exit 2;; esac
     shift 2
 done
-[[ -n $machine && $name =~ ^[a-z][a-z0-9-]*$ && -n $signer && -n $note ]] || {
+[[ -n $machine && $name =~ ^[a-z][a-z0-9-]*$ && ( $reuse == 1 || -n $signer && -n $note ) ]] || {
     echo 'usage: enroll.sh --name APP --machine NAME --signer COMMAND [--lanes LANES] --note NOTE' >&2; exit 2;
 }
 worker=$(resolve "$machine")
@@ -32,14 +33,18 @@ else
         -v "$base/cred:/run/plane-cred:rw" "${config[1]}")
 fi
 if [[ $action == keygen ]]; then [[ ! -e $disk ]]; exec "${runner[@]}" keygen --out "$file"; fi
-[[ $action == seal ]]
-"${runner[@]}" seal --cred "$file" --biscuit-file -
+if [[ $action == seal ]]; then "${runner[@]}" seal --cred "$file" --biscuit-file -
+else [[ $action == start && -f $disk && ! -L $disk ]]; fi
 if [[ ${config[0]} == command ]]; then systemctl --user enable --now "$unit"
 else
     [[ ! -f $HOME/.config/containers/systemd/$name-smokescreen.container ]] || systemctl --user start "$name-smokescreen.service"
     systemctl --user start "$unit"
 fi'
 for ((i=1; i<=profile[0]; i++)); do
+    if [[ $reuse == 1 ]]; then
+        remote "$worker" bash -c "$invoke" _ "$name" "$i" start
+        continue
+    fi
     public=$(remote "$worker" bash -c "$invoke" _ "$name" "$i" keygen)
     [[ $public =~ ^[0-9a-f]{64}$ ]] || { echo 'runner returned no valid public key' >&2; exit 1; }
     # The application's signer owns rights and lane scope; the kit grants none.

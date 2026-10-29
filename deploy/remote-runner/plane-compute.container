@@ -13,8 +13,9 @@ NoNewPrivileges=true
 DropCapability=ALL
 Tmpfs=/tmp:rw,nosuid,nodev
 Pull=never
+PodmanArgs=--memory=@MEMORY@ --memory-swap=@MEMORY@ --cpus=@CPUS@ --pids-limit=8192
 Network=@NAME@-invoke.network
-Volume=@NAME@-work.volume:/work
+Volume=@NAME@-work.volume:/work:U
 Environment=INVOKE_ADDR=0.0.0.0:8080
 @COMPUTE_OPTIONS@
 

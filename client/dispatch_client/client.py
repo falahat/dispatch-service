@@ -87,7 +87,11 @@ class DispatchClient:
     """
 
     def __init__(
-        self, address: str, *, timeout: Optional[float] = None, retry_requests: bool = True
+        self,
+        address: str,
+        *,
+        timeout: Optional[float] = None,
+        retry_requests: bool = True,
     ):
         self._address = address
         self._timeout = timeout
@@ -229,6 +233,15 @@ class DispatchClient:
         """Return the per-runner fleet snapshot."""
         # An empty fleet marshals `runners` as JSON null on the Go side.
         return cast(list[dict[str, Any]], self._request("fleet", {})["body"]["runners"] or [])
+
+    def drain(self, runner_id: str) -> None:
+        """Close admission and wait for current execution, without cancelling it."""
+        with DispatchClient(self._address, retry_requests=False) as observer:
+            observer._request("drain", {"runner_id": runner_id})
+
+    def resume(self, runner_id: str) -> None:
+        """Reopen admission after a reviewed worker update."""
+        self._request("resume", {"runner_id": runner_id})
 
     def budget(self) -> dict[str, Any]:
         """Return the budget snapshot (cap, reserved, spent, ledger)."""

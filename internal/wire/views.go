@@ -47,6 +47,7 @@ type RunnerView struct {
 	GPU                  string   `json:"gpu,omitempty"`
 	VRAMFreeMB           int      `json:"vram_free_mb,omitempty"`
 	LastSeenTS           int64    `json:"last_seen_ts"`
+	Online               bool     `json:"online"`
 	Quarantined          bool     `json:"quarantined"`
 	QuarantineReason     string   `json:"quarantine_reason,omitempty"`
 	Draining             bool     `json:"draining"`

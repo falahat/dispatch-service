@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 from dispatch_client import DispatchClient
@@ -101,11 +102,16 @@ class CommandWorkers(unittest.TestCase):
                 credentials = ["--id", "native-worker"]
                 endpoint = f"127.0.0.1:{port}"
                 if os.environ.get("PEP_BIN"):
-                    signer = [os.environ["SIGNER_BIN"], "-secrets", str(root / "issuer.json")]
+                    signer = [
+                        os.environ["SIGNER_BIN"],
+                        "-secrets",
+                        str(root / "issuer.json"),
+                    ]
                     root_key = subprocess.check_output(signer + ["pubkey"], text=True).strip()
                     credential = root / "worker.json"
                     public = subprocess.check_output(
-                        [os.environ["RUNNER_BIN"], "keygen", "--out", str(credential)], text=True
+                        [os.environ["RUNNER_BIN"], "keygen", "--out", str(credential)],
+                        text=True,
                     ).strip()
                     capability = subprocess.check_output(
                         signer
@@ -208,7 +214,7 @@ class CommandWorkers(unittest.TestCase):
                 with DispatchClient(
                     "unix:" + str(root / "app.sock"), retry_requests=False
                 ) as client:
-                    for outcome in ("complete", "cancel", "fail"):
+                    for outcome in ("complete", "cancel", "fail", "drain"):
                         with socket.socket(socket.AF_UNIX) as ready:
                             path = root / (outcome + ".sock")
                             ready.bind(str(path))
@@ -246,6 +252,25 @@ class CommandWorkers(unittest.TestCase):
                                 if outcome == "cancel":
                                     client.cancel(job, "test cancellation")
                                 else:
+                                    if outcome == "drain":
+                                        identity = client.fleet()[0]["runner_id"]
+                                        pending = client.enqueue(
+                                            [dict(request, job_key="pending")]
+                                        )[0]["job_id"]
+                                        drained = []
+
+                                        def drain():
+                                            client.drain(identity)
+                                            drained.append(True)
+
+                                        drain_thread = threading.Thread(target=drain)
+                                        drain_thread.start()
+                                        while not client.fleet()[0]["draining"]:
+                                            time.sleep(0.01)
+                                        self.assertFalse(drained)
+                                        self.assertIsNone(worker.poll())
+                                        self.assertEqual(client.job(job)["state"], "RUNNING")
+                                        self.assertFalse(client.job(job)["cancel_requested"])
                                     execution.sendall(b"x")
                                 if outcome != "fail":
                                     completion = next(client.completions())
@@ -255,7 +280,8 @@ class CommandWorkers(unittest.TestCase):
                                         137 if outcome == "cancel" else 0,
                                     )
                                     self.assertEqual(
-                                        completion["action_result"]["runner"]["node"], "native-node"
+                                        completion["action_result"]["runner"]["node"],
+                                        "native-node",
                                     )
                                     client.ack(job, "persisted")
                                 result = client.wait(job)
@@ -265,6 +291,7 @@ class CommandWorkers(unittest.TestCase):
                                         "complete": "SUCCEEDED",
                                         "cancel": "CANCELLED",
                                         "fail": "FAILED",
+                                        "drain": "SUCCEEDED",
                                     }[outcome],
                                 )
                                 self.assertEqual(result["attempt"], 1)
@@ -272,6 +299,14 @@ class CommandWorkers(unittest.TestCase):
                                     self.assertEqual((root / "cleaned").read_text(), "settled")
                                     with self.assertRaises(ProcessLookupError):
                                         os.kill(pid, 0)
+                                if outcome == "drain":
+                                    drain_thread.join()
+                                    self.assertEqual(drained, [True])
+                                    self.assertEqual(worker.wait(), 0)
+                                    self.assertEqual(client.job(pending)["state"], "QUEUED")
+                                    client.cancel(pending, "fixture cleanup")
+                                    client.resume(identity)
+                                    self.assertFalse(client.fleet()[0]["draining"])
             finally:
                 if worker is not None:
                     worker.terminate()

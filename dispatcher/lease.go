@@ -22,6 +22,7 @@ const (
 	claimGranted
 	claimBackpressure
 	claimQuarantined
+	claimDrained
 	claimRateLimited
 )
 
@@ -57,6 +58,8 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 			return nil, &wire.Empty{Reason: "backpressure", RetryAfterS: intptr(res.retryAfterS)}, nil
 		case claimQuarantined:
 			return nil, &wire.Empty{}, nil // quarantined runners silently get empty
+		case claimDrained:
+			return nil, &wire.Empty{Reason: "drained"}, nil
 		case claimRateLimited:
 			return nil, &wire.Empty{RetryAfterS: intptr(res.retryAfterS)}, nil
 		case claimNoWork:
@@ -96,6 +99,14 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 		}
 		if q {
 			result.outcome = claimQuarantined
+			return nil
+		}
+		draining, err := runnerDraining(tx, runnerID)
+		if err != nil {
+			return err
+		}
+		if draining {
+			result.outcome = claimDrained
 			return nil
 		}
 

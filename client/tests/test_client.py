@@ -13,7 +13,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -258,7 +257,13 @@ def test_error_reply_raises(dispatcher):
         # A malformed address fails the enqueue with a per-request error.
         with pytest.raises(DispatchError) as exc:
             client.enqueue(
-                [{"job_key": "bad-1", "lane": "embed", "invocation_address": "not-an-address"}]
+                [
+                    {
+                        "job_key": "bad-1",
+                        "lane": "embed",
+                        "invocation_address": "not-an-address",
+                    }
+                ]
             )
         assert exc.value.code  # carries a code
         assert exc.value.message
@@ -400,7 +405,15 @@ def test_operator_commands_use_the_application_client(dispatcher, capsys):
     assert {"recovered", "expired", "gc_candidates", "pruned"} <= call("sweep").keys()
     for operation, state in (("approve", "QUEUED"), ("reject", "REJECTED")):
         priced = call(
-            "enqueue", "--key", operation, "--lane", "embed", "--inv", DUMMY_ADDR, "--cost", "1.00"
+            "enqueue",
+            "--key",
+            operation,
+            "--lane",
+            "embed",
+            "--inv",
+            DUMMY_ADDR,
+            "--cost",
+            "1.00",
         )["results"][0]["job_id"]
         assert call("job", priced)["state"] == "AWAITING_APPROVAL"
         call(operation, priced, "--author", "owner", "--reason", "fixture")
@@ -417,6 +430,12 @@ def test_operator_ack_arguments():
         "ack",
         {"job_id": "id", "disposition": "persisted", "reason": "stored"},
     )
+    for operation in ("drain", "resume"):
+        assert request(["-addr", "unix:/unused", operation, "worker"]) == (
+            "unix:/unused",
+            operation,
+            {"runner_id": "worker"},
+        )
 
 
 @pytest.mark.parametrize(

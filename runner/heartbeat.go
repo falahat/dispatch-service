@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/falahat/dispatch-service/internal/wire"
@@ -29,7 +30,7 @@ func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := r.beat(dc); err != nil {
+			if err := r.beat(ctx, dc); err != nil {
 				r.log.Warn("heartbeat send failed; reconnecting", "err", err)
 				dc.close()
 				nd, derr := r.redial(ctx)
@@ -49,12 +50,18 @@ func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval
 // beat sends one heartbeat and applies the returned directives. A non-nil error
 // means the connection is dead (the caller reconnects); a protocol-level
 // rejection or decode error is logged but is not a dead connection.
-func (r *Runner) beat(dc *dispatcherConn) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	r.refreshGPU(ctx) // fold in the compute's live GPU/VRAM before we send
+func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	r.refreshGPU(probe) // fold in the compute's live GPU/VRAM before we send
 	cancel()
 	status, lease := r.currentStatus()
-	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease})
+	chunk, err := r.logChunk(ctx)
+	if err != nil {
+		return err
+	}
+	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk})
 	if err != nil {
 		return err // dead connection -> caller reconnects so lease renewal resumes
 	}
@@ -66,6 +73,16 @@ func (r *Runner) beat(dc *dispatcherConn) error {
 	if err != nil {
 		r.log.Warn("heartbeat decode", "err", err)
 		return nil
+	}
+	if chunk != nil {
+		if beat.LogOffset == nil || *beat.LogOffset != chunk.Offset+chunk.Size {
+			return fmt.Errorf("dispatcher did not acknowledge the command log chunk")
+		}
+		r.mu.Lock()
+		if r.current != nil && r.current.jobID == status.CurrentJobID {
+			r.current.logOffset = *beat.LogOffset
+		}
+		r.mu.Unlock()
 	}
 	for _, dir := range beat.Directives {
 		switch dir.Kind {

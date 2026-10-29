@@ -13,21 +13,20 @@ import (
 // and its compute container share the WorkRoot volume and the compute serves on
 // ComputeAddr (INVOKE_ADDR).
 type Config struct {
-	RunnerID        string             // public-key fingerprint (identity)
-	Node            string             // human node name
-	Version         string             // runner version string
-	DispatcherAddr  string             // runner surface (PEP in prod, dispatcher directly in tests)
-	CASBaseURL      string             // PEP CAS surface base URL
-	ComputeAddr     string             // paired compute container INVOKE_ADDR
-	WorkRoot        string             // shared workdir volume root
-	Lanes           []string           // lanes this runner serves
-	Capacity        int                // concurrent slots (this build serves them sequentially per conn)
-	LeaseWaitS      int                // long-poll wait
-	MaxJobDurationS int                // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
-	NoDeadline      bool               // Explicitly permit unbounded execution; cancellation still applies.
-	Command         []string           // Trusted local executor; absent selects the HTTP compute contract.
-	OnSettled       func(string) error // Local owner observes that execution and cleanup have ended.
-	GPU             string             // optional GPU descriptor for the fleet view
+	RunnerID        string   // public-key fingerprint (identity)
+	Node            string   // human node name
+	Version         string   // runner version string
+	DispatcherAddr  string   // runner surface (PEP in prod, dispatcher directly in tests)
+	CASBaseURL      string   // PEP CAS surface base URL
+	ComputeAddr     string   // paired compute container INVOKE_ADDR
+	WorkRoot        string   // shared workdir volume root
+	Lanes           []string // lanes this runner serves
+	Capacity        int      // concurrent slots (this build serves them sequentially per conn)
+	LeaseWaitS      int      // long-poll wait
+	MaxJobDurationS int      // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
+	NoDeadline      bool     // Explicitly permit unbounded execution; cancellation still applies.
+	Command         []string // Trusted local executor; absent selects the HTTP compute contract.
+	GPU             string   // optional GPU descriptor for the fleet view
 }
 
 // Runner is the worker client aggregate.
@@ -39,6 +38,7 @@ type Runner struct {
 	wrapper FrameWrapper // nil in direct mode
 
 	mu         sync.Mutex
+	progressMu sync.Mutex
 	current    *liveJob
 	draining   bool
 	leaseAfter int64  // ms; do not lease before this (throttle)
@@ -51,6 +51,7 @@ type liveJob struct {
 	jobID     string
 	cancel    context.CancelFunc
 	abandoned bool
+	logOffset int64
 }
 
 // markAbandoned cancels the in-flight job if it matches jobID and records that
@@ -152,12 +153,16 @@ func (r *Runner) ident() wire.RunnerIdent {
 }
 
 func (r *Runner) setCurrent(j *liveJob) {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
 	r.mu.Lock()
 	r.current = j
 	r.mu.Unlock()
 }
 
 func (r *Runner) clearCurrent() {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
 	r.mu.Lock()
 	r.current = nil
 	r.mu.Unlock()

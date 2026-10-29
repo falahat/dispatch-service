@@ -174,6 +174,13 @@ class DispatchClient:
         env = self._request("enqueue", {"jobs": jobs})
         return cast(list[dict[str, Any]], env["body"]["results"])
 
+    def logs(self, job_id: str, after: int = 0, wait: bool = True) -> dict[str, Any]:
+        """Read CAS-addressed log chunks without taking over completions."""
+        with DispatchClient(self._address, retry_requests=False) as observer:
+            return observer._request("logs", {"job_id": job_id, "after": after, "wait": wait})[
+                "body"
+            ]
+
     def ack(self, job_id: str, disposition: str, reason: Optional[str] = None) -> None:
         """Drain a job from the PERSISTING inbox. ``disposition`` is
         ``"persisted"`` or ``"rejected"``. Idempotent."""
@@ -261,6 +268,8 @@ class DispatchClient:
             except OSError:
                 if self._sub_stop.is_set():
                     return
+                if not self._retry_requests:
+                    raise
                 continue
             with self._sub_lock:
                 if self._sub_stop.is_set():
@@ -275,6 +284,8 @@ class DispatchClient:
                     if msg_type == "completion":
                         yield env["body"]
                     elif msg_type == "takeover":
+                        if not self._retry_requests:
+                            raise DispatchError("conflict", "completion subscriber replaced")
                         break  # a newer subscriber won; reconnect and resume
                     elif msg_type == "error":
                         err = env["body"]
@@ -287,6 +298,8 @@ class DispatchClient:
             except (OSError, ConnectionError, frame.FrameError):
                 if self._sub_stop.is_set():
                     return
+                if not self._retry_requests:
+                    raise
                 # transient drop: fall through to reconnect
             finally:
                 with self._sub_lock:

@@ -27,22 +27,3 @@ with open('invoke-result.json','w') as output:
 		t.Fatalf("actual command output: %q %v", data, err)
 	}
 }
-
-func TestLocalCASUsesExistingIntegrityChecks(t *testing.T) {
-	root := t.TempDir()
-	store := NewCAS("file://"+root, nil, nil)
-	address, err := store.PutBytes(context.Background(), []byte("actual content"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := store.GetBytes(context.Background(), address)
-	if err != nil || string(data) != "actual content" {
-		t.Fatalf("round trip: %q %v", data, err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "blobs", "sha256", address.Hex()), []byte("changed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.GetBytes(context.Background(), address); err == nil {
-		t.Fatal("changed bytes must fail existing content-address verification")
-	}
-}

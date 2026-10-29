@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,13 +38,6 @@ type CAS struct {
 // NewCAS builds a CAS client against baseURL (e.g. http://pep:8080). signer may
 // be nil for direct/trusted deployments.
 func NewCAS(baseURL string, hc *http.Client, signer Signer) *CAS {
-	if strings.HasPrefix(baseURL, "file://") {
-		location, err := url.Parse(baseURL)
-		if err == nil && location.Host == "" {
-			hc = &http.Client{Transport: fileCAS{root: filepath.FromSlash(location.Path)}}
-			baseURL = "http://local"
-		}
-	}
 	if hc == nil {
 		hc = &http.Client{}
 	}
@@ -116,6 +108,11 @@ func casKindForStatus(status int) casErrKind {
 // GetToFile streams a blob to destPath, hashing en route, and verifies the
 // result against the requested address. A mismatch is an integrity failure.
 func (c *CAS) GetToFile(ctx context.Context, a artifact.Address, destPath string) (int64, error) {
+	return c.GetToFileBounded(ctx, a, destPath, 0)
+}
+
+// GetToFileBounded publishes only a complete, verified blob. Zero permits any size.
+func (c *CAS) GetToFileBounded(ctx context.Context, a artifact.Address, destPath string, limit int64) (int64, error) {
 	req, err := c.newReq(ctx, http.MethodGet, a, nil)
 	if err != nil {
 		return 0, &casError{casOther, err}
@@ -134,12 +131,17 @@ func (c *CAS) GetToFile(ctx context.Context, a artifact.Address, destPath string
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return 0, &casError{casOther, err}
 	}
-	f, err := os.Create(destPath)
+	f, err := os.CreateTemp(filepath.Dir(destPath), ".blob-*")
 	if err != nil {
 		return 0, &casError{casOther, err}
 	}
+	defer os.Remove(f.Name())
+	var input io.Reader = resp.Body
+	if limit > 0 {
+		input = io.LimitReader(input, limit+1)
+	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), resp.Body)
+	n, err := io.Copy(io.MultiWriter(f, h), input)
 	closeErr := f.Close()
 	if err != nil {
 		return 0, &casError{casUnreachable, fmt.Errorf("stream %s: %w", a, err)}
@@ -147,10 +149,15 @@ func (c *CAS) GetToFile(ctx context.Context, a artifact.Address, destPath string
 	if closeErr != nil {
 		return 0, &casError{casOther, closeErr}
 	}
+	if limit > 0 && n > limit {
+		return 0, &casError{casIntegrity, fmt.Errorf("blob exceeds download limit")}
+	}
 	got := artifact.Address("sha256:" + hex.EncodeToString(h.Sum(nil)))
 	if got != a {
-		_ = os.Remove(destPath)
 		return 0, &casError{casIntegrity, fmt.Errorf("integrity: got %s want %s", got, a)}
+	}
+	if err := os.Rename(f.Name(), destPath); err != nil {
+		return 0, &casError{casOther, err}
 	}
 	return n, nil
 }

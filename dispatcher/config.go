@@ -10,7 +10,7 @@ import (
 // Config is the dispatcher's plane.toml, read once at boot. Change = restart
 // (downtime is free; there is no live reconfiguration surface to attack).
 type Config struct {
-	WaitForExecutor bool `toml:"-"` // Local owner supplies an execution-settled callback.
+	WaitForExecutor    bool   `toml:"wait_for_executor"` // Cancellation waits for execution cleanup and application persistence.
 	DBPath             string `toml:"db_path"`
 	RunnerListen       string `toml:"runner_listen"` // tailnet TCP, PEP-fronted in prod
 	AppSocket          string `toml:"app_socket"`    // UDS path for the app/admin surface

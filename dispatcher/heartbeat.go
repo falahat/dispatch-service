@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 
 	"github.com/falahat/dispatch-service/internal/wire"
 )
@@ -38,6 +39,9 @@ func (d *Dispatcher) Hello(req wire.Hello) (wire.HelloOK, *wire.Error) {
 // channel by which the dispatcher tells a runner to abandon, drain, or throttle.
 func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK, *wire.Error) {
 	out := wire.BeatOK{Directives: []wire.Directive{}}
+	if req.Log != nil && (req.LeaseID == "" || req.Log.Offset < 0 || req.Log.Size < 1 || req.Log.Size > 1<<20 || req.Log.Offset > math.MaxInt64-req.Log.Size || req.Log.Address.Validate() != nil) {
+		return out, &wire.Error{Code: wire.CodeInvalid, Message: "invalid log chunk"}
+	}
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		now := d.now()
 		if err := upsertRunner(tx, runnerID, req.Status, "", now); err != nil {
@@ -69,10 +73,11 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 				}
 				found = err == nil
 			}
-			if found && live.State == "RUNNING" && live.LeaseID == req.LeaseID {
+			if found && live.State == "RUNNING" && live.LeaseID == req.LeaseID && live.LeaseRunnerID == runnerID {
 				if q || live.CancelRequested {
 					out.Directives = append(out.Directives, wire.Directive{Kind: wire.DirectiveAbandon, JobID: jobID})
-				} else {
+				}
+				if !q && (!live.CancelRequested || d.cfg.WaitForExecutor) {
 					// Renew the lease (fenced: only the live holder gets here).
 					deadline := now + int64(d.cfg.LeaseTTLS)*1000
 					if _, err := tx.Exec(
@@ -80,6 +85,13 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 						deadline, now, jobID, req.LeaseID); err != nil {
 						return err
 					}
+				}
+				if req.Log != nil {
+					if err := appendLog(tx, live, *req.Log); err != nil {
+						return err
+					}
+					next := req.Log.Offset + req.Log.Size
+					out.LogOffset = &next
 				}
 			} else if jobID != "" {
 				// The lease is no longer live (cancelled, expired, or superseded):
@@ -91,6 +103,9 @@ func (d *Dispatcher) Heartbeat(runnerID string, req wire.Heartbeat) (wire.BeatOK
 	})
 	if err != nil {
 		return wire.BeatOK{}, &wire.Error{Code: wire.CodeInternal, Message: "heartbeat: " + err.Error()}
+	}
+	if req.Log != nil {
+		d.wakeLeases()
 	}
 	return out, nil
 }

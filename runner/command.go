@@ -52,7 +52,7 @@ func (c *commandExecutor) Invoke(ctx context.Context, request InvokeRequest) (*I
 	command.Stdout, command.Stderr = log, log
 	// A trusted executor handles SIGTERM by cancelling its own children/containers.
 	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
-	if err := command.Run(); err != nil {
+	if err := command.Run(); err != nil && (ctx.Err() == nil || command.ProcessState == nil || command.ProcessState.ExitCode() != 0) {
 		return nil, &InvokeFailure{ErrClass: "fatal", Message: err.Error()}, nil
 	}
 	file, err := os.Open(filepath.Join(request.Workdir, "invoke-result.json"))

@@ -129,6 +129,15 @@
       }
     },
 
+    "log_chunk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["offset", "address", "size"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "address": { "$ref": "#/$defs/address" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+      }
+    },
     "heartbeat": {
       "type": "object",
       "additionalProperties": false,
@@ -147,7 +156,8 @@
             "current_job_id": { "$ref": "#/$defs/job_id" }
           }
         },
-        "lease_id": { "$ref": "#/$defs/lease_id" }
+        "lease_id": { "$ref": "#/$defs/lease_id" },
+        "log": { "$ref": "#/$defs/log_chunk" }
       }
     },
     "beat_ok": {
@@ -155,6 +165,7 @@
       "additionalProperties": false,
       "required": ["directives"],
       "properties": {
+        "log_offset": { "type": "integer", "minimum": 1 },
         "directives": {
           "type": "array",
           "maxItems": 8,
@@ -255,6 +266,24 @@
       "properties": { "job_id": { "$ref": "#/$defs/job_id" } }
     },
     "wait": { "$ref": "#/$defs/job" },
+    "logs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["job_id", "after", "wait"],
+      "properties": {
+        "job_id": { "$ref": "#/$defs/job_id" },
+        "after": { "type": "integer", "minimum": 0 },
+        "wait": { "type": "boolean" }
+      }
+    },
+    "log_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entries", "next_offset", "done"],
+      "properties": {
+        "entries": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/log_chunk" } },
+        "next_offset": { "type": "integer", "minimum": 0 },
+        "done": { "type": "boolean" }
+      }
+    },
     "subscribe": { "type": "object", "additionalProperties": false },
     "completion": {
       "type": "object",

@@ -19,23 +19,17 @@ design lives in easy-podcast's
 | `dispatchctl/` | Operator commands for queue and fleet state |
 | `deploy/smokescreen/` | Source-network egress roles and destination policy |
 | `deploy/remote-runner/` | Install an application's runner/compute pair on an approved tailworker machine |
-| `cmd/dispatch-local/` | Compose this dispatcher and runner for trusted local command executors, using private Unix sockets and a local byte store |
 | `compute/echo/` | Credential-free fixture compute used by integration tests |
 
 The schemas under `contracts/` are normative. Components reject unsupported contract
 versions rather than negotiating mixed deployments.
 
-## Local command queues
+## Installed command execution
 
-An application that already owns a trusted command executor can use
-`dispatch-local`; it uses the same dispatcher, SQLite transactions, leases and
-runner as the network plane. It is the application's only queue. It creates no
-machine, opens no TCP listener and installs no environment or firewall policy.
-Tailworker owns environment setup; applications own their workload commands.
-
-Build `./cmd/dispatch-local` in the reviewed Linux build environment and install
-its binary together with `client/dispatch_client`. See
-[the local command interface](contracts/LOCAL.md) for setup and execution semantics.
+The existing network runner can invoke either a paired HTTP compute container
+or an owner-installed command. Both use the same PEP, CAS, queue, leases and
+completion acknowledgements. Tailworker owns environment setup; the application
+owns its workload command and persistence. See [the command contract](contracts/COMMAND.md).
 
 ## Local integration
 
@@ -60,6 +54,14 @@ settings and its existing signer to this shared kit:
 bash deploy/remote-runner/install.sh --env APP.env --machine MACHINE
 bash deploy/remote-runner/enroll.sh --name APP --machine MACHINE --signer COMMAND --lanes LANES --note NOTE
 ```
+
+For a trusted host command that launches its own isolated workloads, use
+`install-command.sh --env APP.env --machine MACHINE --runner REVIEWED_BINARY`, then
+`enroll-command.sh --name APP --machine MACHINE --signer COMMAND --note NOTE`.
+The public profile contains NAME, DISPATCHER_ADDR, CAS_URL, LANES, RUNNER_NODE,
+WORK_ROOT, COMMAND (absolute executable plus fixed arguments), COUNT and optional
+NO_DEADLINE=1. Each instance receives a unique credential on the worker. Runtime
+traffic goes through the same authenticated runner and CAS doors; SSH is setup only.
 
 Tailworker resolves the approved machine and transfers images; the kit installs
 rootless Quadlet units pinned to their image IDs. `NAME` isolates each application's

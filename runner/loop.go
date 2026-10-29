@@ -153,13 +153,6 @@ func (r *Runner) jobBudget(g *wire.Grant) time.Duration {
 // appropriate terminal verb. It never returns an error; failures are reported to
 // the dispatcher.
 func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Grant) {
-	if r.cfg.OnSettled != nil {
-		defer func() {
-			if err := r.cfg.OnSettled(g.Job.JobID); err != nil {
-				r.log.Error("execution settlement failed", "job", g.Job.JobID, "err", err)
-			}
-		}()
-	}
 	// The job's execution budget is per-job (jobBudget) — NOT the lease deadline. The
 	// lease TTL (g.Lease.DeadlineTS) is a crash-detection timer the heartbeat renews
 	// every interval; using it as the job deadline would cancel any op longer than one
@@ -247,6 +240,15 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	}
 
 	// 4. Upload outputs and report completion.
+	// A command returns its final result after stopping its children. Shipping
+	// that result uses the runner's live context after a cancellation request.
+	if len(r.cfg.Command) != 0 {
+		jobCtx = ctx
+	}
+	if err := r.flushLog(jobCtx, dc); err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "command log: "+err.Error())
+		return
+	}
 	outputs := map[string]artifact.Output{}
 	for name, rel := range res.Outputs {
 		full := filepath.Join(workdir, filepath.FromSlash(rel))

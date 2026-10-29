@@ -30,7 +30,7 @@ func (d *Dispatcher) Ack(req wire.Ack) *wire.Error {
 			// Idempotent: acking an already-settled job in the matching terminal
 			// state is a no-op ok.
 			switch {
-			case req.Disposition == wire.DispositionPersisted && job.State == "SUCCEEDED":
+			case req.Disposition == wire.DispositionPersisted && (job.State == "SUCCEEDED" || job.State == "CANCELLED" && job.ResultJSON != ""):
 				return nil
 			case req.Disposition == wire.DispositionRejected && job.State == "FAILED" && job.Reason == "bad_output":
 				return nil
@@ -41,6 +41,15 @@ func (d *Dispatcher) Ack(req wire.Ack) *wire.Error {
 		}
 		now := d.now()
 		if req.Disposition == wire.DispositionPersisted {
+			if job.CancelRequested {
+				if _, err := tx.Exec(`UPDATE jobs SET state='CANCELLED', cancel_requested=0, updated_ts=? WHERE job_id=? AND state='PERSISTING'`, now, req.JobID); err != nil {
+					return err
+				}
+				if err := releaseReservation(tx, job.CostCents); err != nil {
+					return err
+				}
+				return insertAttempt(tx, req.JobID, job.ResultAttempt, "", "", "ack", "", "cancelled", 0, now)
+			}
 			if _, err := tx.Exec(`UPDATE jobs SET state='SUCCEEDED', updated_ts=? WHERE job_id=? AND state='PERSISTING'`, now, req.JobID); err != nil {
 				return err
 			}
@@ -208,6 +217,17 @@ func (d *Dispatcher) Cancel(req wire.Cancel) *wire.Error {
 			return err
 		}
 		now := d.now()
+		if d.cfg.WaitForExecutor && (job.State == "RUNNING" || job.State == "PERSISTING") {
+			// Keep the existing lease/inbox until cleanup and domain persistence
+			// have completed. The runner receives the ordinary abandon directive.
+			if job.CancelRequested {
+				return nil
+			}
+			if _, err := tx.Exec(`UPDATE jobs SET cancel_requested=1, reason=?, updated_ts=? WHERE job_id=?`, cancelReason(req.Reason), now, req.JobID); err != nil {
+				return err
+			}
+			return insertAttempt(tx, req.JobID, job.Attempt, "", "", "cancel_requested", "", req.Reason, 0, now)
+		}
 		switch job.State {
 		case "SUCCEEDED", "FAILED", "REJECTED":
 			outErr = &wire.Error{Code: wire.CodeInvalid, Message: "cancel: job already terminal"}

@@ -204,6 +204,14 @@ type HeartbeatStatus struct {
 type Heartbeat struct {
 	Status  HeartbeatStatus `json:"status"`
 	LeaseID string          `json:"lease_id,omitempty"`
+	Log     *LogChunk       `json:"log,omitempty"`
+}
+
+// LogChunk addresses bytes uploaded through the existing authenticated CAS.
+type LogChunk struct {
+	Offset  int64            `json:"offset"`
+	Address artifact.Address `json:"address"`
+	Size    int64            `json:"size"`
 }
 
 // Directive is a steering instruction returned on a heartbeat. Exactly one of
@@ -222,6 +230,7 @@ const (
 
 type BeatOK struct {
 	Directives []Directive `json:"directives"`
+	LogOffset  *int64      `json:"log_offset,omitempty"`
 }
 
 type Complete struct {

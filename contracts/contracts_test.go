@@ -40,10 +40,10 @@ func TestLegalTransitions(t *testing.T) {
 		{"RUNNING", "fail", []string{"FAILED", "QUEUED"}},
 		{"RUNNING", "release", []string{"FAILED", "QUEUED"}},
 		{"RUNNING", "lease_expired", []string{"FAILED", "QUEUED"}},
-		{"PERSISTING", "ack", []string{"FAILED", "SUCCEEDED"}},
+		{"PERSISTING", "ack", []string{"CANCELLED", "FAILED", "SUCCEEDED"}},
 		{"QUEUED", "cancel", []string{"CANCELLED"}},
-		{"RUNNING", "cancel", []string{"CANCELLED"}},
-		{"PERSISTING", "cancel", []string{"CANCELLED"}},
+		{"RUNNING", "cancel", []string{"CANCELLED", "RUNNING"}},
+		{"PERSISTING", "cancel", []string{"CANCELLED", "PERSISTING"}},
 	}
 	for _, c := range cases {
 		got := sm.LegalTargets(c.from, c.event)

@@ -44,7 +44,7 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 	d.cfg.WaitForExecutor = true
 	id := enqueueOne(t, d, "wait", "embed", invAddr("wait"), nil)
 	hello(t, d, "worker", "embed")
-	leaseOne(t, d, "worker", "embed")
+	grant, _ := leaseOne(t, d, "worker", "embed")
 	if err := d.Cancel(wire.Cancel{JobID: id}); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,10 @@ func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 			results <- result
 		}()
 	}
-	if err := d.ExecutionSettled(id); err != nil {
+	if err := d.Complete("worker", wire.Complete{JobID: id, LeaseID: grant.Lease.LeaseID, Attempt: 1, ActionResult: sampleResult(invAddr("wait"))}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Ack(wire.Ack{JobID: id, Disposition: wire.DispositionPersisted}); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

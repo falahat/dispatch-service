@@ -29,11 +29,10 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (map[string]
 		}
 		pending := job.State == "QUEUED" || job.State == "RUNNING" || job.State == "AWAITING_APPROVAL"
 		pending = pending || d.cfg.WaitForExecutor && job.State == "PERSISTING"
-		pending = pending || d.cfg.WaitForExecutor && job.State == "CANCELLED" && job.CancelRequested
 		if !wait || !pending {
 			result := map[string]any{"job_id": job.JobID, "job_key": job.JobKey, "state": job.State,
 				"invocation_address": job.InvocationAddress, "runner_id": job.LeaseRunnerID, "reason": job.Reason,
-				"attempt": job.Attempt, "release_count": job.ReleaseCount}
+				"attempt": job.Attempt, "release_count": job.ReleaseCount, "cancel_requested": job.CancelRequested}
 			if job.ResultJSON != "" {
 				result["action_result"] = json.RawMessage(job.ResultJSON)
 			}
@@ -45,17 +44,4 @@ func (d *Dispatcher) job(ctx context.Context, id string, wait bool) (map[string]
 			return nil, &wire.Error{Code: wire.CodeGone, Message: "dispatcher shutting down"}
 		}
 	}
-}
-
-// ExecutionSettled is called only after the local executor has reaped its child.
-// A cancellation request is not proof that the cancelled execution has stopped.
-func (d *Dispatcher) ExecutionSettled(id string) error {
-	err := d.store.writeTx(func(tx *sql.Tx) error {
-		_, err := tx.Exec("UPDATE jobs SET cancel_requested=0 WHERE job_id=? AND state='CANCELLED'", id)
-		return err
-	})
-	if err == nil {
-		d.wakeLeases()
-	}
-	return err
 }

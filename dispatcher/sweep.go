@@ -170,11 +170,11 @@ func (d *Dispatcher) PinnedAddresses() (map[artifact.Address]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var inv, state string
 		var result sql.NullString
 		if err := rows.Scan(&inv, &state, &result); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		pinned[artifact.Address(inv)] = true
@@ -187,5 +187,22 @@ func (d *Dispatcher) PinnedAddresses() (map[artifact.Address]bool, error) {
 			}
 		}
 	}
-	return pinned, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	logs, err := d.store.db.Query(`SELECT DISTINCT address FROM job_logs`)
+	if err != nil {
+		return nil, err
+	}
+	defer logs.Close()
+	for logs.Next() {
+		var address artifact.Address
+		if err := logs.Scan(&address); err != nil {
+			return nil, err
+		}
+		pinned[address] = true
+	}
+	return pinned, logs.Err()
 }

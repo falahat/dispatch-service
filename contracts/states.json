@@ -24,11 +24,14 @@
     { "from": "RUNNING",           "event": "release",       "to": "FAILED",            "guard": "lane.single_attempt OR release_count >= release_cap", "effect": "reason=unstartable; dead-letter" },
     { "from": "RUNNING",           "event": "lease_expired", "to": "QUEUED",            "guard": "attempt < max_attempts",                 "effect": "attempt+1 (silent death presumed crash); backoff" },
     { "from": "RUNNING",           "event": "lease_expired", "to": "FAILED",            "guard": "attempt >= max_attempts" },
-    { "from": "PERSISTING",        "event": "ack",           "to": "SUCCEEDED",         "guard": "disposition = persisted",                "effect": "unpin CAS blobs" },
+    { "from": "PERSISTING",        "event": "ack",           "to": "SUCCEEDED",         "guard": "disposition = persisted AND NOT cancel_requested", "effect": "unpin CAS blobs" },
+    { "from": "PERSISTING",        "event": "ack",           "to": "CANCELLED",         "guard": "disposition = persisted AND wait_for_executor AND cancel_requested", "effect": "cleanup confirmed and result persisted; release reservation" },
+    { "from": "RUNNING",           "event": "cancel",        "to": "RUNNING",           "guard": "wait_for_executor", "effect": "set cancel_requested; abandon directive; retain lease for cleanup" },
+    { "from": "PERSISTING",        "event": "cancel",        "to": "PERSISTING",        "guard": "wait_for_executor", "effect": "set cancel_requested; retain inbox until ack" },
     { "from": "PERSISTING",        "event": "ack",           "to": "FAILED",            "guard": "disposition = rejected",                 "effect": "reason=bad_output; dead-letter; unpin" },
     { "from": "AWAITING_APPROVAL", "event": "cancel",        "to": "CANCELLED",         "effect": "release reservation" },
     { "from": "QUEUED",            "event": "cancel",        "to": "CANCELLED" },
-    { "from": "RUNNING",           "event": "cancel",        "to": "CANCELLED",         "effect": "abandon directive on next heartbeat; lease voided" },
-    { "from": "PERSISTING",        "event": "cancel",        "to": "CANCELLED",         "effect": "remove from inbox; unpin CAS blobs" }
+    { "from": "RUNNING",           "event": "cancel",        "to": "CANCELLED",         "guard": "NOT wait_for_executor", "effect": "abandon directive on next heartbeat; lease voided" },
+    { "from": "PERSISTING",        "event": "cancel",        "to": "CANCELLED",         "guard": "NOT wait_for_executor", "effect": "remove from inbox; unpin CAS blobs" }
   ]
 }

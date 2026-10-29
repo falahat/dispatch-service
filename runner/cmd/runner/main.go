@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/falahat/dispatch-service/internal/artifact"
 	"github.com/falahat/dispatch-service/runner"
 )
 
@@ -26,6 +27,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		runCmd(os.Args[2:], log)
+	case "cas":
+		casCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:], log)
 	case "keygen":
@@ -107,9 +110,11 @@ func runCmd(args []string, log *slog.Logger) {
 	fs.IntVar(&cfg.LeaseWaitS, "wait", 30, "lease long-poll seconds")
 	fs.IntVar(&cfg.MaxJobDurationS, "max-job-seconds", envInt("MAX_JOB_SECONDS", 0),
 		"max wall-clock seconds per job (0 => default 2h; a backstop, NOT the lease TTL)")
+	fs.BoolVar(&cfg.NoDeadline, "no-deadline", false, "run until completion or explicit cancellation")
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
 	_ = fs.Parse(args)
+	cfg.Command = fs.Args()
 
 	if *lanes != "" {
 		cfg.Lanes = splitComma(*lanes)
@@ -153,6 +158,43 @@ func runCmd(args []string, log *slog.Logger) {
 	}()
 	if err := rn.Run(ctx); err != nil {
 		log.Error("runner exited", "err", err)
+		os.Exit(1)
+	}
+}
+
+// casCmd uses the same credential, proof and integrity checks as the worker.
+func casCmd(args []string) {
+	fs := flag.NewFlagSet("cas", flag.ExitOnError)
+	url := fs.String("url", "", "authenticated CAS URL")
+	credential := fs.String("credential", "", "credential file")
+	limit := fs.Int64("max-bytes", 64<<30, "maximum downloaded blob size")
+	_ = fs.Parse(args)
+	if *url == "" || *credential == "" || *limit <= 0 || fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: runner cas --url URL --credential FILE [--max-bytes N] put FILE | get ADDRESS FILE")
+		os.Exit(2)
+	}
+	cred, err := runner.LoadCredential(*credential)
+	var signer runner.Signer
+	if err == nil {
+		signer, err = runner.NewPoPSigner(cred)
+	}
+	if err == nil {
+		cas := runner.NewCAS(*url, nil, signer)
+		switch {
+		case fs.Arg(0) == "put" && fs.NArg() == 2:
+			var address artifact.Address
+			address, _, err = cas.PutFile(context.Background(), fs.Arg(1))
+			if err == nil {
+				fmt.Println(address)
+			}
+		case fs.Arg(0) == "get" && fs.NArg() == 3:
+			_, err = cas.GetToFileBounded(context.Background(), artifact.Address(fs.Arg(1)), fs.Arg(2), *limit)
+		default:
+			err = fmt.Errorf("invalid CAS operation")
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runner cas:", err)
 		os.Exit(1)
 	}
 }

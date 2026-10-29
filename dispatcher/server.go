@@ -318,6 +318,16 @@ func (s *Server) handleAppConn(conn net.Conn) {
 
 func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 	switch env.Type {
+	case "logs":
+		req, err := wire.DecodeBody[logsRequest](env)
+		if err != nil {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
+		}
+		result, werr := s.d.logs(s.ctx, req)
+		if werr != nil {
+			return replyErr(conn, env.ID, werr)
+		}
+		return reply(conn, env.ID, "log_result", result)
 	case "job", "wait":
 		req, err := wire.DecodeBody[jobRequest](env)
 		if err != nil {

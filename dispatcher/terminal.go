@@ -23,8 +23,6 @@ func (d *Dispatcher) Complete(runnerID string, req wire.Complete) *wire.Error {
 	if err := req.ActionResult.Validate(); err != nil {
 		return &wire.Error{Code: wire.CodeInvalid, Message: "complete: " + err.Error()}
 	}
-	incoming, _ := json.Marshal(req.ActionResult)
-
 	var outErr *wire.Error
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		job, err := getJobTx(tx, req.JobID)
@@ -35,6 +33,11 @@ func (d *Dispatcher) Complete(runnerID string, req wire.Complete) *wire.Error {
 		if err != nil {
 			return err
 		}
+		// Provenance comes from this authenticated fleet identity, never output data.
+		if err := tx.QueryRow(`SELECT node,version FROM runners WHERE runner_id=?`, runnerID).Scan(&req.ActionResult.Runner.Node, &req.ActionResult.Runner.Version); err != nil {
+			return err
+		}
+		incoming, _ := json.Marshal(req.ActionResult)
 
 		// Idempotent replay: this attempt already completed.
 		if job.ResultJSON != "" && job.ResultAttempt == req.Attempt {
@@ -46,7 +49,7 @@ func (d *Dispatcher) Complete(runnerID string, req wire.Complete) *wire.Error {
 		}
 
 		// Live-leaseholder path.
-		if job.State == "RUNNING" && job.LeaseID == req.LeaseID && job.Attempt == req.Attempt {
+		if job.State == "RUNNING" && job.LeaseID == req.LeaseID && job.LeaseRunnerID == runnerID && job.Attempt == req.Attempt {
 			// The runner echoes invocation_address from its grant; it must match.
 			if string(req.ActionResult.InvocationAddress) != job.InvocationAddress {
 				outErr = &wire.Error{Code: wire.CodeInvalid, Message: "complete: invocation_address does not match grant"}

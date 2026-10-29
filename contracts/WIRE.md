@@ -75,7 +75,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 |---|---|---|
 | `enqueue` | `{jobs[1..256]: {job_key, lane, invocation_address, policy?, cost_estimate_usd?}}` → `{results[]: {job_key, job_id, created}}` | **Idempotent on live `job_key`**: an existing live job → its `job_id`, `created=false`, all other fields ignored. Priced jobs (`cost_estimate_usd > 0`) reserve against the budget and park in `AWAITING_APPROVAL`; reserve failure → per-job `error{budget}`. Terminal jobs do not block re-use of their `job_key`. |
 | `subscribe` | `{}` → stream of `completion {job_id, job_key, lane, attempt, action_result, completed_ts}` | the push subscription. On connect: every `PERSISTING` job is delivered oldest-first, then live events. **One active subscription**: a new `subscribe` wins; the old connection receives `takeover {}` and is closed. No cursor exists — `PERSISTING` is the inbox, `ack` empties it. |
-| `job` / `wait` | `{job_id}` → `job_result {job_id, job_key, state, invocation_address, runner_id, attempt, release_count, reason, action_result?}` | app-only direct lookup / independent blocking wait. Network waits return at PERSISTING or a terminal state; local command waits include persistence ack and confirmed cancellation cleanup. No polling or completion-subscription takeover. |
+| `job` / `wait` | `{job_id}` → `job_result {job_id, job_key, state, invocation_address, runner_id, attempt, release_count, cancel_requested, reason, action_result?}` | app-only direct lookup / independent blocking wait. With `wait_for_executor=true`, waits include persistence acknowledgement and confirmed cancellation cleanup; otherwise they return at PERSISTING or a terminal state. No completion-subscription takeover. |
+| `logs` | `{job_id, after, wait}` → `log_result {entries:[{offset,address,size}], next_offset, done}` | app-only ordered CAS log chunks, at most 32 per reply. Cursor is zero or an acknowledged chunk end. Wait blocks for bytes or execution settlement on its own connection. |
 | `ack` | `{job_id, disposition: persisted \| rejected, reason?}` → `ok` | `persisted` → `SUCCEEDED` (unpins the job's CAS blobs for GC); `rejected` (parse says the output is garbage) → `FAILED(bad_output)`, dead-lettered. Idempotent; only valid from `PERSISTING`. |
 | `approve` / `reject` | `{job_id, author, reason}` → `ok` | the priced-job gate; append-only approval facts; `reject` → `REJECTED` and releases the reservation. |
 | `cancel` | `{job_id, reason}` → `ok` | any non-terminal → `CANCELLED`. `RUNNING` → the runner learns via an `abandon` directive; `PERSISTING` → removed from the inbox; CAS pins released. |
@@ -116,3 +117,15 @@ policy: {
 ```
 Staleness (`on_drift`) is **deliberately absent** — it is reconciler (app) policy, enforced
 app-side by digest comparison + `cancel`; the dispatcher never evaluates domain freshness.
+
+Command workers may include `log:{offset,address,size}` in a live-lease heartbeat.
+The signed heartbeat binds this CAS address to the current lease and runner.
+Chunks are contiguous, 1–1,048,576 bytes; exact replay is idempotent. `beat_ok`
+returns `log_offset`, the acknowledged byte end. The runner flushes all chunks
+before `complete`. Result node/version come from the authenticated fleet row.
+
+With `wait_for_executor=true`, running cancellation sets `cancel_requested` and
+retains the lease while the executor receives `abandon`, cleans up, and completes.
+The app persists the canceled result; `ack(persisted)` then enters CANCELLED.
+PERSISTING cancellation retains the inbox until acknowledgement. Other cancellation
+behavior is unchanged. A crashed worker fails by lease loss, never confirms cleanup.

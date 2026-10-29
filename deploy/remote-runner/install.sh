@@ -75,5 +75,5 @@ info = pathlib.Path(sys.argv[1]).lstat()
 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
     raise ValueError('secret must be an owned mode-0600 regular file')
 PY
-    remote "$worker" podman secret create --replace "$name-$secret" - <"$file" >/dev/null
+    cat "$file" | remote "$worker" podman secret create --replace "$name-$secret" - >/dev/null
 done

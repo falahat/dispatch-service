@@ -19,7 +19,9 @@ cat >"$temporary/bin/podman" <<'SH'
 case "$1" in
   info) printf 'true\n';;
   image) printf 'sha256:%064d\n' 1;;
-  secret) cat >/dev/null;;
+  secret)
+    test -p /dev/stdin || exit 125
+    cat >/dev/null;;
   run)
     case " $* " in
       *' keygen '*) printf '%064d\n' 0;;

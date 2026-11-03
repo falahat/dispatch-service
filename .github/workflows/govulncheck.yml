@@ -22,7 +22,7 @@ jobs:
         module: [".", "deploy/smokescreen"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ matrix.module }}/go.mod
       # govulncheck is the scanner, not a shipped dependency — always run the current

@@ -19,7 +19,7 @@ path = "src/bin/signer.rs"
 
 [dependencies]
 biscuit-auth = "5"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 # RFC 9449 DPoP proof (JWT) verification for the HTTP surface — a maintained JOSE
 # parser/verifier so the browser-facing proof is library-produced/consumed, not a
 # hand-rolled canonical held equal across three languages by cross-impl tests.

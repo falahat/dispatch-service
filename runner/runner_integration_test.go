@@ -221,12 +221,21 @@ func TestRunnerEndToEnd(t *testing.T) {
 	jobID := er.Results[0].JobID
 
 	// Start the runner.
+	workRoot := t.TempDir()
+	liveRun := filepath.Join(workRoot, jobID)
+	if err := os.Mkdir(liveRun, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	liveOutput := filepath.Join(liveRun, "writing")
+	if err := os.WriteFile(liveOutput, []byte("previous compute still writing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rn := runner.New(runner.Config{
 		RunnerID: "Re2e", Node: "n1", Version: "runner/test",
 		DispatcherAddr: srv.RunnerAddr(),
 		CASBaseURL:     casSrv.URL,
 		ComputeAddr:    strings.TrimPrefix(computeSrv.URL, "http://"),
-		WorkRoot:       t.TempDir(),
+		WorkRoot:       workRoot,
 		Lanes:          []string{"embed"},
 		Capacity:       1,
 		LeaseWaitS:     2,
@@ -256,6 +265,9 @@ func TestRunnerEndToEnd(t *testing.T) {
 	}
 	if jobState != "PERSISTING" {
 		t.Fatalf("job did not reach PERSISTING (got %q)", jobState)
+	}
+	if got, err := os.ReadFile(liveOutput); err != nil || string(got) != "previous compute still writing" {
+		t.Fatalf("new attempt affected prior workdir: got %q, err %v", got, err)
 	}
 
 	// Subscribe to fetch the completion and verify the output.

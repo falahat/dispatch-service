@@ -19,7 +19,7 @@ the AWS Lambda Runtime API.
    {
      "job_id": "j_…",
      "invocation": { …verbatim invocation/v0… },
-     "workdir": "/work/j_…",              // both containers see the same volume
+     "workdir": "/work/attempt-…/j_…",    // both containers see the same volume
      "inputs":  { "audio": "inputs/audio" },        // paths relative to workdir, laid out by the runner
      "outputs_dir": "outputs",                       // write results under workdir/outputs/
      "deadline_ts": 1789999999000
@@ -48,9 +48,13 @@ the AWS Lambda Runtime API.
 
 Lay out `workdir/inputs/` (fetched + verified) before `POST /invoke`; treat connection
 drop or container exit mid-invoke as `error_class: fatal`; map the response to
-`complete`/`fail` on the control plane; delete the workdir after `complete`/`fail`/`release`;
-run the **fixture invocation** (`GET /healthz`, then one `POST /invoke` with the image's
-declared fixture) at boot before its first lease — on failure, never join the fleet.
+`complete`/`fail` on the control plane. Keep separate directories for concurrent or
+retried attempts. Delete a directory when no compute invocation occurred, compute
+returned a failure, or all outputs have reached CAS and the dispatcher acknowledged
+completion. Preserve a directory when termination or publication is uncertain.
+
+Before its first lease, run the **fixture invocation** (`GET /healthz`, then one
+`POST /invoke` with the image's declared fixture). On failure, never join the fleet.
 
 ## Conformance
 

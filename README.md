@@ -23,6 +23,10 @@ design lives in easy-podcast's
 The schemas under `contracts/` are normative. Components reject unsupported contract
 versions rather than negotiating mixed deployments.
 
+The runner gives each attempt its own directory. It keeps work from an uncertain
+compute termination or an unacknowledged result so another attempt can neither
+interrupt its writer nor erase the only saved output before publication.
+
 ## Local integration
 
 The standalone stack uses the echo compute and has no internet egress:

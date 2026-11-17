@@ -166,13 +166,32 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})
 	defer r.clearCurrent()
 
-	workdir := filepath.Join(r.cfg.WorkRoot, g.Job.JobID)
-	_ = os.RemoveAll(workdir)
+	if err := os.MkdirAll(r.cfg.WorkRoot, 0o755); err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "mkdir work root: "+err.Error())
+		return
+	}
+	attempt, err := os.MkdirTemp(r.cfg.WorkRoot, "attempt-")
+	if err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "mkdir attempt: "+err.Error())
+		return
+	}
+	retainAttempt := false
+	defer func() {
+		if !retainAttempt {
+			if err := os.RemoveAll(attempt); err != nil {
+				r.log.Warn("remove run workspace failed", "job", g.Job.JobID, "err", err)
+			}
+		}
+	}()
+	if err := os.Chmod(attempt, 0o755); err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "share attempt: "+err.Error())
+		return
+	}
+	workdir := filepath.Join(attempt, g.Job.JobID)
 	if err := os.MkdirAll(filepath.Join(workdir, "outputs"), 0o755); err != nil {
 		r.release(dc, g, wire.ReleaseShipping, "mkdir workdir: "+err.Error())
 		return
 	}
-	defer os.RemoveAll(workdir)
 
 	// 1. Fetch + verify the invocation (its address is the computation identity).
 	invBytes, err := r.cas.GetBytes(jobCtx, g.Job.InvocationAddress)
@@ -203,6 +222,9 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	for name := range inv.Inputs {
 		inputs[name] = filepath.ToSlash(filepath.Join("inputs", name))
 	}
+	// A cancelled or disconnected invoke can keep writing in the compute container.
+	// Leave its attempt in place until an operator can confirm it has stopped.
+	retainAttempt = true
 	res, failure, ierr := r.invokeWaitingForFreeCompute(jobCtx, g, InvokeRequest{
 		JobID:      g.Job.JobID,
 		Invocation: invBytes,
@@ -225,6 +247,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		return
 	}
 	if failure != nil {
+		retainAttempt = false
 		class := mapErrorClass(failure.ErrClass)
 		r.fail(dc, g, class, failure.Message)
 		return
@@ -251,7 +274,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	if ar.Metrics == nil {
 		ar.Metrics = map[string]int64{}
 	}
-	r.complete(dc, g, ar)
+	retainAttempt = !r.complete(dc, g, ar)
 }
 
 // ComputeBusyRetryInterval is how long the runner waits before retrying an invoke
@@ -289,19 +312,21 @@ func (r *Runner) invokeWaitingForFreeCompute(
 
 // --- terminal verb senders ---
 
-func (r *Runner) complete(dc *dispatcherConn, g *wire.Grant, ar artifact.ActionResult) {
+func (r *Runner) complete(dc *dispatcherConn, g *wire.Grant, ar artifact.ActionResult) bool {
 	env, err := dc.call(wire.TypeComplete, wire.Complete{
 		LeaseID: g.Lease.LeaseID, JobID: g.Job.JobID, Attempt: g.Job.Attempt, ActionResult: ar,
 	})
 	if err != nil {
 		r.log.Warn("complete send failed", "job", g.Job.JobID, "err", err)
-		return
+		return false
 	}
 	if e := asError(env); e != nil {
 		// not_leaseholder means the lease expired and the job was re-queued or
-		// taken; the result is discarded. Nothing to do.
+		// taken. Keep the local bytes even if they are no longer attached to this job.
 		r.log.Info("complete rejected", "job", g.Job.JobID, "code", e.Code, "msg", e.Message)
+		return false
 	}
+	return env.Type == wire.TypeOK
 }
 
 func (r *Runner) fail(dc *dispatcherConn, g *wire.Grant, class wire.ErrorClass, msg string) {

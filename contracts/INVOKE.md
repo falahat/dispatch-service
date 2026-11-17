@@ -36,8 +36,9 @@ the AWS Lambda Runtime API.
    every response; same contract, no second mode.
 
 3. **Honor the deadline** (SHOULD): stop and return `error_class: timeout` by
-   `deadline_ts`. The runner enforces it regardless (fails the job and marks the container
-   unhealthy at the deadline).
+   a positive `deadline_ts`. The runner enforces the same execution deadline.
+   An explicitly uncapped invocation sends `deadline_ts: 0`; lease abandonment
+   and runner shutdown still cancel the request.
 
 4. **Touch nothing else.** No credentials exist in the container; the network has no route
    except the runner (ingest-lane images additionally get the EgressGuard proxy as their

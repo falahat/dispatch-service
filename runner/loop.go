@@ -160,8 +160,18 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	// running an orphan. Cancellation for real arrives out of band via the heartbeat's
 	// abandon directive (markAbandoned); this deadline is only a backstop against a
 	// wedged compute.
-	deadline := time.Now().Add(r.jobBudget(g))
-	jobCtx, cancel := context.WithDeadline(ctx, deadline)
+	var (
+		jobCtx     context.Context
+		cancel     context.CancelFunc
+		deadlineTS int64
+	)
+	if r.cfg.NoDeadline {
+		jobCtx, cancel = context.WithCancel(ctx)
+	} else {
+		deadline := time.Now().Add(r.jobBudget(g))
+		jobCtx, cancel = context.WithDeadline(ctx, deadline)
+		deadlineTS = deadline.UnixMilli()
+	}
 	defer cancel()
 	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})
 	defer r.clearCurrent()
@@ -231,7 +241,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		Workdir:    workdir,
 		Inputs:     inputs,
 		OutputsDir: "outputs",
-		DeadlineTS: deadline.UnixMilli(), // the job budget, not the lease TTL
+		DeadlineTS: deadlineTS, // the job budget, or zero for an uncapped invocation
 	})
 	if ierr != nil {
 		// Transport/protocol fault. If we were told to abandon (ctx cancelled),

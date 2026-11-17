@@ -243,6 +243,15 @@ func TestHeartbeatReportsComputeGPU(t *testing.T) {
 // 2h MaxJobDuration backstop. This makes per-job budgets explicit — a wedged short job is
 // caught in minutes, not hours (the drain-collapse follow-up).
 func TestJobBudgetFromExpectedWall(t *testing.T) {
+	t.Run("estimated budget", func(t *testing.T) {
+		checkJobBudget(t, false)
+	})
+	t.Run("explicitly uncapped", func(t *testing.T) {
+		checkJobBudget(t, true)
+	})
+}
+
+func checkJobBudget(t *testing.T, noDeadline bool) {
 	srv := startDispatcher(t)
 	cas := newStubCAS()
 	casSrv := httptest.NewServer(cas.handler())
@@ -279,6 +288,7 @@ func TestJobBudgetFromExpectedWall(t *testing.T) {
 		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
 		ComputeAddr: strings.TrimPrefix(computeSrv.URL, "http://"),
 		WorkRoot:    t.TempDir(), Lanes: []string{"embed"}, Capacity: 1, LeaseWaitS: 2,
+		NoDeadline: noDeadline,
 	}, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -289,6 +299,13 @@ func TestJobBudgetFromExpectedWall(t *testing.T) {
 	case deadlineTS = <-gotDeadline:
 	case <-time.After(15 * time.Second):
 		t.Fatal("compute was never invoked")
+	}
+
+	if noDeadline {
+		if deadlineTS != 0 {
+			t.Fatalf("uncapped invoke deadline_ts = %d, want 0", deadlineTS)
+		}
+		return
 	}
 
 	// budget = expected_wall_s * 4 = 1200s out — well under the flat 7200s backstop, proving

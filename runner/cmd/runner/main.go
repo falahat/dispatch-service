@@ -107,6 +107,7 @@ func runCmd(args []string, log *slog.Logger) {
 	fs.IntVar(&cfg.LeaseWaitS, "wait", 30, "lease long-poll seconds")
 	fs.IntVar(&cfg.MaxJobDurationS, "max-job-seconds", envInt("MAX_JOB_SECONDS", 0),
 		"max wall-clock seconds per job (0 => default 2h; a backstop, NOT the lease TTL)")
+	fs.BoolVar(&cfg.NoDeadline, "no-deadline", false, "run until completion or explicit cancellation")
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
 	_ = fs.Parse(args)

@@ -24,6 +24,7 @@ type Config struct {
 	Capacity        int      // concurrent slots (this build serves them sequentially per conn)
 	LeaseWaitS      int      // long-poll wait
 	MaxJobDurationS int      // max wall-clock for one job's compute (backstop; 0 = default). NOT the lease TTL.
+	NoDeadline      bool     // omit the execution timer and retain lease-driven cancellation
 	GPU             string   // optional GPU descriptor for the fleet view
 }
 

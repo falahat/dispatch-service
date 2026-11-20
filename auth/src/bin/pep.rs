@@ -15,6 +15,7 @@ use biscuit_auth::PublicKey;
 use dispatch_auth::cas_proxy::{BackendStyle, CasConfig, CasProxy};
 use dispatch_auth::frame_proxy::FrameProxy;
 use dispatch_auth::http_proxy::{HttpProxy, RouteTableSpec};
+use dispatch_auth::lease_book::LeaseBook;
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
 use dispatch_auth::revocation::RevocationStore;
@@ -143,40 +144,49 @@ async fn main() {
     // Bind + serve exactly the configured surfaces. Nothing else opens a port.
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
+    // The CAS surface narrows each runner credential to the leases the runner surface relays
+    // (dispatch_auth::lease_book), so both share one book.
+    let cas_cfg = plan.cas.as_ref().map(|(_, cas_backend)| CasConfig {
+        backend: cas_backend.clone(),
+        max_blob_bytes: env("PEP_MAX_BLOB_BYTES", &(8u64 << 30).to_string())
+            .parse()
+            .unwrap_or(8 << 30),
+        style: BackendStyle::parse(&env("PEP_CAS_STYLE", "passthrough")),
+    });
+    let leases = cas_cfg.clone().map(LeaseBook::new);
+
     if let Some((listen, dispatcher_addr)) = plan.runner {
-        let frame = FrameProxy::new(
+        let mut frame = FrameProxy::new(
             root_pub,
             nonces.clone(),
             revocations.clone(),
             dispatcher_addr.clone(),
             now.clone(),
         );
+        if let Some(book) = &leases {
+            frame = frame.with_leases(book.clone());
+        }
         let ln = bind(&listen, "runner").await;
         log::info!("pep: runner surface {listen} -> {dispatcher_addr}");
         handles.push(tokio::spawn(frame.serve(ln)));
+    } else if leases.is_some() {
+        log::warn!("pep: no runner surface here, so runner credentials get no CAS access");
     }
 
-    if let Some((listen, cas_backend)) = plan.cas {
-        let max_blob_bytes: u64 = env("PEP_MAX_BLOB_BYTES", &(8u64 << 30).to_string())
-            .parse()
-            .unwrap_or(8 << 30);
+    if let (Some((listen, cas_backend)), Some(cfg), Some(book)) = (plan.cas, cas_cfg, leases) {
         let max_req: u32 = env("PEP_MAX_REQ_PER_MIN", "6000").parse().unwrap_or(6000);
         let max_bytes: u64 = env("PEP_MAX_BYTES_PER_MIN", &(64u64 << 30).to_string())
             .parse()
             .unwrap_or(64 << 30);
-        let style = BackendStyle::parse(&env("PEP_CAS_STYLE", "passthrough"));
         let cas = CasProxy::new(
             root_pub,
             nonces.clone(),
             revocations.clone(),
-            CasConfig {
-                backend: cas_backend.clone(),
-                max_blob_bytes,
-                style,
-            },
+            cfg,
             Quota::new(max_req, max_bytes),
             now.clone(),
-        );
+        )
+        .with_leases(book);
         let ln = bind(&listen, "cas").await;
         log::info!("pep: cas surface {listen} -> {cas_backend}");
         handles.push(tokio::spawn(cas.serve(ln)));

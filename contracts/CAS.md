@@ -25,10 +25,17 @@ Errors: `401 unauthenticated · 403 forbidden · 404 not_found · 400 hash_misma
 - Rights: `right("cas_get")` for GET/HEAD, `right("cas_put")` for PUT. Per-identity
   policy: `max_blob_bytes` (per lane class), rolling byte + request quotas. Denials are
   logged as first-class outcomes.
-- **Per-lease attenuation (built, not deferred):** the PEP mints each lease's Biscuit from
-  the dispatcher's grant so GET is scoped to that invocation's reachable addresses and PUT is
-  tagged to the job. This closes the digest-as-capability membership-oracle (an enrolled
-  worker guessing a blob's exact bytes could otherwise confirm its existence).
+- **Per-lease narrowing (contract 0.4):** a credential whose authority grants
+  `right("lease")` (a runner's) may GET only the blobs of a job it holds a live lease on: the
+  invocation, each input, and each file of a `manifest` input. It may HEAD or PUT only while
+  it holds a live lease. Anything else is `403 not_in_lease`. The PEP records each grant it
+  relays on the runner surface before the runner sees it; the lease ends at the runner's
+  `complete`, `fail` or `release`, and one that heartbeats do not renew expires after its
+  `ttl_s` (a heartbeat reply that tells the runner to abandon the job stops renewal). An
+  application credential (`cas_get`/`cas_put` without `lease`) is not narrowed. A PEP that
+  serves the CAS surface without the runner surface gives runner credentials no CAS access.
+  This bounds a leaked worker credential to the jobs that worker is running and closes the
+  digest-as-capability membership oracle for runners.
 - The PEP holds **no private keys** (verifier only) and streams — it MUST NOT buffer whole
   blobs.
 

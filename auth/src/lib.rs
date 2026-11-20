@@ -10,6 +10,7 @@ pub mod dpop;
 pub mod error;
 pub mod frame_proxy;
 pub mod http_proxy;
+pub mod lease_book;
 pub mod nonce;
 pub mod pop;
 pub mod quota;
@@ -18,10 +19,11 @@ pub mod signer;
 
 pub use canonical::Op;
 pub use cred::{
-    attenuate_for_lease, mint, verify, verify_http_dpop, AuthedRequest, DpopHttpRequest, Identity,
-    MintParams, ProvenIdentity,
+    attenuate_for_lease, authority_rights, mint, verify, verify_http_dpop, AuthedRequest,
+    DpopHttpRequest, Identity, MintParams, ProvenIdentity,
 };
 pub use error::{AuthError, Result};
+pub use lease_book::LeaseBook;
 pub use nonce::{NonceStore, DEFAULT_WINDOW_MS};
 pub use revocation::RevocationStore;
 

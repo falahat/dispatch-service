@@ -16,7 +16,7 @@ use crate::nonce::NonceStore;
 use crate::pop;
 use crate::revocation::RevocationStore;
 use biscuit_auth::builder::BlockBuilder;
-use biscuit_auth::macros::{check, fact, policy};
+use biscuit_auth::macros::{check, fact, policy, rule};
 use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 
 /// Wall-clock backstop for the Datalog authorize. biscuit measures `max_time` as `Instant`
@@ -113,6 +113,25 @@ pub fn attenuate_for_lease(
     attenuated
         .to_base64()
         .map_err(|e| AuthError::Malformed(e.to_string()))
+}
+
+/// The rights a credential's authority block grants, or None when they cannot be read. It
+/// runs no check, so an attenuation's checks cannot hide a right, and the query sees only
+/// authority facts, so an attenuation cannot add one.
+pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<String>> {
+    let biscuit = Biscuit::from_base64(token_b64, *root_pub).ok()?;
+    let mut authorizer = biscuit.authorizer().ok()?;
+    let rights: Vec<(String,)> = authorizer
+        .query_with_limits(
+            rule!("granted($r) <- right($r)"),
+            AuthorizerLimits {
+                max_time: AUTHZ_MAX_TIME,
+                max_facts: AUTHZ_MAX_FACTS,
+                max_iterations: AUTHZ_MAX_ITERATIONS,
+            },
+        )
+        .ok()?;
+    Some(rights.into_iter().map(|(right,)| right).collect())
 }
 
 /// A verified identity: the holder's pubkey (hex), which doubles as the runner

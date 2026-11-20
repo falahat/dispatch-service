@@ -58,8 +58,11 @@ the lease live until this cleanup returns a result and the app acknowledges it.
 
 `runner cas --url URL --credential FILE put FILE` and
 `runner cas --url URL --credential FILE [--max-bytes N] get ADDRESS FILE`
-reuse the worker's PoP authentication and content verification. Downloads publish
-atomically after verification and enforce the chosen size limit.
+reuse the PoP authentication and content verification. Downloads publish
+atomically after verification and enforce the chosen size limit. A worker
+credential reads only its live leases' blobs and writes only while it holds a lease
+([CAS contract](CAS.md#auth-enforced-by-the-pep-per-request)), so use an application
+credential for transfers outside a job.
 
 The shared `deploy/remote-runner/install.sh --runner REVIEWED_BINARY` installs this fixed command;
 `enroll.sh` creates a unique credential for each consumer on the worker.

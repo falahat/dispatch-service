@@ -10,6 +10,7 @@
 //! Replies are plain wire frames streamed straight back.
 
 use crate::cred::{verify, AuthedRequest};
+use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
 use crate::revocation::RevocationStore;
 use crate::Op;
@@ -30,6 +31,7 @@ pub struct FrameProxy {
     revocations: RevocationStore,
     dispatcher_addr: String, // loopback address of the dispatcher runner surface
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    leases: Option<LeaseBook>, // records each relayed grant for the CAS proxy's narrowing
 }
 
 #[derive(Deserialize)]
@@ -56,7 +58,15 @@ impl FrameProxy {
             revocations,
             dispatcher_addr,
             now,
+            leases: None,
         }
+    }
+
+    /// Record every relayed lease in `book`, so the CAS proxy sharing it can narrow each
+    /// runner credential to its live leases (see [`LeaseBook`]).
+    pub fn with_leases(mut self, book: LeaseBook) -> Self {
+        self.leases = Some(book);
+        self
     }
 
     pub async fn serve(self, listener: TcpListener) {
@@ -166,10 +176,17 @@ impl FrameProxy {
                 continue;
             }
 
-            // Forward the clean inner frame to the dispatcher and pipe the reply.
+            // Forward the clean inner frame to the dispatcher and pipe the reply. A grant is
+            // recorded before the runner sees it, so its first read is already allowed.
             write_frame(&mut backend, &inner).await?;
             match read_frame(&mut backend).await? {
-                Some(reply) => write_frame(&mut runner, &reply).await?,
+                Some(reply) => {
+                    if let Some(book) = &self.leases {
+                        book.observe(&identity.id, &verb, &inner, &reply, (self.now)())
+                            .await;
+                    }
+                    write_frame(&mut runner, &reply).await?
+                }
                 None => return Ok(()), // dispatcher closed
             }
         }
@@ -239,7 +256,7 @@ async fn write_frame(s: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
 
 async fn write_error(s: &mut TcpStream, id: &str, code: &str, msg: &str) -> std::io::Result<()> {
     let frame = serde_json::json!({
-        "v": "0.3",
+        "v": "0.4",
         "type": "error",
         "id": if id.is_empty() { "0" } else { id },
         "body": { "code": code, "message": msg, "retryable": false }

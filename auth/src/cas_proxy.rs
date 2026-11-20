@@ -3,8 +3,9 @@
 //! backend store (bazel-remote) without buffering whole blobs. The backend sees
 //! only pre-authenticated loopback traffic and holds no auth crypto.
 
-use crate::cred::{verify, AuthedRequest};
+use crate::cred::{authority_rights, verify, AuthedRequest};
 use crate::error::AuthError;
+use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
 use crate::quota::Quota;
 use crate::revocation::RevocationStore;
@@ -40,7 +41,7 @@ impl BackendStyle {
             _ => BackendStyle::Passthrough,
         }
     }
-    fn path(&self, hexaddr: &str) -> String {
+    pub(crate) fn path(&self, hexaddr: &str) -> String {
         match self {
             BackendStyle::Passthrough => format!("/blobs/sha256/{hexaddr}"),
             BackendStyle::Bazel => format!("/cas/{hexaddr}"),
@@ -66,6 +67,7 @@ pub struct CasProxy {
     quota: Quota,
     client: Client<HttpConnector, BoxedBody>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    leases: Option<LeaseBook>, // narrows runner credentials to their live leases
 }
 
 impl CasProxy {
@@ -86,7 +88,16 @@ impl CasProxy {
             quota,
             client,
             now,
+            leases: None,
         }
+    }
+
+    /// Narrow every runner credential (one granting `right("lease")`) to the live leases the
+    /// frame proxy records in `book`: GET only its leased jobs' blobs, HEAD and PUT only while
+    /// it holds a lease. A credential whose rights cannot be read is narrowed too.
+    pub fn with_leases(mut self, book: LeaseBook) -> Self {
+        self.leases = Some(book);
+        self
     }
 
     /// Serve until the listener errors (or forever).
@@ -148,6 +159,27 @@ impl CasProxy {
             Ok(id) => id,
             Err(e) => return deny(&method, &path, e),
         };
+
+        // Per-lease narrowing of runner credentials.
+        if let Some(book) = &self.leases {
+            let runner = authority_rights(&areq.biscuit_b64, &self.root_pub)
+                .is_none_or(|rights| rights.iter().any(|right| right == "lease"));
+            let allowed = !runner
+                || if method == Method::GET {
+                    book.may_read(&identity.id, &hexaddr, now)
+                } else {
+                    book.holds_lease(&identity.id, now)
+                };
+            if !allowed {
+                log::warn!(
+                    "cas: {} {} denied: not in a live lease of {}",
+                    method,
+                    path,
+                    identity.id
+                );
+                return text(StatusCode::FORBIDDEN, "not_in_lease");
+            }
+        }
 
         // Per-PUT size cap (Content-Length is required by the CAS contract).
         if method == Method::PUT {

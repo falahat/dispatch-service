@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.3" },
+        "v": { "const": "0.4" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.3" },
+        "contract": { "const": "0.4" },
         "runner": {
           "type": "object",
           "additionalProperties": false,

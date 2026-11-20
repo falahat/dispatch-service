@@ -137,6 +137,23 @@ class CommandWorkers(unittest.TestCase):
                         input=capability,
                         check=True,
                     )
+                    # A worker credential reads and writes only inside its leases, so
+                    # transfers outside a job use an application credential.
+                    application = root / "application.json"
+                    public = subprocess.check_output(
+                        [os.environ["RUNNER_BIN"], "keygen", "--out", str(application)],
+                        text=True,
+                    ).strip()
+                    subprocess.run(
+                        [os.environ["RUNNER_BIN"], "seal", "--cred", str(application)]
+                        + ["--biscuit-file", "-"],
+                        input=subprocess.check_output(
+                            signer
+                            + ["enroll", "--pubkey", public, "--rights", "cas_get,cas_put"]
+                            + ["--lanes", "build"]
+                        ),
+                        check=True,
+                    )
                     with socket.socket() as runner_port, socket.socket() as cas_port:
                         runner_port.bind(("127.0.0.1", 0))
                         cas_port.bind(("127.0.0.1", 0))
@@ -172,7 +189,7 @@ class CommandWorkers(unittest.TestCase):
                         "--url",
                         cas_url,
                         "--credential",
-                        str(credential),
+                        str(application),
                     ]
                     uploaded = subprocess.check_output(
                         cas + ["put", str(script)], text=True

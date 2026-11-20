@@ -2,8 +2,8 @@
 
 Ordinary, thorough testing — no bespoke cross-language equivalence apparatus. A component is
 correct when it passes these; a migration step is done when the old code is deleted and these
-still pass. Implementation PRs **add** tests and make them green; they never weaken or delete
-existing ones.
+still pass. Implementation changes **add** tests and make them green; they never weaken or
+delete existing ones.
 
 ## unit/ — per package, per component
 

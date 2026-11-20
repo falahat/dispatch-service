@@ -18,7 +18,7 @@ The plane already covers these parts:
   8 GiB (`PEP_MAX_BLOB_BYTES`);
 - worker setup through `deploy/remote-runner/`.
 
-Each contract change below is its own PR citing its rows in
+Each contract change below bumps the contract version and cites its rows in
 [DISPATCH_PLANE.md](DISPATCH_PLANE.md).
 
 ### Placement by GPU memory

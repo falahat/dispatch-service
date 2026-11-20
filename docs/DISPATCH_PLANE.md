@@ -6,7 +6,7 @@
 
 The system design lives in easy-podcast's
 [dispatch-plane document](https://github.com/falahat/easy-podcast/blob/main/docs/DISPATCH_PLANE.md).
-This file records the decisions behind this repo's contract changes; each contract PR
+This file records the decisions behind this repo's contract changes; each contract change
 adds its rows and cites them. A replaced decision is deleted, not struck through.
 
 ## Decisions

@@ -53,8 +53,10 @@ bar is clean, elegant, readable code + utmost security and privacy.
 ## Contracts & implementation
 
 - Implement against `contracts/schemas/*.json` + `contracts/states.json`, never prose
-  alone. A contract change is its own PR and adds and cites its decision rows in
-  `docs/DISPATCH_PLANE.md`.
+  alone. A contract change bumps the contract version, adds and cites its decision rows in
+  `docs/DISPATCH_PLANE.md`, and merges straight to main once the gates pass; open no GitHub
+  pull requests. The owner, 2026-11-19: "DO NOT make github PRs and shit. You can just merge
+  these changes to main and push to github but dont create PRs in github that's disruptive".
 - Every component is born in its end-state language — no interim ports.
 - All times are server-stamped ms-epoch; runner-reported timings are hints, never truth.
 

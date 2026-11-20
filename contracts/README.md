@@ -15,7 +15,7 @@ reads the others fast.
 | [CAS.md](CAS.md) | runner/app ⇄ CAS, via the PEP (HTTP) | PEP | Biscuit+PoP |
 | [states.json](states.json) | the job state machine (shared by the dispatcher + its tests) | — | — |
 
-## The seven design invariants (cite these in PRs)
+## The seven design invariants (cite these in contract changes)
 
 1. **Content addressing is identity.** Two identities, never conflated: `job_key` (intent,
    enqueue-time, idempotency) vs `invocation_address` (the invocation's own CAS address =
@@ -38,6 +38,6 @@ reads the others fast.
 
 Every frame carries the contract version. All components are **co-deployed**, so there is no
 mixed-version negotiation: a mismatch at `hello` is a hard error (a misconfiguration). A
-contract change is its own human-approved PR that bumps the version and updates every
-implementation together — no "additive-only for compatibility" gymnastics, because nothing
-old is left running to be compatible with.
+contract change bumps the version and updates every implementation together, and merges to
+main once the gates pass (no GitHub pull requests; see `CLAUDE.md`) — no "additive-only for
+compatibility" gymnastics, because nothing old is left running to be compatible with.

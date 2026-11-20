@@ -42,7 +42,7 @@ def render(source, environment, stage, native):
         }
     )
     optional = (
-        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE"}
+        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE", "NVIDIA_SMI"}
         if native
         else {
             "SMOKESCREEN_IMAGE",
@@ -102,7 +102,12 @@ def render(source, environment, stage, native):
             r"all|[0-9]{1,2}(?:,[0-9]{1,2})*", config["GPUS"]
         ):
             raise ValueError('GPUS is "all" or GPU indexes such as 0,1')
-        for key, flag in (("GPUS", "--gpus"), ("GPU_LOCK", "--gpu-lock"), ("MPS_PIPE", "--mps-pipe")):
+        for key, flag in (
+            ("GPUS", "--gpus"),
+            ("GPU_LOCK", "--gpu-lock"),
+            ("MPS_PIPE", "--mps-pipe"),
+            ("NVIDIA_SMI", "--nvidia-smi"),
+        ):
             if key not in config:
                 continue
             if key != "GPUS" and not pathlib.Path(config[key]).is_absolute():

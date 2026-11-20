@@ -2,7 +2,10 @@ package runner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/falahat/dispatch-service/internal/wire"
@@ -30,6 +33,23 @@ func TestParseGPUsReadsNvidiaSMI(t *testing.T) {
 		if _, _, err := ParseGPUDevices(spec); err == nil {
 			t.Fatalf("spec %q accepted", spec)
 		}
+	}
+}
+
+func TestGPUsReadThroughAnotherProgram(t *testing.T) {
+	// --nvidia-smi: a runner that drives another machine reads that machine's GPUs.
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell script")
+	}
+	reader := filepath.Join(t.TempDir(), "remote-smi")
+	script := "#!/bin/sh\ncase $1 in --query-gpu=*) echo '0, GPU-cccccccc-0000-0000-0000-000000000003, 23034, 9000';; esac\n"
+	if err := os.WriteFile(reader, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readGPUs(context.Background(), reader, "all", false)
+	want := []wire.GPUReading{{Index: 0, UUID: "GPU-cccccccc-0000-0000-0000-000000000003", TotalMB: 23034, FreeMB: 9000}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("%+v %v", got, err)
 	}
 }
 

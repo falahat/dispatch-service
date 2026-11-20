@@ -41,7 +41,9 @@ index>` (for `docker --gpus device=` or a CDI device), `CUDA_VISIBLE_DEVICES=<GP
 most) and `DISPATCH_GPU_MODE` (`shared`, `mps` or `exclusive`). An `mps` job also gets
 `CUDA_MPS_PIPE_DIRECTORY` from `--mps-pipe DIR` when that machine's MPS daemon answers.
 A job without a GPU gets `CUDA_VISIBLE_DEVICES=` and no `NVIDIA_VISIBLE_DEVICES`. A
-runner without `--gpus` leaves the environment as it found it.
+runner without `--gpus` leaves the environment as it found it. `--nvidia-smi PROGRAM`
+reads the GPUs through PROGRAM, called with nvidia-smi's arguments, in place of the local
+`nvidia-smi`: a runner whose command drives another machine offers that machine's GPUs.
 
 `--gpu-lock FILE` (Linux, macOS) joins the machine's GPU contract shared with other
 schedulers: before a GPU job's command starts, the runner takes `FILE.want`, then `FILE`

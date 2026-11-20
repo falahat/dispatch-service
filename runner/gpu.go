@@ -19,7 +19,8 @@ import (
 // them; a grant names the one GPU its job may use, and the runner shows the
 // command only that GPU.
 
-// nvidiaSMI is the reading command; tests replace it.
+// nvidiaSMI is the default reading command; tests replace it. A runner that
+// drives another machine reads that machine's GPUs through --nvidia-smi.
 var nvidiaSMI = "nvidia-smi"
 
 // ParseGPUDevices checks a --gpus value: "all" or comma-separated host indexes.
@@ -41,15 +42,18 @@ func ParseGPUDevices(spec string) (all bool, indexes map[int]bool, err error) {
 // readGPUs reads the GPUs named by spec. With a machine GPU lock each GPU is
 // offered whole: holding the lock gives a job the GPU to itself, and a resident
 // server under the same lock frees its memory when a job asks for it.
-func readGPUs(ctx context.Context, spec string, locked bool) ([]wire.GPUReading, error) {
+func readGPUs(ctx context.Context, reader, spec string, locked bool) ([]wire.GPUReading, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	list, err := exec.CommandContext(ctx, nvidiaSMI, "--query-gpu=index,uuid,memory.total,memory.free",
+	if reader == "" {
+		reader = nvidiaSMI
+	}
+	list, err := exec.CommandContext(ctx, reader, "--query-gpu=index,uuid,memory.total,memory.free",
 		"--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
-	apps, err := exec.CommandContext(ctx, nvidiaSMI, "--query-compute-apps=gpu_uuid,process_name",
+	apps, err := exec.CommandContext(ctx, reader, "--query-compute-apps=gpu_uuid,process_name",
 		"--format=csv,noheader").Output()
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
@@ -103,7 +107,7 @@ func (r *Runner) offerGPUs(ctx context.Context) []wire.GPUReading {
 	if r.cfg.GPUs == "" {
 		return nil
 	}
-	gpus, err := readGPUs(ctx, r.cfg.GPUs, r.cfg.GPULock != "")
+	gpus, err := readGPUs(ctx, r.cfg.NvidiaSMI, r.cfg.GPUs, r.cfg.GPULock != "")
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {

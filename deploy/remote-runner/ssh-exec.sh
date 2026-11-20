@@ -149,6 +149,7 @@ elif verb == "keep":  # the job's regular output files join the cache too, so a 
             path = os.path.join(root, name)
             st = os.lstat(path)
             if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                os.chmod(path, 0o444)  # read-only like every cached file, as later jobs' inputs link to it
                 try:
                     os.link(path, blob(cache, sha256(path)), follow_symlinks=False)
                 except FileExistsError:

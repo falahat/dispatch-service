@@ -2,8 +2,8 @@
 # ssh-exec.sh round trip without SSH: a stand-in ssh runs the serve side locally with an empty environment, as the
 # key's forced command would run. A job's inputs reach the remote folder (an executable stays executable, an empty
 # folder stays) over several connections, its GPU grant goes along, its output and result come back and its remote
-# folder is deleted. A file the remote cache holds, an earlier input or output, is not sent again; a pruned cache is
-# refilled; a stopped job's remote command receives SIGTERM.
+# folder is deleted. A file the remote cache holds, an earlier input or output, is read-only there and is not sent
+# again; a pruned cache is refilled; a stopped job's remote command receives SIGTERM.
 set -euo pipefail
 kit=$(cd "$(dirname "$0")" && pwd)
 t=$(mktemp -d); trap 'rm -rf -- "$t"' EXIT
@@ -41,6 +41,8 @@ log=$(DISPATCH_GPU_MEMORY_MB=3000 drive j_1)
 [ "$log" = "remote log line" ] && [ "$(cat outputs/out/grant.txt)" = 3000 ] && [ -f invoke-result.json ] &&
   [ ! -e "$t/remote/j_1" ] || fail "round trip failed: $log"
 [ "$(puts)" = "$(spread 7)" ] || fail "7 new files went over $(puts) connections, not $(spread 7)"
+[ "$(stat -c %a "$t/remote/.cache/$(sha256sum < outputs/out/grant.txt | cut -d' ' -f1)")" = 444 ] ||
+  fail "a kept output is writable in the cache"
 rm -r outputs/out invoke-result.json; : > "$t/verbs"
 echo 3000 > inputs/code/was-output.txt
 SSH_EXEC_CACHE_MB=0 drive j_2 > /dev/null

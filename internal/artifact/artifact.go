@@ -65,10 +65,13 @@ type Input struct {
 	Kind    Kind    `json:"kind"`
 }
 
-// Output is one named output of an action result: an address plus its size.
+// Output is one named output of an action result: the address and size of one
+// blob. Kind manifest means that blob is a manifest of a folder's files. An
+// empty Kind is a blob, so results stored before folder outputs stay valid.
 type Output struct {
 	Address Address `json:"address"`
 	Size    int64   `json:"size"`
+	Kind    Kind    `json:"kind,omitempty"`
 }
 
 // Invocation is the app-authored description of one computation. It is stored
@@ -141,13 +144,16 @@ type Manifest struct {
 	Entries []ManifestEntry `json:"entries"`
 }
 
+// MaxManifestEntries bounds the files one manifest may name.
+const MaxManifestEntries = 65536
+
 // Validate checks the manifest, re-checking every path against the traversal
 // guard (schema-level guard is not trusted alone) and every address.
 func (m *Manifest) Validate() error {
 	if m.Kind != ManifestKind {
 		return fmt.Errorf("artifact: manifest kind %q, want %q", m.Kind, ManifestKind)
 	}
-	if len(m.Entries) > 65536 {
+	if len(m.Entries) > MaxManifestEntries {
 		return fmt.Errorf("artifact: too many manifest entries: %d", len(m.Entries))
 	}
 	for i := range m.Entries {
@@ -203,6 +209,9 @@ func (r *ActionResult) Validate() error {
 		}
 		if out.Size < 0 {
 			return fmt.Errorf("artifact: output %q: negative size", name)
+		}
+		if out.Kind != "" && out.Kind != KindBlob && out.Kind != KindManifest {
+			return fmt.Errorf("artifact: output %q: invalid kind %q", name, out.Kind)
 		}
 	}
 	if len(r.Metrics) > 64 {

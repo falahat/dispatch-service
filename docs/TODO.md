@@ -13,20 +13,13 @@ L4 cloud VM, bigboi, a laptop) with a shell scheduler per machine and no queue.
 The plane already covers these parts:
 - script steps as installed commands with `--no-deadline`, logs and progress
   (`contracts/COMMAND.md`);
-- folder inputs as `manifest/v0`;
+- folder inputs and outputs as `manifest/v0`;
 - the CAS rate of 64 GiB/min per identity (`PEP_MAX_BYTES_PER_MIN`) and blobs up to
   8 GiB (`PEP_MAX_BLOB_BYTES`);
 - worker setup through `deploy/remote-runner/`.
 
-Each contract change below is its own PR citing a DISPATCH_PLANE decision row.
-
-### Folder outputs
-- Now: a job returns at most 64 outputs, each a single file (`contracts/ARTIFACTS.md`).
-  The runner uploads each one with `PutFile` (`runner/loop.go`).
-- Need: surface prep writes two files per video frame, 900 per phone for a 15 s clip.
-  That is about 25 GB, which pose-estimation is cutting first. An output may name a
-  folder; the runner uploads its files and returns a `manifest/v0`, the shape inputs
-  already take.
+Each contract change below is its own PR citing its rows in
+[DISPATCH_PLANE.md](DISPATCH_PLANE.md).
 
 ### Placement by GPU memory
 - Now: a runner advertises a slot count (`capacity`). Heartbeats carry `vram_free_mb`,

@@ -26,14 +26,18 @@ import json
 import os
 import re
 import secrets
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlsplit
 
 _ADDRESS_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CHUNK = 1 << 20  # 1 MiB streaming chunk
+_MAX_MANIFEST_ENTRIES = 65536  # artifacts contract
+_MAX_PATH_BYTES = 512  # artifacts contract
 
 
 class CasError(Exception):
@@ -269,7 +273,10 @@ class CasClient:
         app does for episode audio) skips the pre-hash pass; the PEP/store still
         verifies on write, so a wrong claim is rejected, never stored.
         """
-        src = Path(src)
+        return self._put_sized(Path(src), sha256_hex)[0]
+
+    def _put_sized(self, src: Path, sha256_hex: Optional[str]) -> tuple[str, int]:
+        """``put_file`` that also returns the byte count the store verified."""
         size = src.stat().st_size
         if sha256_hex is None:
             h = hashlib.sha256()
@@ -289,7 +296,7 @@ class CasClient:
                 body = resp.read(4096).decode("utf-8", "replace")
                 if resp.status not in (200, 201):
                     self._raise_for(resp.status, body)
-            return address
+            return address, size
         finally:
             conn.close()
 
@@ -303,3 +310,117 @@ class CasClient:
     def get_json(self, address: str) -> Any:
         """Fetch + verify a blob and parse it as JSON."""
         return json.loads(self.get(address).decode("utf-8"))
+
+    # --- folders (manifest/v0) ---
+
+    def put_folder(self, src: str | Path) -> str:
+        """Store a folder's regular files and a ``manifest/v0`` naming them,
+        sorted by path; returns the manifest's address, for a ``manifest`` input.
+
+        Links and special files raise ``ValueError`` before anything uploads, so
+        a manifest names exactly the folder's own files.
+        """
+        files = sorted(_regular_files(Path(src), ""))
+        if len(files) > _MAX_MANIFEST_ENTRIES:
+            raise ValueError(f"{src}: more than {_MAX_MANIFEST_ENTRIES} files")
+        entries = []
+        for rel, path in files:
+            address, size = self._put_sized(path, None)
+            entries.append({"path": rel, "address": address, "size": size})
+        return self.put_json({"kind": "manifest/v0", "entries": entries})
+
+    def get_folder(self, address: str, dest: str | Path) -> int:
+        """Fetch a manifest and every file it names into the new folder ``dest``;
+        returns the file count.
+
+        The tree is built in a temp sibling and renamed to ``dest`` only after
+        every path is checked and every file verified, so ``dest`` never holds a
+        partial tree or a file placed outside it.
+        """
+        dest = Path(dest)
+        if dest.exists():
+            raise FileExistsError(f"{dest} already exists")
+        entries = _manifest_entries(self.get_json(address))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=dest.name + ".", suffix=".casfetch", dir=dest.parent)
+        )
+        try:
+            placed: set[Path] = set()
+            for entry in entries:
+                target = _entry_target(staging, entry["path"])
+                if target in placed:
+                    raise ValueError(f"manifest names {entry['path']!r} twice")
+                placed.add(target)
+                if self.get_to_file(entry["address"], target) != entry["size"]:
+                    raise ValueError(f"manifest size of {entry['path']!r} is wrong")
+            os.rename(staging, dest)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return len(entries)
+
+
+def _check_relative_path(rel: object) -> str:
+    """The artifacts contract's path rule: relative, at most 512 bytes, with no
+    ``..`` segment, backslash or control character."""
+    if (
+        not isinstance(rel, str)
+        or not rel
+        or len(rel.encode("utf-8")) > _MAX_PATH_BYTES
+        or rel.startswith("/")
+        or "\\" in rel
+        or any(ord(c) < 0x20 for c in rel)
+        or ".." in rel.split("/")
+    ):
+        raise ValueError(f"path not allowed in a manifest: {rel!r}")
+    return rel
+
+
+def _regular_files(folder: Path, prefix: str) -> Iterator[tuple[str, Path]]:
+    """Every regular file under ``folder`` as (manifest path, file path)."""
+    with os.scandir(folder) as listing:
+        for item in listing:
+            rel = _check_relative_path(prefix + item.name)
+            if item.is_symlink():
+                raise ValueError(f"{item.path} is a link")
+            if item.is_dir(follow_symlinks=False):
+                yield from _regular_files(Path(item.path), rel + "/")
+            elif item.is_file(follow_symlinks=False):
+                yield rel, Path(item.path)
+            else:
+                raise ValueError(f"{item.path} is not a regular file")
+
+
+def _manifest_entries(manifest: Any) -> list[dict[str, Any]]:
+    """The entries of a fetched ``manifest/v0``, shape-checked fail-closed."""
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"kind", "entries"}
+        or manifest["kind"] != "manifest/v0"
+        or not isinstance(manifest["entries"], list)
+        or len(manifest["entries"]) > _MAX_MANIFEST_ENTRIES
+    ):
+        raise ValueError("not a manifest/v0")
+    entries: list[dict[str, Any]] = manifest["entries"]
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"path", "address", "size"}
+            or type(entry["size"]) is not int
+            or entry["size"] < 0
+        ):
+            raise ValueError(f"malformed manifest entry: {entry!r}")
+        validate_address(entry["address"])
+    return entries
+
+
+def _entry_target(root: Path, rel: object) -> Path:
+    """Where a manifest entry lands under ``root``: the contract's path rule,
+    then a containment check on the joined path, as defense in depth."""
+    parts = _check_relative_path(rel).split("/")
+    base = os.path.abspath(root)
+    target = os.path.normpath(os.path.join(base, *parts))
+    if target == base or os.path.commonpath([base, target]) != base:
+        raise ValueError(f"manifest path leaves the folder: {rel!r}")
+    return Path(target)

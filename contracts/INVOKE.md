@@ -25,8 +25,9 @@ the AWS Lambda Runtime API.
      "deadline_ts": 1789999999000
    }
    ```
-   Success → `200 {"outputs": {"transcript": "outputs/transcript.json"}, "metrics": {…}}`
-   (paths relative to workdir; integer metrics). Failure →
+   Success → `200 {"outputs": {"transcript": "outputs/transcript.json", "frames": "outputs/frames"}, "metrics": {…}}`
+   (paths relative to workdir, each under `outputs/`; a path naming a folder publishes
+   that folder's files as one output; integer metrics). Failure →
    `500 {"error_class": "oom" | "timeout" | "bad_input" | "fatal" | "unknown", "message": "…" }`.
    **One invoke in flight**: a second concurrent `POST /invoke` → `409`.
 
@@ -44,11 +45,18 @@ the AWS Lambda Runtime API.
    only outbound door — never raw egress). Read `workdir/inputs/**`, write
    `workdir/outputs/**`; the runner does all hashing and all CAS traffic.
 
+5. **Name only plain files and folders under `outputs/`.** The runner fails the job as
+   `fatal` when a named output path leaves `outputs/`, when the output or anything under
+   a named folder is a symbolic link, a file with more than one hard link or another
+   special file, or when `outputs/` itself was replaced during the invoke.
+
 ## The runner's obligations at this boundary
 
-Lay out `workdir/inputs/` (fetched + verified) before `POST /invoke`; treat connection
-drop or container exit mid-invoke as `error_class: fatal`; map the response to
-`complete`/`fail` on the control plane; delete the workdir after `complete`/`fail`/`release`;
+Lay out `workdir/inputs/` (fetched + verified) and create `workdir/outputs/` before
+`POST /invoke`; read outputs only through that folder, uploading each named file, or each
+file of a named folder and then its manifest; treat connection drop or container exit
+mid-invoke as `error_class: fatal`; map the response to `complete`/`fail` on the control
+plane; delete the workdir after `complete`/`fail`/`release`;
 run the **fixture invocation** (`GET /healthz`, then one `POST /invoke` with the image's
 declared fixture) at boot before its first lease — on failure, never join the fleet.
 

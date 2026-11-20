@@ -72,9 +72,12 @@ func sampleActionResult() artifact.ActionResult {
 	return artifact.ActionResult{
 		Kind:              artifact.ActionResultKind,
 		InvocationAddress: addrA,
-		Outputs:           map[string]artifact.Output{"transcript": {Address: addrB, Size: 482133}},
-		Metrics:           map[string]int64{"wall_s": 512, "work_units": 3600},
-		Runner:            artifact.RunnerInfo{Node: "desktop-ai", Version: "runner/0.1.0"},
+		Outputs: map[string]artifact.Output{
+			"transcript": {Address: addrB, Size: 482133},
+			"frames":     {Address: addrA, Size: 9120, Kind: artifact.KindManifest},
+		},
+		Metrics: map[string]int64{"wall_s": 512, "work_units": 3600},
+		Runner:  artifact.RunnerInfo{Node: "desktop-ai", Version: "runner/0.1.0"},
 	}
 }
 
@@ -93,7 +96,7 @@ func messageCases() []struct {
 		def  string
 		body any
 	}{
-		{wire.TypeHello, "hello", wire.Hello{Contract: "0.1", Runner: wire.RunnerIdent{ID: "fp", Version: "0.1", Node: "n", Lanes: []string{"transcribe"}, Capacity: 1}}},
+		{wire.TypeHello, "hello", wire.Hello{Contract: wire.ContractVersion, Runner: wire.RunnerIdent{ID: "fp", Version: "0.1", Node: "n", Lanes: []string{"transcribe"}, Capacity: 1}}},
 		{wire.TypeHelloOK, "hello_ok", wire.HelloOK{ServerTS: 1, HeartbeatIntervalS: 15, MinWaitS: 0, MaxWaitS: 60}},
 		{wire.TypeLease, "lease", wire.Lease{Lanes: []string{"transcribe"}, WaitS: 30}},
 		{wire.TypeGrant, "grant", wire.Grant{Job: wire.GrantJob{JobID: "j_0000000000000000000000000A", JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Attempt: 1, Hints: &wire.GrantHints{BatchScale: "0.5"}}, Lease: wire.LeaseGrant{LeaseID: "l_0000000000000000000000000A", TTLS: 300, DeadlineTS: 123}}},
@@ -172,10 +175,10 @@ func TestStrictDecodeRejectsUnknownField(t *testing.T) {
 func TestEnvelopeRejects(t *testing.T) {
 	cases := map[string]string{
 		"bad version": `{"v":"9.9","type":"ok","id":"x","body":{}}`,
-		"bad type":    `{"v":"0.1","type":"OK!","id":"x","body":{}}`,
-		"empty id":    `{"v":"0.1","type":"ok","id":"","body":{}}`,
-		"no body":     `{"v":"0.1","type":"ok","id":"x"}`,
-		"unknown key": `{"v":"0.1","type":"ok","id":"x","body":{},"extra":1}`,
+		"bad type":    `{"v":"0.2","type":"OK!","id":"x","body":{}}`,
+		"empty id":    `{"v":"0.2","type":"ok","id":"","body":{}}`,
+		"no body":     `{"v":"0.2","type":"ok","id":"x"}`,
+		"unknown key": `{"v":"0.2","type":"ok","id":"x","body":{},"extra":1}`,
 	}
 	for name, frame := range cases {
 		t.Run(name, func(t *testing.T) {

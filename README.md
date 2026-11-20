@@ -5,7 +5,8 @@ antibody-analysis. It provides a durable queue, authenticated CAS, runner, isola
 compute protocol, and constrained egress. Each application deploys its own plane instance,
 trust root, and runtime state; only the code and wire contracts are shared. The system
 design lives in easy-podcast's
-[dispatch-plane document](https://github.com/falahat/easy-podcast/blob/main/docs/DISPATCH_PLANE.md).
+[dispatch-plane document](https://github.com/falahat/easy-podcast/blob/main/docs/DISPATCH_PLANE.md);
+the decisions behind each contract change are in [docs/DISPATCH_PLANE.md](docs/DISPATCH_PLANE.md).
 
 ## Components
 

@@ -1,7 +1,7 @@
 # dispatch-client
 
 Pure-stdlib Python client for the dispatch-service **app surface** (wire contract
-v0.1). No third-party runtime dependencies — just `socket`, `struct`, `json`,
+v0.2). No third-party runtime dependencies — just `socket`, `struct`, `json`,
 `threading`.
 
 ## Install
@@ -47,6 +47,15 @@ for completion in client.completions():
         client.close()                                  # stops the generator
         break
 ```
+
+## Folders in the CAS
+
+`CasClient.put_folder(path)` stores a folder's regular files and a `manifest/v0`
+naming them, and returns the manifest's address for a `manifest` input; it refuses
+links and special files. `CasClient.get_folder(address, dest)` fetches a manifest,
+such as a folder output (`kind: "manifest"`), and every file it names into the new
+folder `dest`. Each file is verified, and an entry path that could leave `dest`
+fails the fetch before anything appears at `dest`.
 
 ## Address format
 

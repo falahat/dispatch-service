@@ -104,7 +104,10 @@ func Check(ctx context.Context, image, fixtureDir string) (*CheckReport, error) 
 		return rep, fmt.Errorf("check: fixture invoke failed: %v %v", ierr, failure)
 	}
 	for name, rel := range res.Outputs {
-		if !fileExists(filepath.Join(workdir, filepath.FromSlash(rel))) {
+		if _, err := insideOutputs(rel); err != nil {
+			return rep, fmt.Errorf("check: declared output %q: %v", name, err)
+		}
+		if !outputExists(filepath.Join(workdir, filepath.FromSlash(rel))) {
 			return rep, fmt.Errorf("check: declared output %q (%s) not present in workdir", name, rel)
 		}
 	}
@@ -229,9 +232,11 @@ func dirExists(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func fileExists(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && !fi.IsDir()
+// outputExists reports a declared output the runner can publish: a regular
+// file or a folder, never a link.
+func outputExists(p string) bool {
+	fi, err := os.Lstat(p)
+	return err == nil && (fi.Mode().IsRegular() || fi.IsDir())
 }
 
 func copyTree(src, dst string) error {

@@ -213,38 +213,47 @@ func (c *CAS) Head(ctx context.Context, a artifact.Address) (bool, int64, error)
 // PutFile uploads a file, addressed by its content hash (idempotent: an existing
 // address is a no-op). Returns the address and size.
 func (c *CAS) PutFile(ctx context.Context, path string) (artifact.Address, int64, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return "", 0, err
-	}
-	addr, err := hashFile(path)
-	if err != nil {
-		return "", 0, err
-	}
-	// Idempotent: skip the upload if the store already holds these exact bytes.
-	if exists, _, err := c.Head(ctx, addr); err == nil && exists {
-		return addr, fi.Size(), nil
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
 	defer f.Close()
-	req, err := c.newReq(ctx, http.MethodPut, addr, f)
+	fi, err := f.Stat()
 	if err != nil {
 		return "", 0, err
 	}
-	req.ContentLength = fi.Size()
+	addr, err := c.PutOpenFile(ctx, f, fi.Size())
+	return addr, fi.Size(), err
+}
+
+// PutOpenFile uploads the first size bytes of an open file. It reads the open
+// file, never a path, so the bytes sent are the bytes of the file the caller
+// vetted; a file changed between hashing and sending is refused by the store.
+func (c *CAS) PutOpenFile(ctx context.Context, f *os.File, size int64) (artifact.Address, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, io.NewSectionReader(f, 0, size)); err != nil {
+		return "", err
+	}
+	addr := artifact.Address("sha256:" + hex.EncodeToString(h.Sum(nil)))
+	// Idempotent: skip the upload if the store already holds these exact bytes.
+	if exists, _, err := c.Head(ctx, addr); err == nil && exists {
+		return addr, nil
+	}
+	req, err := c.newReq(ctx, http.MethodPut, addr, io.NewSectionReader(f, 0, size))
+	if err != nil {
+		return "", err
+	}
+	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return "", 0, &casError{casUnreachable, err}
+		return "", &casError{casUnreachable, err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", 0, &casError{casOther, fmt.Errorf("PUT %s: status %d", addr, resp.StatusCode)}
+		return "", &casError{casOther, fmt.Errorf("PUT %s: status %d", addr, resp.StatusCode)}
 	}
-	return addr, fi.Size(), nil
+	return addr, nil
 }
 
 // PutBytes uploads a byte slice, addressed by content hash.
@@ -323,17 +332,4 @@ func within(base, path string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func hashFile(path string) (artifact.Address, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return artifact.Address("sha256:" + hex.EncodeToString(h.Sum(nil))), nil
 }

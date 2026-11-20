@@ -49,7 +49,8 @@
       "required": ["address", "size"],
       "properties": {
         "address": { "$ref": "#/$defs/address" },
-        "size": { "type": "integer", "minimum": 0 }
+        "size": { "type": "integer", "minimum": 0, "$comment": "bytes of the blob at address (for a manifest, the manifest's own bytes)" },
+        "kind": { "enum": ["blob", "manifest"], "$comment": "absent = blob; manifest = a folder output, its entries relative to that folder" }
       }
     },
     "invocation": {

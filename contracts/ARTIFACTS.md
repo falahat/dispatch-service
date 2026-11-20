@@ -73,7 +73,8 @@ every component but the authoring app compares addresses as opaque strings.
 `path` MUST be a relative path with no `..` segment, no leading `/`, no backslash, and no
 NUL (the traversal guard is schema-level *and* MUST be re-checked by the consumer).
 Manifests are themselves CAS blobs, so a corpus snapshot is one small address and the
-Merkle composition pins every byte transitively.
+Merkle composition pins every byte transitively. Manifests the runner and client write
+list their entries sorted by `path`.
 
 ## Action result (`kind: "action_result/v0"`)
 
@@ -83,11 +84,19 @@ The runner's `complete` payload — **addresses and numbers only, never domain b
 {
   "kind": "action_result/v0",
   "invocation_address": "sha256:…",   // echoed from the grant — the computation that ran
-  "outputs": { "transcript": { "address": "sha256:…", "size": 482133 } },  // ≤ 64, names as inputs
+  "outputs": {                         // ≤ 64, names as inputs
+    "transcript": { "address": "sha256:…", "size": 482133, "kind": "blob" },
+    "frames":     { "address": "sha256:…", "size": 9120, "kind": "manifest" }
+  },
   "metrics": { "wall_s": 512, "work_units": 3600, "peak_vram_mb": 9800 },  // integers only
   "runner":  { "node": "desktop-ai", "version": "runner/0.1.0" }
 }
 ```
+
+An output is one file (`kind: "blob"`, or no `kind`) or one folder (`kind: "manifest"`).
+A folder output's address names a `manifest/v0` of the folder's files, paths relative to
+that folder, and its `size` counts the manifest's own bytes. A folder output is already a
+valid `manifest` input, so a later invocation takes it by address with no copy.
 
 The runner **echoes** `invocation_address` from its grant (it cannot lie — it fetched exactly
 that address, whose bytes are hash-bound). The app resolves `outputs` from the CAS

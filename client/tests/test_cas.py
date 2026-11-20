@@ -215,6 +215,28 @@ def test_put_json_is_canonical(pep):
     assert client.get_json(a1) == {"a": [2, 3], "b": 1}
 
 
+def test_folder_roundtrip(pep, tmp_path):
+    _, client = pep
+    files = {"frame-1.bin": b"first", "frame-0.bin": b"zeroth", "maps/n1.bin": b"normals"}
+    src = tmp_path / "frames"
+    (src / "maps").mkdir(parents=True)
+    for rel, data in files.items():
+        (src / rel).write_bytes(data)
+
+    address = client.put_folder(src)
+    manifest = client.get_json(address)
+    assert manifest["kind"] == "manifest/v0"
+    assert [e["path"] for e in manifest["entries"]] == sorted(files)
+
+    dest = tmp_path / "fetched"
+    assert client.get_folder(address, dest) == len(files)
+    fetched = {
+        p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()
+    }
+    assert fetched == files
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".casfetch")] == []
+
+
 def test_validate_address_rejects_garbage():
     for bad in ["", "sha256:", "sha256:XYZ", "sha256:" + "A" * 64, "../../etc", None]:
         with pytest.raises((ValueError, TypeError)):

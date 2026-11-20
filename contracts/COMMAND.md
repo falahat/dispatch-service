@@ -13,8 +13,10 @@ data cannot choose a host command. This trusted executor must contain untrusted 
 The command receives the existing `InvokeRequest` on stdin, in its private `workdir`.
 `DISPATCH_WORKDIR`, `DISPATCH_RUNNER_ID` and `DISPATCH_RUNNER_NODE` describe the
 consumer. Write an `InvokeResult` to `invoke-result.json` and exit zero after cleanup.
-Output files are uploaded to the authenticated CAS and delivered in the ordinary
-completion inbox. The application persists its result, then acknowledges it.
+Each named output is a file or a folder under `outputs/`, as in `INVOKE.md`; a folder
+arrives as a `manifest/v0` of its files. Outputs are uploaded to the authenticated CAS and
+delivered in the ordinary completion inbox. The application persists its result, then
+acknowledges it.
 Application failure can be an integer exit metric; an executor crash is a queue failure.
 
 Stdout/stderr remain outside workload mounts in `invoke.log`. The runner publishes

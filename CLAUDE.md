@@ -53,7 +53,8 @@ bar is clean, elegant, readable code + utmost security and privacy.
 ## Contracts & implementation
 
 - Implement against `contracts/schemas/*.json` + `contracts/states.json`, never prose
-  alone. A contract change is its own PR and cites the DISPATCH_PLANE decision rows.
+  alone. A contract change is its own PR and adds and cites its decision rows in
+  `docs/DISPATCH_PLANE.md`.
 - Every component is born in its end-state language — no interim ports.
 - All times are server-stamped ms-epoch; runner-reported timings are hints, never truth.
 

@@ -169,4 +169,14 @@ func TestActionResultValidate(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Error("action_result with empty runner node accepted")
 	}
+	for _, kind := range []artifact.Kind{artifact.KindBlob, artifact.KindManifest} {
+		r.Outputs = map[string]artifact.Output{"out": {Address: a, Size: 10, Kind: kind}}
+		if err := r.Validate(); err != nil {
+			t.Errorf("output kind %q rejected: %v", kind, err)
+		}
+	}
+	r.Outputs = map[string]artifact.Output{"out": {Address: a, Size: 10, Kind: "tree"}}
+	if err := r.Validate(); err == nil {
+		t.Error("action_result with an unknown output kind accepted")
+	}
 }

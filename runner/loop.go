@@ -187,11 +187,17 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 
 	workdir := filepath.Join(r.cfg.WorkRoot, g.Job.JobID)
 	_ = os.RemoveAll(workdir)
-	if err := os.MkdirAll(filepath.Join(workdir, "outputs"), 0o755); err != nil {
+	outputsPath := filepath.Join(workdir, outputsDir)
+	if err := os.MkdirAll(outputsPath, 0o755); err != nil {
 		r.release(dc, g, wire.ReleaseShipping, "mkdir workdir: "+err.Error())
 		return
 	}
 	defer os.RemoveAll(workdir)
+	madeOutputs, err := os.Lstat(outputsPath)
+	if err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "stat outputs: "+err.Error())
+		return
+	}
 
 	// 1. Fetch + verify the invocation (its address is the computation identity).
 	invBytes, err := r.cas.GetBytes(jobCtx, g.Job.InvocationAddress)
@@ -231,7 +237,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		Invocation: invBytes,
 		Workdir:    workdir,
 		Inputs:     inputs,
-		OutputsDir: "outputs",
+		OutputsDir: outputsDir,
 		DeadlineTS: deadlineTS, // zero explicitly means no execution deadline
 	})
 	if ierr != nil {
@@ -263,15 +269,15 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		r.release(dc, g, wire.ReleaseShipping, "command log: "+err.Error())
 		return
 	}
-	outputs := map[string]artifact.Output{}
-	for name, rel := range res.Outputs {
-		full := filepath.Join(workdir, filepath.FromSlash(rel))
-		addr, size, err := r.cas.PutFile(jobCtx, full)
-		if err != nil {
-			r.release(dc, g, wire.ReleaseShipping, fmt.Sprintf("upload %s: %v", name, err))
-			return
-		}
-		outputs[name] = artifact.Output{Address: addr, Size: size}
+	outputs, err := r.publishOutputs(jobCtx, outputsPath, madeOutputs, res.Outputs)
+	var broken *outputViolation
+	if errors.As(err, &broken) {
+		r.fail(dc, g, wire.ClassFatal, broken.Error())
+		return
+	}
+	if err != nil {
+		r.release(dc, g, wire.ReleaseShipping, "upload outputs: "+err.Error())
+		return
 	}
 	ar := artifact.ActionResult{
 		Kind:              artifact.ActionResultKind,
@@ -282,6 +288,12 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	}
 	if ar.Metrics == nil {
 		ar.Metrics = map[string]int64{}
+	}
+	// A result the dispatcher would refuse (bad names, too many outputs) is the
+	// compute's fault; failing it now beats leaving the lease to expire.
+	if err := ar.Validate(); err != nil {
+		r.fail(dc, g, wire.ClassFatal, "action result: "+err.Error())
+		return
 	}
 	r.complete(dc, g, ar)
 }

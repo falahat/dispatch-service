@@ -15,6 +15,8 @@ Address rules enforced here (the artifacts contract):
 
 Blobs can be large (episode audio), so file transfers stream in both
 directions; whole-blob buffering happens only in the convenience byte APIs.
+A file of 1 MiB or more is uploaded only when the store lacks it, and folder
+files move 8 at a time. ``transferred`` counts the bytes each way.
 """
 
 from __future__ import annotations
@@ -28,7 +30,9 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -36,6 +40,8 @@ from urllib.parse import urlsplit
 
 _ADDRESS_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CHUNK = 1 << 20  # 1 MiB streaming chunk
+_CHECK_FIRST = 1 << 20  # files this large are looked up before they are sent
+_PARALLEL = 8  # folder files in flight at once
 _MAX_MANIFEST_ENTRIES = 65536  # artifacts contract
 _MAX_PATH_BYTES = 512  # artifacts contract
 
@@ -138,7 +144,11 @@ class CasClient:
 
     ``base_url`` is the PEP's CAS address, e.g. ``http://pep:8443``. Each
     request opens a fresh connection (blob transfers are long; connection reuse
-    buys little and complicates retry semantics).
+    buys little and complicates retry semantics), so one client may serve
+    several threads.
+
+    ``transferred`` counts bytes: ``uploaded`` (sent), ``already_stored``
+    (files the store already held, not sent) and ``downloaded`` (received).
     """
 
     def __init__(self, base_url: str, credential: Credential, timeout: float = 300.0):
@@ -149,6 +159,12 @@ class CasClient:
         self._port = parts.port or 80
         self._timeout = timeout
         self._signer = _PopSigner(credential)
+        self._counted = threading.Lock()
+        self.transferred = {"uploaded": 0, "already_stored": 0, "downloaded": 0}
+
+    def _count(self, key: str, size: int) -> None:
+        with self._counted:
+            self.transferred[key] += size
 
     # --- connections ---
 
@@ -242,6 +258,7 @@ class CasClient:
                 chunk = resp.read(_CHUNK)
                 if not chunk:
                     break
+                self._count("downloaded", len(chunk))
                 sink(chunk)
         finally:
             conn.close()
@@ -262,6 +279,7 @@ class CasClient:
             body = resp.read(4096).decode("utf-8", "replace")
             if resp.status not in (200, 201):
                 self._raise_for(resp.status, body)
+            self._count("uploaded", len(data))
             return address
         finally:
             conn.close()
@@ -271,13 +289,15 @@ class CasClient:
 
         ``sha256_hex`` (when the caller already knows the content hash, as the
         app does for episode audio) skips the pre-hash pass; the PEP/store still
-        verifies on write, so a wrong claim is rejected, never stored.
+        verifies on write, so a wrong claim is rejected, never stored. Without a
+        claim, a file of 1 MiB or more that the store already holds is not sent.
         """
         return self._put_sized(Path(src), sha256_hex)[0]
 
     def _put_sized(self, src: Path, sha256_hex: Optional[str]) -> tuple[str, int]:
         """``put_file`` that also returns the byte count the store verified."""
         size = src.stat().st_size
+        hashed_here = sha256_hex is None
         if sha256_hex is None:
             h = hashlib.sha256()
             with src.open("rb") as fh:
@@ -286,6 +306,9 @@ class CasClient:
             sha256_hex = h.hexdigest()
         address = f"sha256:{sha256_hex}"
         path = self._blob_path(address)  # validates shape
+        if hashed_here and size >= _CHECK_FIRST and self.head(address) == size:
+            self._count("already_stored", size)
+            return address, size
         headers = self._signer.headers("PUT", path)
         headers["Content-Length"] = str(size)
         conn = self._conn()
@@ -296,6 +319,7 @@ class CasClient:
                 body = resp.read(4096).decode("utf-8", "replace")
                 if resp.status not in (200, 201):
                     self._raise_for(resp.status, body)
+            self._count("uploaded", size)
             return address, size
         finally:
             conn.close()
@@ -323,10 +347,12 @@ class CasClient:
         files = sorted(_regular_files(Path(src), ""))
         if len(files) > _MAX_MANIFEST_ENTRIES:
             raise ValueError(f"{src}: more than {_MAX_MANIFEST_ENTRIES} files")
-        entries = []
-        for rel, path in files:
-            address, size = self._put_sized(path, None)
-            entries.append({"path": rel, "address": address, "size": size})
+        with ThreadPoolExecutor(_PARALLEL) as pool:
+            stored = list(pool.map(lambda item: self._put_sized(item[1], None), files))
+        entries = [
+            {"path": rel, "address": address, "size": size}
+            for (rel, _), (address, size) in zip(files, stored)
+        ]
         return self.put_json({"kind": "manifest/v0", "entries": entries})
 
     def get_folder(self, address: str, dest: str | Path) -> int:
@@ -346,14 +372,21 @@ class CasClient:
             tempfile.mkdtemp(prefix=dest.name + ".", suffix=".casfetch", dir=dest.parent)
         )
         try:
-            placed: set[Path] = set()
+            placed: dict[Path, dict[str, Any]] = {}
             for entry in entries:
                 target = _entry_target(staging, entry["path"])
                 if target in placed:
                     raise ValueError(f"manifest names {entry['path']!r} twice")
-                placed.add(target)
+                placed[target] = entry
+
+            def fetch(item: tuple[Path, dict[str, Any]]) -> None:
+                target, entry = item
                 if self.get_to_file(entry["address"], target) != entry["size"]:
                     raise ValueError(f"manifest size of {entry['path']!r} is wrong")
+
+            with ThreadPoolExecutor(_PARALLEL) as pool:
+                for _ in pool.map(fetch, placed.items()):
+                    pass
             os.rename(staging, dest)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)

@@ -36,6 +36,8 @@ The operator CLI prints these native JSON results; `trace JOB` is an alias for
 `job JOB`, including its full attempt timeline.
 Install `client/` to get `dispatchctl -addr ADDRESS COMMAND [arguments]`.
 It uses the same standard-library client as applications, with no automatic replay.
+`dispatchctl run` uploads a command's inputs, runs it on a worker, streams its log and
+fetches its outputs in one call ([run a command](client/README.md#run-a-command)).
 Run it in the application environment that owns access to the private app socket;
 the dispatcher image contains only the dispatcher. See [operator usage](client/README.md#operator-commands).
 

@@ -14,6 +14,8 @@ The plane already covers these parts:
 - script steps as installed commands with `--no-deadline`, logs and progress
   (`contracts/COMMAND.md`);
 - folder inputs and outputs as `manifest/v0`;
+- one command that uploads inputs, runs a step, streams its log and fetches its outputs
+  (`dispatchctl run`, `client/README.md`);
 - placement by declared GPU memory, exclusive and MPS modes, and a starvation guard
   (`contracts/WIRE.md`, GPU placement; `contracts/COMMAND.md`, GPUs);
 - the CAS rate of 64 GiB/min per identity (`PEP_MAX_BYTES_PER_MIN`) and blobs up to

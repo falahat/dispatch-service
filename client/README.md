@@ -57,6 +57,31 @@ such as a folder output (`kind: "manifest"`), and every file it names into the n
 folder `dest`. Each file is verified, and an entry path that could leave `dest`
 fails the fetch before anything appears at `dest`.
 
+## Run a command
+
+`dispatchctl run` uploads the inputs, queues the job, streams its log to stderr, saves its
+outputs and acknowledges the job, then prints a JSON summary: job, state, output paths,
+metrics, seconds (upload, queued, run, fetch, total) and bytes (uploaded, already stored,
+downloaded).
+
+```sh
+export DISPATCH_ADDR=unix:/run/dispatch/app.sock DISPATCH_CAS_URL=http://127.0.0.1:8443 \
+       DISPATCH_CREDENTIAL=app-cas.json
+dispatchctl run --lane pose --input code=./pose --input video=clip.mp4 --output report \
+    --gpu-mb 8192 -- python /pose/scripts/fit.py /in/video /out/report
+```
+
+A file input arrives as `inputs/NAME`, a folder as `inputs/NAME/...`. The invocation
+carries ARGV in `params.argv`, the output names in `params.outputs` and each
+`--param KEY=VALUE` as a string; the worker's installed command runs it
+([command contract](../contracts/COMMAND.md)). Outputs land in `--dest` (default
+`dispatch-out/JOB_ID`), and nothing already there is replaced. A file of 1 MiB or more that
+the CAS already holds is not sent again, and folder files move 8 at a time. Submitting the
+same run while it is queued or running joins that job. Ctrl-C stops watching, not the job;
+`dispatchctl follow JOB_ID` picks it up again. `--no-ack` leaves the job in the completion
+inbox for another consumer. The exit status is 0 only when the job succeeded and its `exit`
+metric, if any, is 0. `run_step` and `follow` in `dispatch_client.run` are the Python forms.
+
 ## Address format
 
 `"unix:/path/to/sock"` for an AF_UNIX socket, or `"host:port"` for loopback TCP
@@ -97,9 +122,10 @@ dispatchctl -addr unix:/run/dispatch/app.sock wait JOB_ID
 dispatchctl -addr unix:/run/dispatch/app.sock lookup SUBMISSION_KEY
 ```
 
-`COMMAND --help` lists arguments. The existing jobs, job, trace, wait, lookup,
-fleet, drain, resume, stats, budget, cancel, approve, reject, ack, sweep and enqueue commands
-all print native JSON. `trace JOB_ID` uses the same complete view as `job`.
+`COMMAND --help` lists arguments; `-addr` defaults to `$DISPATCH_ADDR`. The jobs, job,
+trace, wait, lookup, fleet, drain, resume, stats, budget, cancel, approve, reject, ack, sweep
+and enqueue commands print native JSON; run and follow are described above. `trace JOB_ID`
+uses the same complete view as `job`.
 Commands use the SDK's connection and framing with no implicit request replay
 or deadline. The dispatcher image contains only the Go server; it requires no
 Python runtime. The application environment owns the operator client.

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dispatch-client"
-version = "0.4.0"
-description = "Python client for the dispatch-service app surface (wire contract v0.4) + the PEP's CAS surface."
+version = "0.5.0"
+description = "Python client for the dispatch-service app surface (wire contract v0.5) + the PEP's CAS surface."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

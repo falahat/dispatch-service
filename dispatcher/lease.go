@@ -24,6 +24,7 @@ const (
 	claimBackpressure
 	claimQuarantined
 	claimDrained
+	claimHeld
 	claimRateLimited
 )
 
@@ -60,7 +61,7 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 		if werr != nil {
 			return nil, nil, werr
 		}
-		if res.outcome == claimGranted || res.outcome == claimQuarantined || res.outcome == claimDrained {
+		if res.outcome == claimGranted || res.outcome == claimQuarantined || res.outcome == claimDrained || res.outcome == claimHeld {
 			d.stopWaiting(runnerID) // its lanes no longer start work on its GPUs
 		}
 		switch res.outcome {
@@ -74,7 +75,7 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 			return nil, &wire.Empty{Reason: "drained"}, nil
 		case claimRateLimited:
 			return nil, &wire.Empty{RetryAfterS: intptr(res.retryAfterS)}, nil
-		case claimNoWork:
+		case claimNoWork, claimHeld: // a held runner waits like an idle one; unhold wakes it
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				return nil, &wire.Empty{}, nil
@@ -120,6 +121,14 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 		}
 		if draining {
 			result.outcome = claimDrained
+			return nil
+		}
+		held, err := runnerHeld(tx, runnerID)
+		if err != nil {
+			return err
+		}
+		if held {
+			result.outcome = claimHeld
 			return nil
 		}
 

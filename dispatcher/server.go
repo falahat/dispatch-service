@@ -298,6 +298,11 @@ type runnerRequest struct {
 	RunnerID string `json:"runner_id"`
 }
 
+type nodeRequest struct {
+	Node   string `json:"node"`
+	Reason string `json:"reason,omitempty"`
+}
+
 func (s *Server) handleAppConn(conn net.Conn) {
 	for {
 		env, err := wire.ReadMessage(conn)
@@ -320,6 +325,10 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 	case "drain", "resume":
 		return apply(conn, env, func(req runnerRequest) *wire.Error {
 			return s.d.drain(s.ctx, req.RunnerID, env.Type == "drain")
+		})
+	case "hold", "unhold":
+		return apply(conn, env, func(req nodeRequest) *wire.Error {
+			return s.d.hold(s.ctx, req.Node, req.Reason, env.Type == "hold")
 		})
 	case "logs":
 		return serve(conn, env, "log_result", func(req logsRequest) (logsResult, *wire.Error) {

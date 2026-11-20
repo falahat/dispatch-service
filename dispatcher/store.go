@@ -149,6 +149,13 @@ CREATE TABLE IF NOT EXISTS runners (
   draining             INTEGER NOT NULL DEFAULT 0
 );
 
+-- Machines whose runners take no new work: by node, so a runner that connects later is held too.
+CREATE TABLE IF NOT EXISTS node_holds (
+  node      TEXT PRIMARY KEY,
+  reason    TEXT NOT NULL,
+  since_ts  INTEGER NOT NULL
+);
+
 -- One-row budget ledger. Amounts in integer cents.
 CREATE TABLE IF NOT EXISTS budget (
   id           INTEGER PRIMARY KEY CHECK (id = 1),

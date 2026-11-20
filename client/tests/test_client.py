@@ -150,7 +150,7 @@ class RawRunner:
         env = self._call(
             "hello",
             {
-                "contract": "0.4",
+                "contract": "0.5",
                 "runner": {
                     "id": runner_id,
                     "version": "test/0.1",
@@ -403,6 +403,8 @@ def test_operator_commands_use_the_application_client(dispatcher, capsys):
     assert any(event["outcome"] == "cancel" for event in stats["attempts"])
     assert stats["oldest_queued_age_s"] >= 0
     assert {"recovered", "expired", "gc_candidates", "pruned"} <= call("sweep").keys()
+    assert call("hold", "idle-machine", "--reason", "owner needs it") == {}
+    assert call("unhold", "idle-machine") == {}
     for operation, state in (("approve", "QUEUED"), ("reject", "REJECTED")):
         priced = call(
             "enqueue",
@@ -429,6 +431,16 @@ def test_operator_ack_arguments():
         "unix:/unused",
         "ack",
         {"job_id": "id", "disposition": "persisted", "reason": "stored"},
+    )
+    assert request(["-addr", "unix:/unused", "hold", "laptop", "--reason", "wsl restart"]) == (
+        "unix:/unused",
+        "hold",
+        {"node": "laptop", "reason": "wsl restart"},
+    )
+    assert request(["-addr", "unix:/unused", "unhold", "laptop"]) == (
+        "unix:/unused",
+        "unhold",
+        {"node": "laptop"},
     )
     for operation in ("drain", "resume"):
         assert request(["-addr", "unix:/unused", operation, "worker"]) == (
@@ -461,7 +473,7 @@ def test_client_rejects_reply_from_another_request(dispatcher, monkeypatch):
         frame,
         "read_message",
         lambda sock: {
-            "v": "0.4",
+            "v": "0.5",
             "type": "fleet_result",
             "id": "different",
             "body": {"runners": []},

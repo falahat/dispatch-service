@@ -51,6 +51,7 @@ type RunnerView struct {
 	Quarantined          bool     `json:"quarantined"`
 	QuarantineReason     string   `json:"quarantine_reason,omitempty"`
 	Draining             bool     `json:"draining"`
+	Held                 bool     `json:"held"` // its node is held: it takes no new work
 	CorroboratedFailures int      `json:"corroborated_failures"`
 	RunningJobs          int      `json:"running_jobs"`
 	// GPUs is the reading from the runner's latest request for work.

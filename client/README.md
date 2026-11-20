@@ -1,7 +1,7 @@
 # dispatch-client
 
 Pure-stdlib Python client for the dispatch-service **app surface** (wire contract
-v0.4). No third-party runtime dependencies — just `socket`, `struct`, `json`,
+v0.5). No third-party runtime dependencies — just `socket`, `struct`, `json`,
 `threading`.
 
 ## Install
@@ -30,6 +30,8 @@ client.cancel(job_id, reason="stale")
 snap = client.fleet(); bud = client.budget(); sw = client.sweep()
 drain = client.stats()                                  # drain health: states, windowed
                                                         # complete/fail, failure reasons
+client.hold("laptop", reason="owner needs it")          # machine takes no new work;
+client.unhold("laptop")                                 # returns once its work has ended
 
 # A caller that must never hang on a wedged dispatcher (health pollers):
 poller = DispatchClient("unix:/run/dispatch.sock", timeout=5.0)
@@ -123,9 +125,9 @@ dispatchctl -addr unix:/run/dispatch/app.sock lookup SUBMISSION_KEY
 ```
 
 `COMMAND --help` lists arguments; `-addr` defaults to `$DISPATCH_ADDR`. The jobs, job,
-trace, wait, lookup, fleet, drain, resume, stats, budget, cancel, approve, reject, ack, sweep
-and enqueue commands print native JSON; run and follow are described above. `trace JOB_ID`
-uses the same complete view as `job`.
+trace, wait, lookup, fleet, drain, resume, hold, unhold, stats, budget, cancel, approve, reject,
+ack, sweep and enqueue commands print native JSON; run and follow are described above.
+`trace JOB_ID` uses the same complete view as `job`.
 Commands use the SDK's connection and framing with no implicit request replay
 or deadline. The dispatcher image contains only the Go server; it requires no
 Python runtime. The application environment owns the operator client.
@@ -134,3 +136,9 @@ Python runtime. The application environment owns the operator client.
 it never cancels that job. The runner exits cleanly after finishing. `resume
 RUNNER_ID` reopens admission before the shared installer starts it again. Fleet
 `online` uses the coordinator's lease TTL and clock, not a client-side guess.
+
+`hold NODE [--reason TEXT]` stops every runner of that machine (the `--node` it runs with)
+taking new work and blocks until the machine's running jobs have ended; it never cancels
+them. The runners stay connected, so `unhold NODE` gives the machine work again at once,
+and a runner that connects while its machine is held waits too. Fleet rows show `held`.
+Interrupting `hold` leaves the machine held.

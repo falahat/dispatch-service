@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.4", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.5", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -62,7 +62,7 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.4", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `hello` | `{contract:"0.5", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
 | `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`. |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
@@ -82,8 +82,9 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 | `approve` / `reject` | `{job_id, author, reason}` → `ok` | the priced-job gate; append-only approval facts; `reject` → `REJECTED` and releases the reservation. |
 | `cancel` | `{job_id, reason}` → `ok` | any non-terminal → `CANCELLED`. `RUNNING` → the runner learns via an `abandon` directive; `PERSISTING` → removed from the inbox; CAS pins released. |
 | `jobs` | `{filter?: {state?, lane?, job_key_prefix?}, page?}` → `{jobs[], next_page?}` | read view. `job` rows include the full attempt/release timeline (the dead-letter view is `jobs{state: FAILED}`). |
-| `fleet` / `budget` | `{}` → snapshots | fleet: per-runner health, lanes, quarantine state, recent RTF, and `gpus`, the GPU reading from the runner's latest `lease` since the dispatcher started; `online` is true while its last coordinator-stamped heartbeat is younger than the lease TTL. budget: cap, reserved, spent, per-job ledger. |
+| `fleet` / `budget` | `{}` → snapshots | fleet: per-runner health, lanes, quarantine state, `held` (its node is held), recent RTF, and `gpus`, the GPU reading from the runner's latest `lease` since the dispatcher started; `online` is true while its last coordinator-stamped heartbeat is younger than the lease TTL. budget: cap, reserved, spent, per-job ledger. |
 | `drain` / `resume` | `{runner_id}` → `ok` | app-only worker lifecycle. Drain atomically refuses new leases, signals clean runner exit and waits for existing RUNNING work to settle without cancellation or a deadline. Resume opens admission. Unknown runners return `gone`. A disconnected caller leaves the drain in place. |
+| `hold` / `unhold` | `{node, reason?}` / `{node}` → `ok` | app-only machine hold, by the `node` runners give at `hello`. Hold refuses new leases to every runner of that node, connected now or later; they stay connected, heartbeat and wait in the long-poll as if no work were queued. It then waits for the node's RUNNING work to settle, without cancellation or a deadline. Unhold opens admission at once. Holding a node no runner has named is allowed. A disconnected caller leaves the hold in place. |
 | `stats` | `{window_s?}` → `{server_ts, window_s, jobs[]: {lane, state, count}, attempts[]: {lane, outcome, count}, recent_failures[]: {lane, error_class?, reason?, count}, oldest_queued_age_s}` | the drain-health snapshot (read-only). `attempts` counts settled events (`ended_ts` set) within the trailing window (default 900s, capped 7d) — in-flight `claimed` rows are excluded; `recent_failures` groups `fail` rows by (lane, class, reason), worst first, top 10. Activity ≠ progress: these counts are what the 2026-07 drain-collapse hid. |
 | `sweep` | `{}` → `{recovered, expired, gc_candidates, pruned}` | runs the timer pass on demand (tests / `dispatchctl`); `pruned` counts terminal jobs deleted by the retention window (0 when no TTL is set). |
 

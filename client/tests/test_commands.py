@@ -231,7 +231,7 @@ class CommandWorkers(unittest.TestCase):
                 with DispatchClient(
                     "unix:" + str(root / "app.sock"), retry_requests=False
                 ) as client:
-                    for outcome in ("complete", "cancel", "fail", "drain"):
+                    for outcome in ("complete", "cancel", "fail", "hold", "drain"):
                         with socket.socket(socket.AF_UNIX) as ready:
                             path = root / (outcome + ".sock")
                             ready.bind(str(path))
@@ -288,6 +288,21 @@ class CommandWorkers(unittest.TestCase):
                                         self.assertIsNone(worker.poll())
                                         self.assertEqual(client.job(job)["state"], "RUNNING")
                                         self.assertFalse(client.job(job)["cancel_requested"])
+                                    if outcome == "hold":
+                                        waiting = dict(request, job_key="held")
+                                        pending = client.enqueue([waiting])[0]["job_id"]
+                                        held: list[bool] = []
+
+                                        def hold() -> None:
+                                            client.hold("native-node", "fixture")
+                                            held.append(True)
+
+                                        hold_thread = threading.Thread(target=hold)
+                                        hold_thread.start()
+                                        while not client.fleet()[0]["held"]:
+                                            time.sleep(0.01)
+                                        self.assertFalse(held)
+                                        self.assertEqual(client.job(job)["state"], "RUNNING")
                                     execution.sendall(b"x")
                                 if outcome != "fail":
                                     completion = next(client.completions())
@@ -308,6 +323,7 @@ class CommandWorkers(unittest.TestCase):
                                         "complete": "SUCCEEDED",
                                         "cancel": "CANCELLED",
                                         "fail": "FAILED",
+                                        "hold": "SUCCEEDED",
                                         "drain": "SUCCEEDED",
                                     }[outcome],
                                 )
@@ -316,6 +332,17 @@ class CommandWorkers(unittest.TestCase):
                                     self.assertEqual((root / "cleaned").read_text(), "settled")
                                     with self.assertRaises(ProcessLookupError):
                                         os.kill(pid, 0)
+                                if outcome == "hold":
+                                    hold_thread.join()
+                                    self.assertEqual(held, [True])
+                                    settle = time.monotonic() + 1
+                                    while time.monotonic() < settle:
+                                        self.assertEqual(client.job(pending)["state"], "QUEUED")
+                                        time.sleep(0.05)
+                                    self.assertIsNone(worker.poll())
+                                    client.cancel(pending, "fixture cleanup")
+                                    client.unhold("native-node")
+                                    self.assertFalse(client.fleet()[0]["held"])
                                 if outcome == "drain":
                                     drain_thread.join()
                                     self.assertEqual(drained, [True])

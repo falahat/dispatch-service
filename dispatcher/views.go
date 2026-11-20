@@ -118,7 +118,8 @@ func (d *Dispatcher) timeline(jobID string) ([]wire.AttemptView, error) {
 func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 	rows, err := d.store.db.Query(
 		`SELECT runner_id, node, version, lanes, capacity, gpu, vram_free_mb, last_seen_ts,
-			quarantined, quarantine_reason, draining, corroborated_failures FROM runners ORDER BY runner_id`)
+			quarantined, quarantine_reason, draining, corroborated_failures,
+			EXISTS(SELECT 1 FROM node_holds h WHERE h.node=runners.node) FROM runners ORDER BY runner_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +131,7 @@ func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 		var capacity, vram sql.NullInt64
 		var quarantined, draining int
 		if err := rows.Scan(&rv.RunnerID, &node, &version, &lanesJSON, &capacity, &gpu, &vram,
-			&rv.LastSeenTS, &quarantined, &qreason, &draining, &rv.CorroboratedFailures); err != nil {
+			&rv.LastSeenTS, &quarantined, &qreason, &draining, &rv.CorroboratedFailures, &rv.Held); err != nil {
 			return nil, err
 		}
 		rv.Node, rv.Version, rv.GPU, rv.QuarantineReason = node.String, version.String, gpu.String, qreason.String

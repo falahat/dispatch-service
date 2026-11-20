@@ -243,6 +243,16 @@ class DispatchClient:
         """Reopen admission after a reviewed worker update."""
         self._request("resume", {"runner_id": runner_id})
 
+    def hold(self, node: str, reason: str = "") -> None:
+        """Stop the machine's runners taking new work and wait for its running work to end,
+        without cancelling it. The runners stay connected; the hold outlives this call."""
+        with DispatchClient(self._address, retry_requests=False) as observer:
+            observer._request("hold", {"node": node, "reason": reason})
+
+    def unhold(self, node: str) -> None:
+        """Let the machine's runners take work again."""
+        self._request("unhold", {"node": node})
+
     def budget(self) -> dict[str, Any]:
         """Return the budget snapshot (cap, reserved, spent, ledger)."""
         return self._request("budget", {})["body"]

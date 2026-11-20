@@ -20,6 +20,8 @@ OPERATIONS = {
     "fleet": ((), ()),
     "drain": (("runner_id",), ()),
     "resume": (("runner_id",), ()),
+    "hold": (("node",), ("reason",)),
+    "unhold": (("node",), ()),
     "stats": ((), ("window",)),
     "budget": ((), ()),
     "cancel": (("job_id",), ("reason",)),

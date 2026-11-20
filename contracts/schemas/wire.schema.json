@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.4" },
+        "v": { "const": "0.5" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.4" },
+        "contract": { "const": "0.5" },
         "runner": {
           "type": "object",
           "additionalProperties": false,
@@ -435,6 +435,17 @@
       "required": ["runner_id"],
       "properties": {"runner_id": {"type": "string", "minLength": 1, "maxLength": 128}},
       "$comment": "App-only drain/resume; drain waits for existing execution to settle."
+    },
+
+    "node_hold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node"],
+      "properties": {
+        "node": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "maxLength": 1024}
+      },
+      "$comment": "App-only hold/unhold by the node runners name at hello; hold waits for the node's running work to settle."
     },
     "ok": { "type": "object", "additionalProperties": false },
     "error": {

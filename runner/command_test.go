@@ -13,7 +13,7 @@ func TestTrustedCommandUsesExistingInvocationAndResult(t *testing.T) {
 request=json.load(sys.stdin)
 assert request['deadline_ts']==0 and request['workdir']==os.getcwd()
 assert os.environ['DISPATCH_RUNNER_ID']=='owner-worker'
-print('command output',flush=True)
+os.write(1,b'command output\n') # bytes: Windows' text-mode stdout would add a carriage return
 with open('invoke-result.json','w') as output:
  json.dump({'outputs':{},'metrics':{'exit':3}},output)
 `

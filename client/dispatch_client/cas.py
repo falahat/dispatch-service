@@ -3,7 +3,8 @@
 Speaks the PEP's blob surface (contracts/CAS.md): ``GET/HEAD/PUT
 /blobs/sha256/<hex>`` with Biscuit + proof-of-possession headers. Every request
 signs the canonical string ``cas/v0 <METHOD> <path> <nonce> <ts>`` with the
-credential's Ed25519 key (PyNaCl), so a stolen token alone is useless.
+credential's Ed25519 key (PyNaCl, or the ``cryptography`` package where PyNaCl is
+absent), so a stolen token alone is useless.
 
 Address rules enforced here (the artifacts contract):
 
@@ -116,12 +117,10 @@ class _PopSigner:
     """Signs canonical request strings with the credential's Ed25519 seed."""
 
     def __init__(self, cred: Credential):
-        from nacl.signing import SigningKey  # the one non-stdlib dep, kept local
-
         seed = base64.b64decode(cred.seed_b64)
         if len(seed) != 32:
             raise ValueError("credential seed must be 32 bytes")
-        self._key = SigningKey(seed)
+        self._sign = _ed25519(seed)
         self._cred = cred
 
     def headers(self, method: str, path: str) -> dict[str, str]:
@@ -129,7 +128,7 @@ class _PopSigner:
         nonce = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
         ts = int(time.time() * 1000)
         canonical = f"cas/v0 {method} {path} {nonce} {ts}"
-        sig = self._key.sign(canonical.encode("utf-8")).signature
+        sig = self._sign(canonical.encode("utf-8"))
         return {
             "X-Dispatch-Biscuit": self._cred.biscuit,
             "X-Dispatch-Pubkey": self._cred.pubkey_hex,
@@ -137,6 +136,19 @@ class _PopSigner:
             "X-Dispatch-Ts": str(ts),
             "X-Dispatch-Pop": base64.b64encode(sig).decode("ascii"),
         }
+
+
+def _ed25519(seed: bytes) -> Callable[[bytes], bytes]:
+    """Signs with the seed through PyNaCl, or through ``cryptography`` where PyNaCl is
+    absent (system Pythons often carry only the latter); Ed25519 signatures are the same."""
+    try:
+        from nacl.signing import SigningKey
+    except ImportError:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        return Ed25519PrivateKey.from_private_bytes(seed).sign
+    key = SigningKey(seed)
+    return lambda message: key.sign(message).signature
 
 
 class CasClient:

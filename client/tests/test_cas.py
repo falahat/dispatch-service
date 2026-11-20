@@ -5,6 +5,7 @@ signature, verifies hashes on write, and replays the PEP's status codes."""
 import base64
 import hashlib
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,6 +18,7 @@ from dispatch_client.cas import (
     CasIntegrityError,
     CasNotFound,
     Credential,
+    _ed25519,
     compute_address,
     validate_address,
 )
@@ -123,6 +125,15 @@ def pep():
     yield server, client
     server.shutdown()
     server.server_close()
+
+
+def test_signs_alike_without_pynacl(monkeypatch):
+    # Where PyNaCl is absent the client signs through the cryptography package instead.
+    pytest.importorskip("cryptography")
+    seed, message = bytes(range(32)), b"cas/v0 GET /blobs/sha256/00 bm9uY2U= 1"
+    expected = SigningKey(seed).sign(message).signature
+    monkeypatch.setitem(sys.modules, "nacl.signing", None)
+    assert _ed25519(seed)(message) == expected
 
 
 def test_put_get_roundtrip(pep):

@@ -29,6 +29,26 @@ of at most 16 KiB, outside workload mounts. Heartbeats publish this opaque objec
 `job`, `jobs` and `wait` return the latest `progress` for the current attempt. The application
 owns its meaning. Progress does not complete a job or change its queue state.
 
+## GPUs
+
+`--gpus all` or `--gpus 0,1` makes a command runner offer those host GPUs with each
+request for work (`WIRE.md`, GPU placement), read with `nvidia-smi` at that moment; a
+failed reading offers none. Such a runner rewrites the GPU part of each command's
+environment: it drops any inherited `NVIDIA_VISIBLE_DEVICES`, `CUDA_VISIBLE_DEVICES`,
+`CUDA_MPS_*` and `DISPATCH_GPU_*`. A job granted a GPU gets `NVIDIA_VISIBLE_DEVICES=<host
+index>` (for `docker --gpus device=` or a CDI device), `CUDA_VISIBLE_DEVICES=<GPU UUID>`,
+`DISPATCH_GPU_INDEX`, `DISPATCH_GPU_UUID`, `DISPATCH_GPU_MEMORY_MB` (the job's declared
+most) and `DISPATCH_GPU_MODE` (`shared`, `mps` or `exclusive`). An `mps` job also gets
+`CUDA_MPS_PIPE_DIRECTORY` from `--mps-pipe DIR` when that machine's MPS daemon answers.
+A job without a GPU gets `CUDA_VISIBLE_DEVICES=` and no `NVIDIA_VISIBLE_DEVICES`. A
+runner without `--gpus` leaves the environment as it found it.
+
+`--gpu-lock FILE` (Linux, macOS) joins the machine's GPU contract shared with other
+schedulers: before a GPU job's command starts, the runner takes `FILE.want`, then `FILE`
+(exclusive `flock`), lets go of `FILE.want`, and holds `FILE` until the command ends.
+Holding the lock gives a job the whole GPU, so such a runner offers each GPU with all its
+memory free and no processes.
+
 `--no-deadline` supplies `deadline_ts=0` and adds no execution watchdog. A
 `single_attempt` lane makes execution, shipping and lease-loss failures terminal.
 The command handles SIGTERM by stopping and reaping only its own children and

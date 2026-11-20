@@ -33,6 +33,13 @@ type Config struct {
 	// this DB is a source of record. Set > 0 only to bound this queue DB's growth.
 	JobRetentionDays int `toml:"job_retention_days"`
 
+	// GPUReserveMB is the memory on each GPU that declared GPU memory never fills,
+	// for the driver and allocator overhead a job's own figure leaves out.
+	GPUReserveMB int `toml:"gpu_reserve_mb"`
+	// GPUStarveAfterS is how long a GPU job waits before it holds back other GPU
+	// starts on the runners where it could run, until it fits.
+	GPUStarveAfterS int `toml:"gpu_starve_after_s"`
+
 	Lanes  map[string]LaneConfig `toml:"lanes"`
 	Budget BudgetConfig          `toml:"budget"`
 
@@ -71,6 +78,8 @@ func DefaultConfig() Config {
 		RunnerRatePerMin:   240,
 		SweepIntervalS:     5,
 		JobRetentionDays:   0, // 0 = keep terminal queue history forever (no TTL)
+		GPUReserveMB:       1024,
+		GPUStarveAfterS:    1200,
 		Lanes:              map[string]LaneConfig{},
 		Budget:             BudgetConfig{CapUSD: "0.00"},
 		DefaultLane:        LaneConfig{Concurrency: 0, PersistingWatermark: 64},
@@ -123,6 +132,12 @@ func (c Config) Validate() error {
 	}
 	if c.JobRetentionDays < 0 {
 		return fmt.Errorf("config: job_retention_days must be >= 0 (0 = keep forever)")
+	}
+	if c.GPUReserveMB < 0 {
+		return fmt.Errorf("config: gpu_reserve_mb must be >= 0")
+	}
+	if c.GPUStarveAfterS < 1 {
+		return fmt.Errorf("config: gpu_starve_after_s must be >= 1")
 	}
 	if c.AppSocket == "" && c.AppListen == "" {
 		return fmt.Errorf("config: one of app_socket / app_listen is required")

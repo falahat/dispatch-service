@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"time"
 
 	"github.com/falahat/dispatch-service/internal/artifact"
@@ -44,12 +45,23 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 			return nil, nil, &wire.Error{Code: wire.CodeInvalid, Message: "lease: invalid lane " + l}
 		}
 	}
-	deadline := time.Now().Add(d.clampWait(req.WaitS))
+	if err := validateGPUReadings(req.GPUs); err != nil {
+		return nil, nil, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()}
+	}
+	wait := d.clampWait(req.WaitS)
+	if len(req.GPUs) > 0 {
+		wait = min(wait, maxGPUWaitS*time.Second)
+	}
+	d.recordGPUOffer(runnerID, req.Lanes, req.GPUs, d.now())
+	deadline := time.Now().Add(wait)
 	for {
 		wake := d.leaseWake.wait() // grab before claim to avoid a missed signal
-		res, werr := d.tryClaim(runnerID, req.Lanes)
+		res, werr := d.tryClaim(runnerID, req.Lanes, req.GPUs)
 		if werr != nil {
 			return nil, nil, werr
+		}
+		if res.outcome == claimGranted || res.outcome == claimQuarantined || res.outcome == claimDrained {
+			d.stopWaiting(runnerID) // its lanes no longer start work on its GPUs
 		}
 		switch res.outcome {
 		case claimGranted:
@@ -87,8 +99,9 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 // tryClaim performs one atomic claim attempt. Because the store serializes
 // writers (single connection, IMMEDIATE txn), the flip QUEUED->RUNNING and the
 // lease stamp happen in one transaction — an orphan (RUNNING with no live lease,
-// or a lease with no RUNNING job) is unrepresentable.
-func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wire.Error) {
+// or a lease with no RUNNING job) is unrepresentable. gpus are the GPUs the
+// runner offers now; without them only jobs that declare no GPU are claimed.
+func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPUReading) (claimResult, *wire.Error) {
 	var result claimResult
 	err := d.store.writeTx(func(tx *sql.Tx) error {
 		now := d.now()
@@ -146,26 +159,64 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 			return nil
 		}
 
+		offered, err := offeredGPUs(tx, gpus)
+		if err != nil {
+			return err
+		}
+		reserve := d.cfg.GPUReserveMB
+		var job Job
+		var ok bool
+		if len(offered) > 0 {
+			// A GPU job past the starvation limit starts first where it fits; until
+			// then the GPUs where it could run take no other new GPU job.
+			starved, need, usable, err := d.starvedGPUJob(tx, offered, now)
+			if err != nil {
+				return err
+			}
+			if usable != nil {
+				var mine []offeredGPU
+				for _, o := range offered {
+					if usable[o.reading.UUID] {
+						mine = append(mine, o)
+					}
+				}
+				if _, fits := pickGPU(mine, need, reserve); fits && slices.Contains(open, starved.Lane) {
+					job, ok, offered = starved, true, mine
+				} else {
+					offered = slices.DeleteFunc(offered, func(o offeredGPU) bool { return usable[o.reading.UUID] })
+				}
+			}
+		}
+
 		// Round-robin across the open lanes so a deep backlog in one lane can't freeze
 		// another: a single runner serves one job at a time, and taking the globally
 		// oldest job let an older transcribe backlog starve embed for 36h (2026-07). Rotate
 		// the starting lane each claim; within a lane, oldest-runnable still wins.
 		numLanes := len(open)
 		start := int(d.claimSeq.Add(1) % uint64(numLanes))
-		var job Job
-		var ok bool
-		for i := 0; i < numLanes; i++ {
-			job, ok, err = selectClaimableInLane(tx, open[(start+i)%numLanes], now)
+		filter := filterFor(offered, reserve)
+		for i := 0; i < numLanes && !ok; i++ {
+			job, ok, err = selectClaimableInLane(tx, open[(start+i)%numLanes], now, filter)
 			if err != nil {
 				return err
-			}
-			if ok {
-				break
 			}
 		}
 		if !ok {
 			result.outcome = claimNoWork
 			return nil
+		}
+		var placed *wire.GrantGPU
+		need, isGPU, err := jobGPUNeed(tx, job.JobID)
+		if err != nil {
+			return err
+		}
+		if isGPU {
+			g, fits := pickGPU(offered, need, reserve)
+			if !fits { // the filter admits only jobs that fit one of these GPUs
+				result.outcome = claimNoWork
+				return nil
+			}
+			placed = &wire.GrantGPU{Index: g.reading.Index, UUID: g.reading.UUID, MemoryMB: need.memoryMB, Mode: need.mode}
 		}
 
 		// Rate cap: only consume quota once we know we have work to grant.
@@ -190,6 +241,11 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 			result.outcome = claimNoWork
 			return nil
 		}
+		if placed != nil {
+			if _, err := tx.Exec(`UPDATE job_gpu SET gpu_uuid=? WHERE job_id=?`, placed.UUID, job.JobID); err != nil {
+				return err
+			}
+		}
 		if err := insertAttempt(tx, job.JobID, job.Attempt, runnerID, leaseID, "claimed", "", "", now, 0); err != nil {
 			return err
 		}
@@ -204,6 +260,7 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 			InvocationAddress: artifact.Address(job.InvocationAddress),
 			Attempt:           job.Attempt,
 			ExpectedWallS:     job.Policy.ExpectedWallS, // sizes the runner's per-job budget
+			GPU:               placed,
 		}
 		if job.BatchScale != "" {
 			gj.Hints = &wire.GrantHints{BatchScale: job.BatchScale}
@@ -225,14 +282,16 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string) (claimResult, *wi
 	return result, nil
 }
 
-// selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane:
-// next_attempt_at in the past, ordered by priority then age. The caller rotates over the
-// open lanes for cross-lane fairness (see tryClaim), so this stays a single-lane query.
-func selectClaimableInLane(tx *sql.Tx, lane string, now int64) (Job, bool, error) {
+// selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane that the
+// runner's GPUs admit: next_attempt_at in the past, ordered by priority then age. The
+// caller rotates over the open lanes for cross-lane fairness (see tryClaim), so this
+// stays a single-lane query.
+func selectClaimableInLane(tx *sql.Tx, lane string, now int64, f gpuFilter) (Job, bool, error) {
+	cond, args := f.sql()
 	query := `SELECT ` + jobColumns + ` FROM jobs
-		WHERE state='QUEUED' AND lane=? AND next_attempt_at<=?
+		WHERE state='QUEUED' AND lane=? AND next_attempt_at<=? AND ` + cond + `
 		ORDER BY priority ASC, created_ts ASC LIMIT 1`
-	row := tx.QueryRow(query, lane, now)
+	row := tx.QueryRow(query, append([]any{lane, now}, args...)...)
 	job, err := scanJob(row)
 	if err == sql.ErrNoRows {
 		return Job{}, false, nil

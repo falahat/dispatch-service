@@ -30,6 +30,13 @@ type Dispatcher struct {
 	// claimSeq round-robins lane selection across claims so a deep backlog in one lane
 	// can't starve another on a shared runner (embed dead 36h behind transcribe, 2026-07).
 	claimSeq atomic.Uint64
+
+	// gpuOffers holds each runner's latest request for work that offered GPUs: the
+	// fleet view shows its reading, and the starvation guard reads which lanes can
+	// start work on which GPU. Placement itself uses the reading sent with the
+	// request it answers.
+	gpuMu     sync.Mutex
+	gpuOffers map[string]gpuOffer
 }
 
 // New builds a Dispatcher over an open store and config.
@@ -52,6 +59,8 @@ func New(store *Store, cfg Config, clock Clock) (*Dispatcher, error) {
 		leaseWake: newBroadcaster(),
 		subs:      newSubMgr(),
 		rl:        newRateLimiter(cfg.RunnerRatePerMin),
+
+		gpuOffers: map[string]gpuOffer{},
 	}
 	return d, nil
 }

@@ -98,15 +98,15 @@ func messageCases() []struct {
 	}{
 		{wire.TypeHello, "hello", wire.Hello{Contract: wire.ContractVersion, Runner: wire.RunnerIdent{ID: "fp", Version: "0.1", Node: "n", Lanes: []string{"transcribe"}, Capacity: 1}}},
 		{wire.TypeHelloOK, "hello_ok", wire.HelloOK{ServerTS: 1, HeartbeatIntervalS: 15, MinWaitS: 0, MaxWaitS: 60}},
-		{wire.TypeLease, "lease", wire.Lease{Lanes: []string{"transcribe"}, WaitS: 30}},
-		{wire.TypeGrant, "grant", wire.Grant{Job: wire.GrantJob{JobID: "j_0000000000000000000000000A", JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Attempt: 1, Hints: &wire.GrantHints{BatchScale: "0.5"}}, Lease: wire.LeaseGrant{LeaseID: "l_0000000000000000000000000A", TTLS: 300, DeadlineTS: 123}}},
+		{wire.TypeLease, "lease", wire.Lease{Lanes: []string{"transcribe"}, WaitS: 30, GPUs: []wire.GPUReading{{Index: 0, UUID: "GPU-aaaaaaaa-0000-0000-0000-000000000001", TotalMB: 24564, FreeMB: 23000}}}},
+		{wire.TypeGrant, "grant", wire.Grant{Job: wire.GrantJob{JobID: "j_0000000000000000000000000A", JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Attempt: 1, Hints: &wire.GrantHints{BatchScale: "0.5"}, GPU: &wire.GrantGPU{Index: 0, UUID: "GPU-aaaaaaaa-0000-0000-0000-000000000001", MemoryMB: 3000, Mode: wire.GPUShared}}, Lease: wire.LeaseGrant{LeaseID: "l_0000000000000000000000000A", TTLS: 300, DeadlineTS: 123}}},
 		{wire.TypeEmpty, "empty", wire.Empty{Reason: "backpressure", RetryAfterS: i3(5)}},
 		{wire.TypeHeartbeat, "heartbeat", wire.Heartbeat{Status: wire.HeartbeatStatus{Node: "n", Lanes: []string{"transcribe"}, Capacity: 1, GPU: "4090", VRAMFreeMB: i3(9000), CurrentJobID: "j_0000000000000000000000000A"}, LeaseID: "l_0000000000000000000000000A"}},
 		{wire.TypeBeatOK, "beat_ok", wire.BeatOK{Directives: []wire.Directive{{Kind: wire.DirectiveAbandon, JobID: "j_0000000000000000000000000A"}, {Kind: wire.DirectiveDrain}, {Kind: wire.DirectiveThrottle, LeaseAfterTS: i64(9999)}}}},
 		{wire.TypeComplete, "complete", wire.Complete{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Attempt: 1, ActionResult: sampleActionResult()}},
 		{wire.TypeFail, "fail", wire.Fail{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Attempt: 1, ErrorClass: wire.ClassOOM, Message: "cuda oom"}},
 		{wire.TypeRelease, "release", wire.Release{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Reason: wire.ReleaseCASUnreachable}},
-		{wire.TypeEnqueue, "enqueue", wire.Enqueue{Jobs: []wire.EnqueueJob{{JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Policy: &wire.Policy{MaxAttempts: i3(3), BackoffClass: &bc}, CostEstimateUSD: "0.00"}}}},
+		{wire.TypeEnqueue, "enqueue", wire.Enqueue{Jobs: []wire.EnqueueJob{{JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Policy: &wire.Policy{MaxAttempts: i3(3), BackoffClass: &bc, GPU: &wire.GPUNeed{MemoryMB: 3000, Mode: wire.GPUExclusive}}, CostEstimateUSD: "0.00"}}}},
 		{wire.TypeEnqueueResult, "enqueue_result", wire.EnqueueResult{Results: []wire.EnqueueResultItem{{JobKey: "k", JobID: "j_0000000000000000000000000A", Created: true}}}},
 		{wire.TypeSubscribe, "subscribe", wire.Subscribe{}},
 		{wire.TypeCompletion, "completion", wire.Completion{JobID: "j_0000000000000000000000000A", JobKey: "k", Lane: "transcribe", Attempt: 1, ActionResult: sampleActionResult(), CompletedTS: 5}},
@@ -175,10 +175,10 @@ func TestStrictDecodeRejectsUnknownField(t *testing.T) {
 func TestEnvelopeRejects(t *testing.T) {
 	cases := map[string]string{
 		"bad version": `{"v":"9.9","type":"ok","id":"x","body":{}}`,
-		"bad type":    `{"v":"0.2","type":"OK!","id":"x","body":{}}`,
-		"empty id":    `{"v":"0.2","type":"ok","id":"","body":{}}`,
-		"no body":     `{"v":"0.2","type":"ok","id":"x"}`,
-		"unknown key": `{"v":"0.2","type":"ok","id":"x","body":{},"extra":1}`,
+		"bad type":    `{"v":"0.3","type":"OK!","id":"x","body":{}}`,
+		"empty id":    `{"v":"0.3","type":"ok","id":"","body":{}}`,
+		"no body":     `{"v":"0.3","type":"ok","id":"x"}`,
+		"unknown key": `{"v":"0.3","type":"ok","id":"x","body":{},"extra":1}`,
 	}
 	for name, frame := range cases {
 		t.Run(name, func(t *testing.T) {

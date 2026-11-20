@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.2", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.3", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -62,8 +62,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.2", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
-| `lease` | `{lanes[], wait_s}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}}`. |
+| `hello` | `{contract:"0.3", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`. |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
 | `fail` | `{lease_id, job_id, attempt, error_class, message ≤ 4 KiB}` → `ok` | compute failed. Attempt burned; the job's declared policy maps `error_class` → retriable (backoff) or terminal. Idempotent per `(job_id, attempt)`. |
@@ -82,7 +82,7 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 | `approve` / `reject` | `{job_id, author, reason}` → `ok` | the priced-job gate; append-only approval facts; `reject` → `REJECTED` and releases the reservation. |
 | `cancel` | `{job_id, reason}` → `ok` | any non-terminal → `CANCELLED`. `RUNNING` → the runner learns via an `abandon` directive; `PERSISTING` → removed from the inbox; CAS pins released. |
 | `jobs` | `{filter?: {state?, lane?, job_key_prefix?}, page?}` → `{jobs[], next_page?}` | read view. `job` rows include the full attempt/release timeline (the dead-letter view is `jobs{state: FAILED}`). |
-| `fleet` / `budget` | `{}` → snapshots | fleet: per-runner health, lanes, quarantine state, recent RTF; `online` is true while its last coordinator-stamped heartbeat is younger than the lease TTL. budget: cap, reserved, spent, per-job ledger. |
+| `fleet` / `budget` | `{}` → snapshots | fleet: per-runner health, lanes, quarantine state, recent RTF, and `gpus`, the GPU reading from the runner's latest `lease` since the dispatcher started; `online` is true while its last coordinator-stamped heartbeat is younger than the lease TTL. budget: cap, reserved, spent, per-job ledger. |
 | `drain` / `resume` | `{runner_id}` → `ok` | app-only worker lifecycle. Drain atomically refuses new leases, signals clean runner exit and waits for existing RUNNING work to settle without cancellation or a deadline. Resume opens admission. Unknown runners return `gone`. A disconnected caller leaves the drain in place. |
 | `stats` | `{window_s?}` → `{server_ts, window_s, jobs[]: {lane, state, count}, attempts[]: {lane, outcome, count}, recent_failures[]: {lane, error_class?, reason?, count}, oldest_queued_age_s}` | the drain-health snapshot (read-only). `attempts` counts settled events (`ended_ts` set) within the trailing window (default 900s, capped 7d) — in-flight `claimed` rows are excluded; `recent_failures` groups `fail` rows by (lane, class, reason), worst first, top 10. Activity ≠ progress: these counts are what the 2026-07 drain-collapse hid. |
 | `sweep` | `{}` → `{recovered, expired, gc_candidates, pruned}` | runs the timer pass on demand (tests / `dispatchctl`); `pruned` counts terminal jobs deleted by the retention window (0 when no TTL is set). |
@@ -114,11 +114,36 @@ policy: {
                                 # generous multiple of this (a tighter backstop than the flat
                                 # MaxJobDuration); rides the grant to the runner
   priority?: 0..9 (default 5),  # lower first within a lane
-  release_cap?: 1..20 (default 5)
+  release_cap?: 1..20 (default 5),
+  gpu?: {                       # absent: the job never receives a GPU
+    memory_mb: int ≥ 1,         # the most GPU memory (MiB) the job will use
+    mode?: shared | mps | exclusive   (default shared)
+  }
 }
 ```
 Staleness (`on_drift`) is **deliberately absent** — it is reconciler (app) policy, enforced
 app-side by digest comparison + `cancel`; the dispatcher never evaluates domain freshness.
+
+## GPU placement
+
+A runner offers its GPUs with each `lease`, read on its machine at that moment: device
+index, UUID, total and free memory, and the number of compute processes (the MPS server not
+counted). A runner that offers none, or whose GPUs are all taken, is granted only jobs
+without `policy.gpu`. For each offered GPU the dispatcher adds up the `memory_mb` of the
+RUNNING jobs it placed there, because a job that just started may not have allocated yet.
+
+- `shared` and `mps` jobs fit a GPU while that sum plus their own `memory_mb` is at most
+  the GPU's total less `gpu_reserve_mb` (plane.toml, default 1024), and their `memory_mb`
+  is at most the GPU's free memory. `mps` only tells the runner to join the machine's MPS
+  daemon when it answers.
+- `exclusive` jobs need a GPU with no RUNNING job of the plane's and no compute process;
+  a GPU holding an `exclusive` job takes nothing else.
+- Of the GPUs that fit, the grant names the one with the most free memory in `job.gpu`.
+- A GPU job that has waited `gpu_starve_after_s` (default 1200) since it became runnable
+  starts first wherever it fits. Until it starts, the GPUs a runner asking for work in its
+  lane could place it on, once they drain, take no other new GPU job.
+- The runner enforces the placement: it shows the job only the granted GPU and passes
+  `memory_mb` and `mode` on (see `COMMAND.md`).
 
 Command workers may include `log:{offset,address,size}` and an opaque `progress`
 JSON object (at most 16 KiB) in a live-lease heartbeat. `job` / `wait` expose the

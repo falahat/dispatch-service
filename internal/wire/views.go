@@ -53,6 +53,8 @@ type RunnerView struct {
 	Draining             bool     `json:"draining"`
 	CorroboratedFailures int      `json:"corroborated_failures"`
 	RunningJobs          int      `json:"running_jobs"`
+	// GPUs is the reading from the runner's latest request for work.
+	GPUs []GPUReading `json:"gpus,omitempty"`
 }
 
 type BudgetLedgerItem struct {

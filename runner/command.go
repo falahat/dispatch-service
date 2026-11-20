@@ -23,6 +23,8 @@ type executor interface {
 type commandExecutor struct {
 	args     []string
 	id, node string
+	gpus     bool   // the runner offers GPUs, so each command sees only its grant's GPU
+	mpsPipe  string // the machine's MPS pipe directory
 }
 
 func (c *commandExecutor) Healthz(context.Context) (Health, error) {
@@ -46,7 +48,11 @@ func (c *commandExecutor) Invoke(ctx context.Context, request InvokeRequest) (*I
 	defer log.Close()
 	command := exec.CommandContext(ctx, c.args[0], c.args[1:]...)
 	command.Dir, command.Stdin = request.Workdir, bytes.NewReader(body)
-	command.Env = append(os.Environ(), "DISPATCH_WORKDIR="+request.Workdir,
+	env := os.Environ()
+	if c.gpus {
+		env = gpuEnv(ctx, env, request.GPU, c.mpsPipe)
+	}
+	command.Env = append(env, "DISPATCH_WORKDIR="+request.Workdir,
 		"DISPATCH_RUNNER_ID="+c.id, "DISPATCH_RUNNER_NODE="+c.node)
 	command.Stdout, command.Stderr = log, log
 	// A trusted executor handles SIGTERM by cancelling its own children/containers.

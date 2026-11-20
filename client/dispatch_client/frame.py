@@ -2,7 +2,7 @@
 
 Matches the Go reference (internal/wire): each frame is a 4-byte big-endian
 uint32 length prefix followed by that many bytes of UTF-8 JSON. The JSON is an
-envelope ``{"v": "0.2", "type": <msg>, "id": <req-id>, "body": {...}}``. A
+envelope ``{"v": "0.3", "type": <msg>, "id": <req-id>, "body": {...}}``. A
 zero-length frame is illegal; frames are capped at 4 MiB.
 """
 
@@ -13,7 +13,7 @@ import socket
 import struct
 from typing import Any, TypedDict, cast
 
-CONTRACT_VERSION = "0.2"
+CONTRACT_VERSION = "0.3"
 MAX_FRAME_BYTES = 4 << 20  # 4 MiB, matches wire.MaxFrameBytes
 
 

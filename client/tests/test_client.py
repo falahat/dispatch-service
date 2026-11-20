@@ -150,7 +150,7 @@ class RawRunner:
         env = self._call(
             "hello",
             {
-                "contract": "0.2",
+                "contract": "0.3",
                 "runner": {
                     "id": runner_id,
                     "version": "test/0.1",
@@ -461,7 +461,7 @@ def test_client_rejects_reply_from_another_request(dispatcher, monkeypatch):
         frame,
         "read_message",
         lambda sock: {
-            "v": "0.2",
+            "v": "0.3",
             "type": "fleet_result",
             "id": "different",
             "body": {"runners": []},

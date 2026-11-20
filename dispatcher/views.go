@@ -140,6 +140,7 @@ func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 		if lanesJSON.String != "" {
 			_ = json.Unmarshal([]byte(lanesJSON.String), &rv.Lanes)
 		}
+		rv.GPUs = d.runnerGPUs(rv.RunnerID)
 		out = append(out, rv)
 	}
 	if err := rows.Err(); err != nil {

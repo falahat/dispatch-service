@@ -101,7 +101,7 @@ func TestIdleClaimDoesNotWakeItself(t *testing.T) {
 	d, _ := newTestDispatcher(t)
 	hello(t, d, "worker", "embed")
 	wake := d.leaseWake.wait()
-	result, err := d.tryClaim("worker", []string{"embed"})
+	result, err := d.tryClaim("worker", []string{"embed"}, nil)
 	if err != nil || result.outcome != claimNoWork {
 		t.Fatalf("idle claim: %v %v", result, err)
 	}

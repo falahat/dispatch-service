@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/falahat/dispatch-service/internal/wire"
 )
 
 // InvokeClient speaks the invoke protocol (INVOKE.md) to a compute container
@@ -80,6 +82,8 @@ type InvokeRequest struct {
 	Inputs     map[string]string `json:"inputs"`
 	OutputsDir string            `json:"outputs_dir"`
 	DeadlineTS int64             `json:"deadline_ts"`
+	// GPU is the grant's GPU; the command executor passes it on in the environment.
+	GPU *wire.GrantGPU `json:"-"`
 }
 
 // InvokeResult is a successful /invoke response.

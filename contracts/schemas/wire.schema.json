@@ -14,13 +14,17 @@
     "error_class": { "enum": ["oom", "timeout", "rate_limit", "network", "bad_input", "integrity", "fatal", "unknown"] },
     "release_reason": { "enum": ["cas_unreachable", "cas_miss", "integrity", "wrong_hardware", "shipping"] },
     "error_code": { "enum": ["unauthenticated", "forbidden", "version_mismatch", "invalid", "not_leaseholder", "gone", "conflict", "budget", "backpressure", "rate_limited", "internal"] },
+    "gpu_index": { "type": "integer", "minimum": 0, "maximum": 63, "$comment": "the host's device index" },
+    "gpu_uuid": { "type": "string", "pattern": "^(GPU|MIG)-[0-9A-Fa-f-]{8,64}$" },
+    "gpu_mb": { "type": "integer", "minimum": 1, "maximum": 1048576, "$comment": "MiB" },
+    "gpu_mode": { "enum": ["shared", "mps", "exclusive"] },
 
     "envelope": {
       "type": "object",
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.2" },
+        "v": { "const": "0.3" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -40,7 +44,17 @@
         },
         "expected_wall_s": { "type": "integer", "minimum": 1 },
         "priority": { "type": "integer", "minimum": 0, "maximum": 9, "default": 5 },
-        "release_cap": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
+        "release_cap": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 },
+        "gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["memory_mb"],
+          "$comment": "A job without it never receives a GPU. memory_mb is the most GPU memory the job will use.",
+          "properties": {
+            "memory_mb": { "$ref": "#/$defs/gpu_mb" },
+            "mode": { "$ref": "#/$defs/gpu_mode", "default": "shared" }
+          }
+        }
       }
     },
 
@@ -49,7 +63,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.2" },
+        "contract": { "const": "0.3" },
         "runner": {
           "type": "object",
           "additionalProperties": false,
@@ -82,7 +96,24 @@
       "required": ["lanes", "wait_s"],
       "properties": {
         "lanes": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/lane" } },
-        "wait_s": { "type": "integer", "minimum": 0, "maximum": 600 }
+        "wait_s": { "type": "integer", "minimum": 0, "maximum": 600 },
+        "gpus": {
+          "type": "array",
+          "maxItems": 16,
+          "$comment": "The runner's GPUs that may take a GPU job now, read when it asks. Without them only jobs that declare no GPU are granted. A lease carrying them waits at most 5 s.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "uuid", "total_mb", "free_mb", "processes"],
+            "properties": {
+              "index": { "$ref": "#/$defs/gpu_index" },
+              "uuid": { "$ref": "#/$defs/gpu_uuid" },
+              "total_mb": { "$ref": "#/$defs/gpu_mb" },
+              "free_mb": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+              "processes": { "type": "integer", "minimum": 0, "$comment": "compute processes, not counting the MPS server" }
+            }
+          }
+        }
       }
     },
     "grant": {
@@ -105,6 +136,18 @@
               "type": "object",
               "additionalProperties": false,
               "properties": { "batch_scale": { "type": "string", "pattern": "^0\\.[0-9]{1,4}$|^1(\\.0{1,4})?$", "$comment": "decimal-as-string per the integer rule" } }
+            },
+            "gpu": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["index", "uuid", "memory_mb", "mode"],
+              "$comment": "The offered GPU this job is placed on; present exactly when the job declared a GPU.",
+              "properties": {
+                "index": { "$ref": "#/$defs/gpu_index" },
+                "uuid": { "$ref": "#/$defs/gpu_uuid" },
+                "memory_mb": { "$ref": "#/$defs/gpu_mb" },
+                "mode": { "$ref": "#/$defs/gpu_mode" }
+              }
             }
           }
         },

@@ -126,6 +126,39 @@ type Policy struct {
 	ExpectedWallS       *int                  `json:"expected_wall_s,omitempty"`
 	Priority            *int                  `json:"priority,omitempty"`
 	ReleaseCap          *int                  `json:"release_cap,omitempty"`
+	GPU                 *GPUNeed              `json:"gpu,omitempty"`
+}
+
+// GPUNeed is a job's GPU declaration. A job without one never receives a GPU.
+type GPUNeed struct {
+	MemoryMB int     `json:"memory_mb"`      // the most GPU memory the job will use
+	Mode     GPUMode `json:"mode,omitempty"` // empty means shared
+}
+
+// GPUMode says how a GPU job shares its GPU.
+type GPUMode string
+
+const (
+	GPUShared    GPUMode = "shared"    // beside other jobs while declared memory fits
+	GPUMPS       GPUMode = "mps"       // shared, as a client of the machine's MPS daemon
+	GPUExclusive GPUMode = "exclusive" // alone on an idle GPU, for timing runs
+)
+
+// GPUReading is one GPU a runner offers, read when it asks for work.
+type GPUReading struct {
+	Index     int    `json:"index"` // the host's device index
+	UUID      string `json:"uuid"`
+	TotalMB   int    `json:"total_mb"`
+	FreeMB    int    `json:"free_mb"`
+	Processes int    `json:"processes"` // compute processes, not counting the MPS server
+}
+
+// GrantGPU is the GPU a grant places its job on.
+type GrantGPU struct {
+	Index    int     `json:"index"`
+	UUID     string  `json:"uuid"`
+	MemoryMB int     `json:"memory_mb"`
+	Mode     GPUMode `json:"mode"`
 }
 
 // --- runner surface ---
@@ -151,10 +184,12 @@ type HelloOK struct {
 	MaxWaitS           int   `json:"max_wait_s"`
 }
 
-// Lease is the long-poll request.
+// Lease is the long-poll request. GPUs are the runner's GPUs that may take a
+// GPU job now; without them only jobs that declare no GPU are granted.
 type Lease struct {
-	Lanes []string `json:"lanes"`
-	WaitS int      `json:"wait_s"`
+	Lanes []string     `json:"lanes"`
+	WaitS int          `json:"wait_s"`
+	GPUs  []GPUReading `json:"gpus,omitempty"`
 }
 
 // GrantJob is the job description carried in a grant.
@@ -166,6 +201,7 @@ type GrantJob struct {
 	Attempt           int              `json:"attempt"`
 	ExpectedWallS     int              `json:"expected_wall_s,omitempty"` // 0 = unset; sizes the runner's job budget
 	Hints             *GrantHints      `json:"hints,omitempty"`
+	GPU               *GrantGPU        `json:"gpu,omitempty"`
 }
 
 // GrantHints are optional sizing feedback (decimals as strings per the rule).

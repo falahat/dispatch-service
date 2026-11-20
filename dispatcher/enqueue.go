@@ -87,6 +87,11 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 			if err := insertJob(tx, jobID, ej, pol, cost, state, now); err != nil {
 				return err
 			}
+			if ej.Policy != nil && ej.Policy.GPU != nil {
+				if err := insertGPUNeed(tx, jobID, resolveGPUNeed(*ej.Policy.GPU)); err != nil {
+					return err
+				}
+			}
 			if err := saveSubmission(tx, ej.SubmissionKey, fingerprint, jobID); err != nil {
 				return err
 			}
@@ -157,6 +162,9 @@ func validatePolicy(p *wire.Policy) error {
 		default:
 			return errors.New("enqueue: invalid backoff_class")
 		}
+	}
+	if p.GPU != nil {
+		return validateGPUNeed(p.GPU)
 	}
 	return nil
 }

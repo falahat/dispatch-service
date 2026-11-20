@@ -112,12 +112,21 @@ func runCmd(args []string, log *slog.Logger) {
 		"max wall-clock seconds per job (0 => default 2h; a backstop, NOT the lease TTL)")
 	fs.BoolVar(&cfg.NoDeadline, "no-deadline", false, "run until completion or explicit cancellation")
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
+	fs.StringVar(&cfg.GPUs, "gpus", env("GPUS", ""), `GPUs a command runner offers: "all" or host indexes such as 0,1 (default none)`)
+	fs.StringVar(&cfg.GPULock, "gpu-lock", env("GPU_LOCK", ""), "the machine's GPU lock file, held while a GPU job runs (tailworker contract)")
+	fs.StringVar(&cfg.MPSPipe, "mps-pipe", env("MPS_PIPE", ""), "the machine's MPS pipe directory, for jobs in mps mode")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
 	_ = fs.Parse(args)
 	cfg.Command = fs.Args()
 
 	if *lanes != "" {
 		cfg.Lanes = splitComma(*lanes)
+	}
+	if cfg.GPUs != "" {
+		if _, _, err := runner.ParseGPUDevices(cfg.GPUs); err != nil || len(cfg.Command) == 0 {
+			fmt.Fprintln(os.Stderr, "runner run: -gpus needs a command (runner run ... -- EXECUTABLE) and \"all\" or GPU indexes")
+			os.Exit(2)
+		}
 	}
 
 	// PEP mode when a credential is provided (Biscuit + PoP signer + frame

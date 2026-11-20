@@ -42,7 +42,7 @@ def render(source, environment, stage, native):
         }
     )
     optional = (
-        {"NO_DEADLINE"}
+        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE"}
         if native
         else {
             "SMOKESCREEN_IMAGE",
@@ -98,6 +98,16 @@ def render(source, environment, stage, native):
         ]
         if config.get("NO_DEADLINE") == "1":
             args += ["--no-deadline"]
+        if "GPUS" in config and not re.fullmatch(
+            r"all|[0-9]{1,2}(?:,[0-9]{1,2})*", config["GPUS"]
+        ):
+            raise ValueError('GPUS is "all" or GPU indexes such as 0,1')
+        for key, flag in (("GPUS", "--gpus"), ("GPU_LOCK", "--gpu-lock"), ("MPS_PIPE", "--mps-pipe")):
+            if key not in config:
+                continue
+            if key != "GPUS" and not pathlib.Path(config[key]).is_absolute():
+                raise ValueError(key + " must be an absolute path")
+            args += [flag, config[key]]
         text = (source / "command.service").read_text()
         (stage / "runner.service").write_text(
             text.replace(

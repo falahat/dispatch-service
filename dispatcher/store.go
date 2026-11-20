@@ -109,6 +109,16 @@ CREATE TABLE IF NOT EXISTS job_progress (
   payload TEXT NOT NULL
 );
 
+-- A GPU job's declaration, and the GPU its latest lease placed it on. Jobs that
+-- declare no GPU have no row. Only RUNNING jobs count against a GPU.
+CREATE TABLE IF NOT EXISTS job_gpu (
+  job_id    TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,
+  memory_mb INTEGER NOT NULL,
+  mode      TEXT NOT NULL,
+  gpu_uuid  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_gpu_uuid ON job_gpu(gpu_uuid);
+
 -- Per-attempt timeline: the dead-letter view and the quarantine witness source.
 CREATE TABLE IF NOT EXISTS attempts (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

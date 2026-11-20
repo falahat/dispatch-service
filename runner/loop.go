@@ -104,7 +104,7 @@ func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, error) {
 	dc.setReadTimeout(time.Duration(r.cfg.LeaseWaitS+15) * time.Second)
 	defer dc.setReadTimeout(0)
-	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS})
+	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS, GPUs: r.offerGPUs(ctx)})
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +224,22 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	// 3. Invoke the compute container. The compute is single-flight; if it is busy
 	// with another invoke (typically an abandoned run still finishing server-side),
 	// hold this lease and wait rather than failing — see invokeWaitingForFreeCompute.
+	// A GPU job first takes the machine's GPU lock, when one is configured.
+	if g.Job.GPU != nil && !r.wasOffered(g.Job.GPU) {
+		r.release(dc, g, wire.ReleaseWrongHardware, "granted a GPU this runner did not offer")
+		return
+	}
+	if g.Job.GPU != nil && r.cfg.GPULock != "" {
+		unlock, err := takeGPULock(jobCtx, r.cfg.GPULock)
+		if err != nil {
+			if jobCtx.Err() != nil && ctx.Err() == nil && r.wasAbandoned(g.Job.JobID) {
+				return
+			}
+			r.release(dc, g, wire.ReleaseWrongHardware, "gpu lock: "+err.Error())
+			return
+		}
+		defer unlock()
+	}
 	inputs := map[string]string{}
 	for name := range inv.Inputs {
 		inputs[name] = filepath.ToSlash(filepath.Join("inputs", name))
@@ -239,6 +255,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		Inputs:     inputs,
 		OutputsDir: outputsDir,
 		DeadlineTS: deadlineTS, // zero explicitly means no execution deadline
+		GPU:        g.Job.GPU,
 	})
 	if ierr != nil {
 		// Transport/protocol fault. If we were told to abandon (ctx cancelled),

@@ -179,7 +179,8 @@ func (d *Dispatcher) decideApproval(req wire.Approval, approve bool) *wire.Error
 			return err
 		}
 		if approve {
-			if _, err := tx.Exec(`UPDATE jobs SET state='QUEUED', updated_ts=? WHERE job_id=? AND state='AWAITING_APPROVAL'`, now, req.JobID); err != nil {
+			// A job waits from its approval, which starts its GPU starvation clock.
+			if _, err := tx.Exec(`UPDATE jobs SET state='QUEUED', next_attempt_at=?, updated_ts=? WHERE job_id=? AND state='AWAITING_APPROVAL'`, now, now, req.JobID); err != nil {
 				return err
 			}
 			requeued = true

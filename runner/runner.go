@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/falahat/dispatch-service/internal/wire"
 )
@@ -27,6 +28,9 @@ type Config struct {
 	NoDeadline      bool     // Explicitly permit unbounded execution; cancellation still applies.
 	Command         []string // Trusted local executor; absent selects the HTTP compute contract.
 	GPU             string   // optional GPU descriptor for the fleet view
+	GPUs            string   // GPUs the command executor offers: "all" or host indexes; "" offers none
+	GPULock         string   // the machine's GPU lock file, shared with other schedulers (Linux, macOS)
+	MPSPipe         string   // the machine's MPS pipe directory, for jobs in mps mode
 }
 
 // Runner is the worker client aggregate.
@@ -44,6 +48,8 @@ type Runner struct {
 	leaseAfter int64  // ms; do not lease before this (throttle)
 	gpu        string // live GPU descriptor (compute-reported; seeded from cfg.GPU)
 	vramFreeMB *int   // live free VRAM (MB), compute-reported; nil until the first probe
+	offered    []wire.GPUReading
+	gpuWarned  time.Time
 }
 
 type liveJob struct {
@@ -133,7 +139,7 @@ func New(cfg Config, signer Signer, wrapper FrameWrapper, log *slog.Logger) *Run
 	}
 	var invoke executor = NewInvokeClient(cfg.ComputeAddr)
 	if len(cfg.Command) != 0 {
-		invoke = &commandExecutor{args: cfg.Command, id: cfg.RunnerID, node: cfg.Node}
+		invoke = &commandExecutor{args: cfg.Command, id: cfg.RunnerID, node: cfg.Node, gpus: cfg.GPUs != "", mpsPipe: cfg.MPSPipe}
 	}
 	return &Runner{
 		cfg:     cfg,

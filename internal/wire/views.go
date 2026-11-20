@@ -107,6 +107,14 @@ type SweepResult struct {
 	Pruned       int `json:"pruned"`        // terminal jobs deleted by the retention window (0 = no TTL)
 }
 
+// NodeHold is a machine held out of new work, by the node name its runners give.
+type NodeHold struct {
+	Node    string `json:"node"`
+	Reason  string `json:"reason,omitempty"`
+	SinceTS int64  `json:"since_ts"`
+}
+
 type FleetResult struct {
 	Runners []RunnerView `json:"runners"`
+	Holds   []NodeHold   `json:"holds"`
 }

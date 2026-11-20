@@ -404,7 +404,10 @@ def test_operator_commands_use_the_application_client(dispatcher, capsys):
     assert stats["oldest_queued_age_s"] >= 0
     assert {"recovered", "expired", "gc_candidates", "pruned"} <= call("sweep").keys()
     assert call("hold", "idle-machine", "--reason", "owner needs it") == {}
+    [hold] = call("fleet")["holds"]
+    assert (hold["node"], hold["reason"]) == ("idle-machine", "owner needs it")
     assert call("unhold", "idle-machine") == {}
+    assert call("fleet")["holds"] == []
     for operation, state in (("approve", "QUEUED"), ("reject", "REJECTED")):
         priced = call(
             "enqueue",

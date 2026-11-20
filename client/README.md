@@ -140,5 +140,6 @@ RUNNER_ID` reopens admission before the shared installer starts it again. Fleet
 `hold NODE [--reason TEXT]` stops every runner of that machine (the `--node` it runs with)
 taking new work and blocks until the machine's running jobs have ended; it never cancels
 them. The runners stay connected, so `unhold NODE` gives the machine work again at once,
-and a runner that connects while its machine is held waits too. Fleet rows show `held`.
-Interrupting `hold` leaves the machine held.
+and a runner that connects while its machine is held waits too. Fleet rows show `held`, and
+the fleet's `holds` lists each held machine with its reason. Interrupting `hold` leaves the
+machine held.

@@ -388,7 +388,11 @@ func (s *Server) serveAppFrame(conn net.Conn, env wire.Envelope) error {
 		if err != nil {
 			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInternal, Message: err.Error()})
 		}
-		return reply(conn, env.ID, typeFleetResult, wire.FleetResult{Runners: fleet})
+		holds, err := s.d.Holds()
+		if err != nil {
+			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInternal, Message: err.Error()})
+		}
+		return reply(conn, env.ID, typeFleetResult, wire.FleetResult{Runners: fleet, Holds: holds})
 	case wire.TypeBudget:
 		b, err := s.d.Budget()
 		if err != nil {

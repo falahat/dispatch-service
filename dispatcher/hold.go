@@ -45,6 +45,24 @@ func (d *Dispatcher) hold(ctx context.Context, node, reason string, held bool) *
 	return nil
 }
 
+// Holds lists the held machines, oldest hold first.
+func (d *Dispatcher) Holds() ([]wire.NodeHold, error) {
+	rows, err := d.store.db.Query(`SELECT node, reason, since_ts FROM node_holds ORDER BY since_ts, node`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	holds := []wire.NodeHold{}
+	for rows.Next() {
+		var h wire.NodeHold
+		if err := rows.Scan(&h.Node, &h.Reason, &h.SinceTS); err != nil {
+			return nil, err
+		}
+		holds = append(holds, h)
+	}
+	return holds, rows.Err()
+}
+
 // runnerHeld reports whether the runner's node is held.
 func runnerHeld(tx *sql.Tx, runnerID string) (bool, error) {
 	var held bool

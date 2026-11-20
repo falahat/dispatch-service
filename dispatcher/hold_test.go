@@ -43,6 +43,9 @@ func TestHoldStopsTheNodeTakingWorkUntilUnhold(t *testing.T) {
 			t.Fatalf("fleet hold marks: %+v", fleet)
 		}
 	}
+	if holds, _ := d.Holds(); len(holds) != 1 || holds[0].Node != "laptop" || holds[0].Reason != "wsl restart" || holds[0].SinceTS == 0 {
+		t.Fatalf("holds: %+v", holds)
+	}
 	if err := d.Complete("laptop-1", wire.Complete{LeaseID: grant.Lease.LeaseID, JobID: running, Attempt: 1, ActionResult: sampleResult(invAddr("running"))}); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +57,9 @@ func TestHoldStopsTheNodeTakingWorkUntilUnhold(t *testing.T) {
 	}
 	if next, _ := leaseOne(t, d, "laptop-2", "embed"); next == nil || next.Job.JobID != queued {
 		t.Fatalf("unheld node got no work: %+v", next)
+	}
+	if holds, _ := d.Holds(); len(holds) != 0 {
+		t.Fatalf("holds after unhold: %+v", holds)
 	}
 }
 

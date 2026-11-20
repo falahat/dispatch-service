@@ -17,8 +17,12 @@ import (
 // outputsDir is the workdir folder the compute writes its outputs under.
 const outputsDir = "outputs"
 
-// outputUploads bounds how many files of one folder output upload at once.
-const outputUploads = 8
+// outputUploads bounds how many files of one folder output upload at once, and
+// inputFetches how many input blobs download at once.
+const (
+	outputUploads = 8
+	inputFetches  = 8
+)
 
 // Outputs are untrusted compute data. The runner reads them through an os.Root
 // pinned to the outputs folder it created before invoking, so no path, link or

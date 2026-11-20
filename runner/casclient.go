@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/falahat/dispatch-service/internal/artifact"
 )
@@ -280,16 +281,19 @@ func (c *CAS) PutBytes(ctx context.Context, b []byte) (artifact.Address, error) 
 
 // LayoutInputs materializes an invocation's inputs under workdir/inputs/, one
 // file per blob and an expanded tree per manifest, verifying every blob and
-// re-checking every path against the traversal guard.
+// re-checking every path against the traversal guard. Every path is checked
+// before any blob is fetched; blobs then arrive inputFetches at a time.
 func (c *CAS) LayoutInputs(ctx context.Context, workdir string, inv *artifact.Invocation) error {
 	inputsRoot := filepath.Join(workdir, "inputs")
+	type fetch struct {
+		address artifact.Address
+		dest    string
+	}
+	var fetches []fetch
 	for name, in := range inv.Inputs {
 		switch in.Kind {
 		case artifact.KindBlob:
-			dest := filepath.Join(inputsRoot, name)
-			if _, err := c.GetToFile(ctx, in.Address, dest); err != nil {
-				return err
-			}
+			fetches = append(fetches, fetch{in.Address, filepath.Join(inputsRoot, name)})
 		case artifact.KindManifest:
 			mb, err := c.GetBytes(ctx, in.Address)
 			if err != nil {
@@ -313,15 +317,45 @@ func (c *CAS) LayoutInputs(ctx context.Context, workdir string, inv *artifact.In
 				if !within(base, dest) {
 					return &casError{casIntegrity, fmt.Errorf("manifest path escapes input dir: %q", e.Path)}
 				}
-				if _, err := c.GetToFile(ctx, e.Address, dest); err != nil {
-					return err
-				}
+				fetches = append(fetches, fetch{e.Address, dest})
 			}
 		default:
 			return fmt.Errorf("input %q: unknown kind %q", name, in.Kind)
 		}
 	}
-	return nil
+	gets, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		workers sync.WaitGroup
+		failed  sync.Once
+		first   error
+	)
+	next := make(chan fetch)
+	for range inputFetches {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for f := range next {
+				if _, err := c.GetToFile(gets, f.address, f.dest); err != nil {
+					failed.Do(func() { first = err; cancel() })
+				}
+			}
+		}()
+	}
+feed:
+	for _, f := range fetches {
+		select {
+		case next <- f:
+		case <-gets.Done():
+			break feed
+		}
+	}
+	close(next)
+	workers.Wait()
+	if first != nil {
+		return first
+	}
+	return ctx.Err()
 }
 
 // within reports whether path is inside base (defense in depth on top of the

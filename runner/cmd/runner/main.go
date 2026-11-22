@@ -114,6 +114,7 @@ func runCmd(args []string, log *slog.Logger) {
 	fs.StringVar(&cfg.GPU, "gpu", env("GPU", ""), "GPU descriptor (optional)")
 	fs.StringVar(&cfg.GPUs, "gpus", env("GPUS", ""), `GPUs a command runner offers: "all" or host indexes such as 0,1 (default none)`)
 	fs.StringVar(&cfg.GPULock, "gpu-lock", env("GPU_LOCK", ""), "the machine's GPU lock file, held while a GPU job runs (tailworker contract)")
+	fs.BoolVar(&cfg.GPUQueued, "gpu-queued", false, "the command waits in the machine's own GPU queue before it uses its GPU")
 	fs.StringVar(&cfg.MPSPipe, "mps-pipe", env("MPS_PIPE", ""), "the machine's MPS pipe directory, for jobs in mps mode")
 	fs.StringVar(&cfg.NvidiaSMI, "nvidia-smi", env("NVIDIA_SMI", ""), "the GPU reading program, called with nvidia-smi's arguments (default nvidia-smi)")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")

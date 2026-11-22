@@ -38,18 +38,25 @@ func TestParseGPUsReadsNvidiaSMI(t *testing.T) {
 
 func TestGPUsReadThroughAnotherProgram(t *testing.T) {
 	// --nvidia-smi: a runner that drives another machine reads that machine's GPUs.
+	// --gpu-queued: the machine's own GPU queue judges the GPU, so it is offered whole.
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a shell script")
 	}
 	reader := filepath.Join(t.TempDir(), "remote-smi")
-	script := "#!/bin/sh\ncase $1 in --query-gpu=*) echo '0, GPU-cccccccc-0000-0000-0000-000000000003, 23034, 9000';; esac\n"
+	script := "#!/bin/sh\ncase $1 in --query-gpu=*) echo '0, GPU-cccccccc-0000-0000-0000-000000000003, 23034, 9000';;\n" +
+		"*) echo 'GPU-cccccccc-0000-0000-0000-000000000003, python';; esac\n"
 	if err := os.WriteFile(reader, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readGPUs(context.Background(), reader, "all", false)
-	want := []wire.GPUReading{{Index: 0, UUID: "GPU-cccccccc-0000-0000-0000-000000000003", TotalMB: 23034, FreeMB: 9000}}
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("%+v %v", got, err)
+	for _, queued := range []bool{false, true} {
+		r := New(Config{RunnerID: "r", Lanes: []string{"embed"}, Command: []string{"true"}, GPUs: "all", NvidiaSMI: reader, GPUQueued: queued}, nil, nil, nil)
+		want := []wire.GPUReading{{Index: 0, UUID: "GPU-cccccccc-0000-0000-0000-000000000003", TotalMB: 23034, FreeMB: 9000, Processes: 1}}
+		if queued {
+			want[0].FreeMB, want[0].Processes = 23034, 0
+		}
+		if got := r.offerGPUs(context.Background()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("queued %v: %+v", queued, got)
+		}
 	}
 }
 

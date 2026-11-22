@@ -65,6 +65,11 @@ schedulers: before a GPU job's command starts, the runner takes `FILE.want`, the
 Holding the lock gives a job the whole GPU, so such a runner offers each GPU with all its
 memory free and no processes.
 
+`--gpu-queued` (`GPU_QUEUED=1` in the worker profile) says the command itself waits in the
+machine's own GPU queue, the one jobs started by hand wait in, before it uses its GPU. Such
+a runner also offers each GPU with all its memory free and no processes: the plane packs
+its jobs by what they declare, and the machine's queue orders them among the rest.
+
 `--no-deadline` supplies `deadline_ts=0` and adds no execution watchdog. A
 `single_attempt` lane makes execution, shipping and lease-loss failures terminal.
 The command handles SIGTERM by stopping and reaping only its own children and

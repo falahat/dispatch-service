@@ -42,7 +42,7 @@ def render(source, environment, stage, native):
         }
     )
     optional = (
-        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE", "NVIDIA_SMI", "ROOTS"}
+        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "GPU_QUEUED", "MPS_PIPE", "NVIDIA_SMI", "ROOTS"}
         if native
         else {
             "SMOKESCREEN_IMAGE",
@@ -98,6 +98,10 @@ def render(source, environment, stage, native):
         ]
         if config.get("NO_DEADLINE") == "1":
             args += ["--no-deadline"]
+        if config.get("GPU_QUEUED", "0") not in ("0", "1"):
+            raise ValueError("GPU_QUEUED is 0 or 1")
+        if config.get("GPU_QUEUED") == "1":
+            args += ["--gpu-queued"]
         if "GPUS" in config and not re.fullmatch(
             r"all|[0-9]{1,2}(?:,[0-9]{1,2})*", config["GPUS"]
         ):

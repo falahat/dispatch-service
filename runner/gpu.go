@@ -39,10 +39,13 @@ func ParseGPUDevices(spec string) (all bool, indexes map[int]bool, err error) {
 	return false, indexes, nil
 }
 
-// readGPUs reads the GPUs named by spec. With a machine GPU lock each GPU is
-// offered whole: holding the lock gives a job the GPU to itself, and a resident
-// server under the same lock frees its memory when a job asks for it.
-func readGPUs(ctx context.Context, reader, spec string, locked bool) ([]wire.GPUReading, error) {
+// readGPUs reads the GPUs named by spec. With whole set each GPU is offered with
+// all its memory free and no processes, because the machine decides when a job
+// may use it: holding the machine's GPU lock gives a job the GPU to itself (and a
+// resident server under the same lock frees its memory when a job asks for it),
+// and a command that waits in the machine's own GPU queue starts its job when
+// that queue finds room for it beside the jobs started by hand.
+func readGPUs(ctx context.Context, reader, spec string, whole bool) ([]wire.GPUReading, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if reader == "" {
@@ -59,7 +62,7 @@ func readGPUs(ctx context.Context, reader, spec string, locked bool) ([]wire.GPU
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
 	gpus, err := parseGPUs(string(list), string(apps), spec)
-	if locked {
+	if whole {
 		for i := range gpus {
 			gpus[i].FreeMB, gpus[i].Processes = gpus[i].TotalMB, 0
 		}
@@ -107,7 +110,7 @@ func (r *Runner) offerGPUs(ctx context.Context) []wire.GPUReading {
 	if r.cfg.GPUs == "" {
 		return nil
 	}
-	gpus, err := readGPUs(ctx, r.cfg.NvidiaSMI, r.cfg.GPUs, r.cfg.GPULock != "")
+	gpus, err := readGPUs(ctx, r.cfg.NvidiaSMI, r.cfg.GPUs, r.cfg.GPULock != "" || r.cfg.GPUQueued)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {

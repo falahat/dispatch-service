@@ -138,13 +138,14 @@ WORK_ROOT=/work/jobs
 COMMAND='/usr/bin/python3 /work/executor.py'
 COUNT=2
 NO_DEADLINE=1
+GPU_QUEUED=1
 GPUS=all
 GPU_LOCK=/var/lib/tailworker/locks/gpu
 ROOTS=runs=/work/runs,trees=/work/trees
 ENV
 bash "$here/install.sh" --env "$temporary/command.env" --machine owned --runner "$temporary/runner"
 unit=$HOME/.config/systemd/user/command-runner@.service
-grep -F -- '--no-deadline' "$unit"
+grep -F -- '"--no-deadline" "--gpu-queued" "--gpus"' "$unit"
 grep -F -- '"--gpus" "all" "--gpu-lock" "/var/lib/tailworker/locks/gpu" "--root" "runs=/work/runs" "--root" "trees=/work/trees"' "$unit"
 grep -F -- '"/usr/bin/python3" "/work/executor.py"' "$unit"
 bash "$here/enroll.sh" --name command --machine owned --signer 'printf signed-fixture' --note command

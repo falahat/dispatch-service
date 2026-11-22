@@ -67,8 +67,9 @@ For a trusted host command that launches its own isolated workloads, add
 The public profile contains NAME, DISPATCHER_ADDR, CAS_URL, LANES, RUNNER_NODE,
 WORK_ROOT, COMMAND (absolute executable plus fixed arguments), COUNT and optional
 NO_DEADLINE=1, GPUS (`all` or indexes such as `0,1`), GPU_LOCK (the machine's GPU lock
-file, `/var/lib/tailworker/locks/gpu` where tailworker shares the GPU), MPS_PIPE and NVIDIA_SMI; see
-[GPUs](contracts/COMMAND.md#gpus). Each instance receives a unique credential on the worker. Runtime
+file, `/var/lib/tailworker/locks/gpu` where tailworker shares the GPU), MPS_PIPE, NVIDIA_SMI and
+ROOTS (`NAME=/folder` pairs separated by commas); see [GPUs](contracts/COMMAND.md#gpus) and
+[local roots](contracts/COMMAND.md#local-roots). Each instance receives a unique credential on the worker. Runtime
 traffic goes through the same authenticated runner and CAS doors; SSH is setup only.
 
 Tailworker resolves the approved machine and transfers images; the kit installs

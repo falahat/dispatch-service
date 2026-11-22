@@ -21,8 +21,9 @@ Application failure can be an integer exit metric; an executor crash is a queue 
 
 ## Local roots
 
-`--root NAME=DIR` (repeatable) installs a root: an absolute folder on this machine whose
-files jobs read in place and keep their outputs in, fixed at installation like the command.
+`--root NAME=DIR` (repeatable; `ROOTS` in the worker profile) installs a root: an absolute
+folder on this machine whose files jobs read in place and keep their outputs in, fixed at
+installation like the command.
 A local input under it arrives in `InvokeRequest.inputs` as its absolute path where it
 lies, not under `inputs/`. The command names a local output as `{"root": NAME, "path":
 P}` in place of a path under `outputs/`; the runner checks that P exists under that root

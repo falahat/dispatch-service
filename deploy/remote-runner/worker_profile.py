@@ -42,7 +42,7 @@ def render(source, environment, stage, native):
         }
     )
     optional = (
-        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE", "NVIDIA_SMI"}
+        {"NO_DEADLINE", "GPUS", "GPU_LOCK", "MPS_PIPE", "NVIDIA_SMI", "ROOTS"}
         if native
         else {
             "SMOKESCREEN_IMAGE",
@@ -113,6 +113,15 @@ def render(source, environment, stage, native):
             if key != "GPUS" and not pathlib.Path(config[key]).is_absolute():
                 raise ValueError(key + " must be an absolute path")
             args += [flag, config[key]]
+        roots = config["ROOTS"].split(",") if "ROOTS" in config else []
+        for root in roots:
+            name, _, folder = root.partition("=")
+            absolute = pathlib.Path(folder).is_absolute()
+            if not re.fullmatch(r"[a-z0-9_]{1,64}", name) or not absolute:
+                raise ValueError(
+                    "ROOTS is NAME=/absolute/folder pairs separated by commas"
+                )
+            args += ["--root", root]
         text = (source / "command.service").read_text()
         (stage / "runner.service").write_text(
             text.replace(

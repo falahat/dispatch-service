@@ -3,8 +3,9 @@
 ``run_step`` is the Python form and ``dispatchctl run`` the command-line one. The invocation they build
 carries the command in ``params.argv`` and the output names in ``params.outputs``; the worker's
 installed command (contracts/COMMAND.md) runs that argv. ``follow`` picks up a job already queued.
-A local input (a ``Place``) is read where it lies on its node and pins the job there; a local output
-stays where the command left it and is reported, not fetched (contracts/ARTIFACTS.md).
+A local input (a ``Place``) is read where it lies on its node and pins the job there; a kept output
+(``keep``, ``params.keep``) is written where it is to stay, under a root of the job's node, and like
+any local output it is reported, not fetched (contracts/ARTIFACTS.md).
 """
 
 from __future__ import annotations
@@ -143,6 +144,7 @@ def submit(
     gpu: Optional[Mapping[str, Any]] = None,
     local: Optional[Mapping[str, Place]] = None,
     node: Optional[str] = None,
+    keep: Optional[Mapping[str, str]] = None,
     op: str = "run",
     op_version: int = 1,
 ) -> str:
@@ -151,8 +153,9 @@ def submit(
     ``job_key`` defaults to one derived from the lane and the invocation, so submitting the same
     run while it is queued or running joins that job instead of starting another. ``gpu`` is the
     job's GPU need, e.g. ``{"memory_mb": 8192, "mode": "shared"}``. ``local`` inputs are read where
-    they lie and pin the job to their node; ``node`` pins a job without them, e.g. one whose
-    local outputs belong there.
+    they lie and pin the job to their node; ``node`` pins a job without them. ``keep`` names
+    outputs the command writes where they are to stay, ``{name: "ROOT/PATH"}`` under the roots
+    of the job's node.
     """
     if not argv or not all(isinstance(arg, str) for arg in argv):
         raise ValueError("argv must be a non-empty list of strings")
@@ -160,8 +163,8 @@ def submit(
         if not _NAME_RE.match(name):
             raise ValueError(f"output name {name!r} must match [a-z0-9_]{{1,64}}")
     extra = dict(params or {})
-    if {"argv", "outputs"} & extra.keys():
-        raise ValueError("params may not set argv or outputs")
+    if {"argv", "outputs", "keep"} & extra.keys():
+        raise ValueError("params may not set argv, outputs or keep")
     _check_params(extra, "params")
     places = {name: place.checked() for name, place in (local or {}).items()}
     for name in places:
@@ -170,11 +173,22 @@ def submit(
     nodes = {place.node for place in places.values()} | ({node} if node else set())
     if len(nodes) > 1:
         raise ValueError(f"a job runs on one node, not {sorted(nodes)}")
+    if keep and not nodes:
+        raise ValueError("a kept output needs the job's node: a local input or node")
+    kept = {name: Place.parse(f"{next(iter(nodes))}:{text}") for name, text in (keep or {}).items()}
+    for name in kept:
+        if not _NAME_RE.match(name) or name in outputs:
+            raise ValueError(f"kept output name {name!r} must match [a-z0-9_]{{1,64}} once")
     invocation = {
         "kind": "invocation/v0",
         "op": op,
         "op_version": op_version,
-        "params": {**extra, "argv": list(argv), "outputs": list(outputs)},
+        "params": {
+            **extra,
+            "argv": list(argv),
+            "outputs": list(outputs),
+            **({"keep": {n: {"root": p.root, "path": p.path} for n, p in kept.items()}} if kept else {}),
+        },
         "inputs": {
             **upload_inputs(cas, inputs or {}),
             **{name: place.artifact() for name, place in places.items()},
@@ -316,6 +330,7 @@ def run_step(
     gpu: Optional[Mapping[str, Any]] = None,
     local: Optional[Mapping[str, Place]] = None,
     node: Optional[str] = None,
+    keep: Optional[Mapping[str, str]] = None,
     op: str = "run",
     op_version: int = 1,
     log: Optional[Callable[[bytes], None]] = None,
@@ -341,6 +356,7 @@ def run_step(
         gpu=gpu,
         local=local,
         node=node,
+        keep=keep,
         op=op,
         op_version=op_version,
     )

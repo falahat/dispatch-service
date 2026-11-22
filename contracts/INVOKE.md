@@ -22,14 +22,15 @@ the AWS Lambda Runtime API.
      "workdir": "/work/j_…",              // both containers see the same volume
      "inputs":  { "audio": "inputs/audio" },        // relative to workdir, laid out by the runner; a local input: its absolute path
      "outputs_dir": "outputs",                       // write results under workdir/outputs/
-     "deadline_ts": 1789999999000
+     "deadline_ts": 1789999999000,
+     "roots": { "runs": "/srv/runs" }                // the runner's roots, present when it has any
    }
    ```
    Success → `200 {"outputs": {"transcript": "outputs/transcript.json", "frames": "outputs/frames"}, "metrics": {…}}`
    (paths relative to workdir, each under `outputs/`; a path naming a folder publishes
    that folder's files as one output; `{"root": …, "path": …}` names a local output under
-   one of the runner's roots; integer metrics). A pair serving local artifacts mounts each
-   runner root at the same path in both containers. Failure →
+   one of the runner's roots, written where `roots` says that root lies; integer metrics). A
+   pair serving local artifacts mounts each runner root at the same path in both containers. Failure →
    `500 {"error_class": "oom" | "timeout" | "bad_input" | "fatal" | "unknown", "message": "…" }`.
    **One invoke in flight**: a second concurrent `POST /invoke` → `409`.
 
@@ -44,8 +45,9 @@ the AWS Lambda Runtime API.
 
 4. **Touch nothing else.** No credentials exist in the container; the network has no route
    except the runner (ingest-lane images additionally get the EgressGuard proxy as their
-   only outbound door — never raw egress). Read `workdir/inputs/**`, write
-   `workdir/outputs/**`; the runner does all hashing and all CAS traffic.
+   only outbound door — never raw egress). Read `workdir/inputs/**` and local inputs, write
+   `workdir/outputs/**` and local outputs under `roots`; the runner does all hashing and
+   all CAS traffic.
 
 5. **Name only plain files and folders under `outputs/`.** The runner fails the job as
    `fatal` when a named output path leaves `outputs/`, when the output or anything under

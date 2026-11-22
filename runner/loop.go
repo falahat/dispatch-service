@@ -270,6 +270,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		Inputs:     inputs,
 		OutputsDir: outputsDir,
 		DeadlineTS: deadlineTS, // zero explicitly means no execution deadline
+		Roots:      r.cfg.Roots,
 		GPU:        g.Job.GPU,
 	})
 	if ierr != nil {

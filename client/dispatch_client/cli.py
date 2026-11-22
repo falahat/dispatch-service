@@ -83,6 +83,13 @@ def _parser() -> argparse.ArgumentParser:
         "--node", help="run on this node's runners (default: the --local inputs' node)"
     )
     run.add_argument("--output", action="append", default=[], metavar="NAME")
+    run.add_argument(
+        "--keep",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT/PATH",
+        help="an output the command writes where it is to stay, under the job's node's root ROOT",
+    )
     run.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     run.add_argument("--gpu-mb", type=int, help="GPU memory the job uses at most, in MiB")
     run.add_argument("--gpu-mode", choices=("shared", "mps", "exclusive"), default="shared")
@@ -163,6 +170,7 @@ def _run(args: dict[str, Any]) -> int:
                         for name, text in _pairs(args["local"], "--local").items()
                     },
                     node=args["node"],
+                    keep=_pairs(args["keep"], "--keep"),
                     outputs=args["output"],
                     dest=args["dest"],
                     params=_pairs(args["param"], "--param"),

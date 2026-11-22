@@ -82,6 +82,9 @@ type InvokeRequest struct {
 	Inputs     map[string]string `json:"inputs"`
 	OutputsDir string            `json:"outputs_dir"`
 	DeadlineTS int64             `json:"deadline_ts"`
+	// Roots are the runner's installed roots, name -> folder, where a compute
+	// writes a local output in place and names it as {root, path}.
+	Roots map[string]string `json:"roots,omitempty"`
 	// GPU is the grant's GPU; the command executor passes it on in the environment.
 	GPU *wire.GrantGPU `json:"-"`
 }

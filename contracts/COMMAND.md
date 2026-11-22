@@ -25,7 +25,8 @@ Application failure can be an integer exit metric; an executor crash is a queue 
 folder on this machine whose files jobs read in place and keep their outputs in, fixed at
 installation like the command.
 A local input under it arrives in `InvokeRequest.inputs` as its absolute path where it
-lies, not under `inputs/`. The command names a local output as `{"root": NAME, "path":
+lies, not under `inputs/`. `InvokeRequest.roots` maps each root's name to its folder, so
+the command can write an output where it is to stay and name it as `{"root": NAME, "path":
 P}` in place of a path under `outputs/`; the runner checks that P exists under that root
 and reports it without reading it ([ARTIFACTS.md](ARTIFACTS.md), D10). Several jobs at
 once on one machine are several runner instances (`COUNT` in the worker profile), each

@@ -15,8 +15,9 @@ import (
 	"github.com/falahat/dispatch-service/runner"
 )
 
-// inPlaceCompute reads its local input where it lies, writes a file beside it
-// and names that file as a local output, plus one ordinary output.
+// inPlaceCompute reads its local input where it lies, writes a new folder under
+// the root its request names and names that folder as a local output, plus one
+// ordinary output.
 func inPlaceCompute(t *testing.T, root string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -31,11 +32,15 @@ func inPlaceCompute(t *testing.T, root string) http.Handler {
 		if req.Inputs["run"] != filepath.Join(root, "K") {
 			t.Errorf("local input handed over as %q, want it where it lies", req.Inputs["run"])
 		}
+		if req.Roots["runs"] != root {
+			t.Errorf("request names roots %v, want runs at %q", req.Roots, root)
+		}
 		given, _ := os.ReadFile(filepath.Join(req.Inputs["run"], "in.txt"))
-		os.WriteFile(filepath.Join(req.Inputs["run"], "out.txt"), append([]byte("made from "), given...), 0o644)
+		os.MkdirAll(filepath.Join(req.Roots["runs"], "K", "fit"), 0o755)
+		os.WriteFile(filepath.Join(req.Roots["runs"], "K", "fit", "out.txt"), append([]byte("made from "), given...), 0o644)
 		os.WriteFile(filepath.Join(req.Workdir, req.OutputsDir, "report.json"), []byte(`{"ok":true}`), 0o644)
 		json.NewEncoder(w).Encode(map[string]any{
-			"outputs": map[string]any{"kept": map[string]string{"root": "runs", "path": "K/out.txt"}, "report": "outputs/report.json"},
+			"outputs": map[string]any{"kept": map[string]string{"root": "runs", "path": "K/fit"}, "report": "outputs/report.json"},
 			"metrics": map[string]int64{},
 		})
 	})
@@ -97,9 +102,9 @@ func TestLocalArtifactsStayWhereTheyLie(t *testing.T) {
 	if err := json.Unmarshal(view.ActionResult, &result); err != nil {
 		t.Fatal(err)
 	}
-	made, _ := os.ReadFile(filepath.Join(root, "K", "out.txt"))
+	made, _ := os.ReadFile(filepath.Join(root, "K", "fit", "out.txt"))
 	kept := result.Outputs["kept"]
-	want := artifact.Output{Kind: artifact.KindLocal, Size: int64(len(made)), Place: artifact.Place{Node: "n1", Root: "runs", Path: "K/out.txt"}}
+	want := artifact.Output{Kind: artifact.KindLocal, Place: artifact.Place{Node: "n1", Root: "runs", Path: "K/fit"}}
 	if string(made) != "made from the clip" || kept != want {
 		t.Fatalf("local output = %+v (%q), want %+v", kept, made, want)
 	}
@@ -125,7 +130,7 @@ func TestLocalInputUnderAnUnknownRootFails(t *testing.T) {
 	if view.State != "FAILED" {
 		t.Fatalf("job state %s, want FAILED: %+v", view.State, view)
 	}
-	if _, err := os.Stat(filepath.Join(root, "K", "out.txt")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, "K", "fit")); err == nil {
 		t.Fatal("the compute ran on a job with an unknown root")
 	}
 }

@@ -87,8 +87,11 @@ metric, if any, is 0. `run_step` and `follow` in `dispatch_client.run` are the P
 `--local NAME=NODE:ROOT/PATH` passes an input that already lies on NODE, at PATH under the
 root its runner was installed with as ROOT: nothing is uploaded, the job runs on NODE, and
 the command reads the input where it lies ([local artifacts](../contracts/ARTIFACTS.md)).
-`--node NODE` pins a job without local inputs. A local output the command keeps under a
-root is listed under `local` in the summary as `NODE:ROOT/PATH` and stays where it is.
+`--node NODE` pins a job without local inputs. `--keep NAME=ROOT/PATH` names an output the
+command writes where it is to stay, at PATH under ROOT on the job's node, in `params.keep` as
+`{root, path}`; the command finds each root's folder in its request's `roots`. A local output
+is listed under `local` in the summary as `NODE:ROOT/PATH`, and nothing of it is uploaded or
+fetched.
 
 ```sh
 dispatchctl run --lane pose --local run=bigboi:runs/K -- python /pose/scripts/fit.py /in/run

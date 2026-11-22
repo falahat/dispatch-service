@@ -190,10 +190,12 @@ def test_local_inputs_are_read_in_place_and_local_outputs_stay(pep, tmp_path):
         lane="pose",
         argv=["python", "-m", "scan.fit", "/in/run"],
         local={"run": Place.parse("bigboi:runs/K")},
+        keep={"kept": "runs/K/fit"},
         outputs=["report"],
         dest=tmp_path / "out",
         log=lambda data: None,
     )
+    assert plane.invocation["params"]["keep"] == {"kept": {"root": "runs", "path": "K/fit"}}
     assert plane.invocation["inputs"] == {
         "run": {"kind": "local", "node": "bigboi", "root": "runs", "path": "K"}
     }
@@ -232,6 +234,9 @@ def test_failed_job_returns_without_outputs_or_ack(pep, tmp_path):
         {"local": {"a": Place("n1", "runs", "x"), "b": Place("n2", "runs", "y")}},
         {"local": {"a": Place("n1", "runs", "x")}, "node": "n2"},
         {"local": {"a": Place("n1", "runs", "x/./y")}},
+        {"keep": {"fit": "runs/K"}},
+        {"keep": {"fit": "runs/../K"}, "node": "n1"},
+        {"keep": {"report": "runs/K"}, "node": "n1"},
     ],
 )
 def test_bad_run_requests_fail_before_queueing(pep, tmp_path, change):

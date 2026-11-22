@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS job_gpu (
 );
 CREATE INDEX IF NOT EXISTS idx_job_gpu_uuid ON job_gpu(gpu_uuid);
 
+-- The node a job must run on, where its local artifacts are. Jobs free to run
+-- anywhere have no row.
+CREATE TABLE IF NOT EXISTS job_node (
+  job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,
+  node   TEXT NOT NULL
+);
+
 -- Per-attempt timeline: the dead-letter view and the quarantine witness source.
 CREATE TABLE IF NOT EXISTS attempts (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

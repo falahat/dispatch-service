@@ -18,6 +18,18 @@
       "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\\\u0000-\\u001f]+$",
       "$comment": "relative; no leading /, no .. segment, no backslash, no control chars (incl. NUL) — consumers MUST re-check"
     },
+    "node": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "$comment": "the node name a runner gives at hello"
+    },
+    "place_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*//)(?!.*/$)[^\\\\\\u0000-\\u001f]+$",
+      "$comment": "a relative_path with no empty or . segment, so one place has one spelling — consumers MUST re-check"
+    },
     "canonical_value": {
       "$comment": "params values: integers only among numbers (compute containers read params in arbitrary languages; floats parse ambiguously); decimals go as strings",
       "oneOf": [
@@ -35,23 +47,56 @@
       ]
     },
     "input": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["address", "kind"],
-      "properties": {
-        "address": { "$ref": "#/$defs/address" },
-        "kind": { "enum": ["blob", "manifest"] }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address", "kind"],
+          "properties": {
+            "address": { "$ref": "#/$defs/address" },
+            "kind": { "enum": ["blob", "manifest"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node", "root", "path"],
+          "$comment": "read in place on that node; the job runs only there",
+          "properties": {
+            "kind": { "const": "local" },
+            "node": { "$ref": "#/$defs/node" },
+            "root": { "$ref": "#/$defs/name" },
+            "path": { "$ref": "#/$defs/place_path" }
+          }
+        }
+      ]
     },
     "output": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["address", "size"],
-      "properties": {
-        "address": { "$ref": "#/$defs/address" },
-        "size": { "type": "integer", "minimum": 0, "$comment": "bytes of the blob at address (for a manifest, the manifest's own bytes)" },
-        "kind": { "enum": ["blob", "manifest"], "$comment": "absent = blob; manifest = a folder output, its entries relative to that folder" }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address", "size"],
+          "properties": {
+            "address": { "$ref": "#/$defs/address" },
+            "size": { "type": "integer", "minimum": 0, "$comment": "bytes of the blob at address (for a manifest, the manifest's own bytes)" },
+            "kind": { "enum": ["blob", "manifest"], "$comment": "absent = blob; manifest = a folder output, its entries relative to that folder" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node", "root", "path", "size"],
+          "$comment": "kept where the compute wrote it, read or uploaded by no one until fetched",
+          "properties": {
+            "kind": { "const": "local" },
+            "node": { "$ref": "#/$defs/node" },
+            "root": { "$ref": "#/$defs/name" },
+            "path": { "$ref": "#/$defs/place_path" },
+            "size": { "type": "integer", "minimum": 0, "$comment": "a file's bytes; 0 for a folder, whose files are not counted" }
+          }
+        }
+      ]
     },
     "invocation": {
       "type": "object",

@@ -117,6 +117,18 @@ func runCmd(args []string, log *slog.Logger) {
 	fs.StringVar(&cfg.MPSPipe, "mps-pipe", env("MPS_PIPE", ""), "the machine's MPS pipe directory, for jobs in mps mode")
 	fs.StringVar(&cfg.NvidiaSMI, "nvidia-smi", env("NVIDIA_SMI", ""), "the GPU reading program, called with nvidia-smi's arguments (default nvidia-smi)")
 	credPath := fs.String("credential", env("CREDENTIAL", ""), "credential file for PEP mode (omit for direct/trusted mode)")
+	cfg.Roots = map[string]string{}
+	fs.Func("root", "a local root NAME=DIR whose files jobs on this node read and keep in place (repeatable)", func(s string) error {
+		name, dir, err := runner.ParseRoot(s)
+		if err != nil {
+			return err
+		}
+		if _, dup := cfg.Roots[name]; dup {
+			return fmt.Errorf("root %s given twice", name)
+		}
+		cfg.Roots[name] = dir
+		return nil
+	})
 	_ = fs.Parse(args)
 	cfg.Command = fs.Args()
 

@@ -127,6 +127,7 @@ type Policy struct {
 	Priority            *int                  `json:"priority,omitempty"`
 	ReleaseCap          *int                  `json:"release_cap,omitempty"`
 	GPU                 *GPUNeed              `json:"gpu,omitempty"`
+	Node                *string               `json:"node,omitempty"` // runs only on this node's runners
 }
 
 // GPUNeed is a job's GPU declaration. A job without one never receives a GPU.

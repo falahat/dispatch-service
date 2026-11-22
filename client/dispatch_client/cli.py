@@ -72,6 +72,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--lane", required=True)
     run.add_argument("--key", dest="job_key", help="job key (default: one per lane and invocation)")
     run.add_argument("--input", action="append", default=[], metavar="NAME=PATH")
+    run.add_argument(
+        "--local",
+        action="append",
+        default=[],
+        metavar="NAME=NODE:ROOT/PATH",
+        help="an input read where it lies on NODE, under its runner's root ROOT; pins the job there",
+    )
+    run.add_argument(
+        "--node", help="run on this node's runners (default: the --local inputs' node)"
+    )
     run.add_argument("--output", action="append", default=[], metavar="NAME")
     run.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     run.add_argument("--gpu-mb", type=int, help="GPU memory the job uses at most, in MiB")
@@ -124,7 +134,7 @@ def _pairs(values: list[str], what: str) -> dict[str, str]:
 
 def _run(args: dict[str, Any]) -> int:
     from .cas import CasClient, CasError, Credential
-    from .run import follow, run_step
+    from .run import Place, follow, run_step
 
     queued: list[str] = []
     try:
@@ -148,6 +158,11 @@ def _run(args: dict[str, Any]) -> int:
                     lane=args["lane"],
                     argv=argv,
                     inputs=_pairs(args["input"], "--input"),
+                    local={
+                        name: Place.parse(text)
+                        for name, text in _pairs(args["local"], "--local").items()
+                    },
+                    node=args["node"],
                     outputs=args["output"],
                     dest=args["dest"],
                     params=_pairs(args["param"], "--param"),

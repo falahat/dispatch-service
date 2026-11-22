@@ -319,6 +319,8 @@ func (c *CAS) LayoutInputs(ctx context.Context, workdir string, inv *artifact.In
 				}
 				fetches = append(fetches, fetch{e.Address, dest})
 			}
+		case artifact.KindLocal:
+			// Read in place where it lies (local.go); nothing to fetch.
 		default:
 			return fmt.Errorf("input %q: unknown kind %q", name, in.Kind)
 		}

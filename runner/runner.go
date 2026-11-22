@@ -32,6 +32,8 @@ type Config struct {
 	GPULock         string   // the machine's GPU lock file, shared with other schedulers (Linux, macOS)
 	MPSPipe         string   // the machine's MPS pipe directory, for jobs in mps mode
 	NvidiaSMI       string   // the GPU reading program, called with nvidia-smi's arguments; "" is nvidia-smi
+
+	Roots map[string]string // installed local roots: name -> absolute folder (D10)
 }
 
 // Runner is the worker client aggregate.

@@ -75,6 +75,7 @@ func sampleActionResult() artifact.ActionResult {
 		Outputs: map[string]artifact.Output{
 			"transcript": {Address: addrB, Size: 482133},
 			"frames":     {Address: addrA, Size: 9120, Kind: artifact.KindManifest},
+			"run":        {Kind: artifact.KindLocal, Size: 0, Place: artifact.Place{Node: "desktop-ai", Root: "runs", Path: "ep-0042/run"}},
 		},
 		Metrics: map[string]int64{"wall_s": 512, "work_units": 3600},
 		Runner:  artifact.RunnerInfo{Node: "desktop-ai", Version: "runner/0.1.0"},
@@ -91,6 +92,7 @@ func messageCases() []struct {
 	i3 := func(n int) *int { return &n }
 	i64 := func(n int64) *int64 { return &n }
 	bc := wire.BackoffStandard
+	node := "desktop-ai"
 	return []struct {
 		typ  string
 		def  string
@@ -106,7 +108,7 @@ func messageCases() []struct {
 		{wire.TypeComplete, "complete", wire.Complete{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Attempt: 1, ActionResult: sampleActionResult()}},
 		{wire.TypeFail, "fail", wire.Fail{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Attempt: 1, ErrorClass: wire.ClassOOM, Message: "cuda oom"}},
 		{wire.TypeRelease, "release", wire.Release{LeaseID: "l_0000000000000000000000000A", JobID: "j_0000000000000000000000000A", Reason: wire.ReleaseCASUnreachable}},
-		{wire.TypeEnqueue, "enqueue", wire.Enqueue{Jobs: []wire.EnqueueJob{{JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Policy: &wire.Policy{MaxAttempts: i3(3), BackoffClass: &bc, GPU: &wire.GPUNeed{MemoryMB: 3000, Mode: wire.GPUExclusive}}, CostEstimateUSD: "0.00"}}}},
+		{wire.TypeEnqueue, "enqueue", wire.Enqueue{Jobs: []wire.EnqueueJob{{JobKey: "k", Lane: "transcribe", InvocationAddress: addrA, Policy: &wire.Policy{MaxAttempts: i3(3), BackoffClass: &bc, GPU: &wire.GPUNeed{MemoryMB: 3000, Mode: wire.GPUExclusive}, Node: &node}, CostEstimateUSD: "0.00"}}}},
 		{wire.TypeEnqueueResult, "enqueue_result", wire.EnqueueResult{Results: []wire.EnqueueResultItem{{JobKey: "k", JobID: "j_0000000000000000000000000A", Created: true}}}},
 		{wire.TypeSubscribe, "subscribe", wire.Subscribe{}},
 		{wire.TypeCompletion, "completion", wire.Completion{JobID: "j_0000000000000000000000000A", JobKey: "k", Lane: "transcribe", Attempt: 1, ActionResult: sampleActionResult(), CompletedTS: 5}},
@@ -116,6 +118,49 @@ func messageCases() []struct {
 		{wire.TypeCancel, "cancel", wire.Cancel{JobID: "j_0000000000000000000000000A", Reason: "stale"}},
 		{wire.TypeOK, "ok", wire.OK{}},
 		{wire.TypeError, "error", wire.Error{Code: wire.CodeInvalid, Message: "bad", Retryable: false}},
+	}
+}
+
+// TestInvocationInputsMatchSchema checks each input kind against the artifacts
+// schema, and that an input mixing an address with a place matches none.
+func TestInvocationInputsMatchSchema(t *testing.T) {
+	s := loadSchemas(t)
+	sch, err := s.c.Compile(artID + "#/$defs/invocation")
+	if err != nil {
+		t.Fatalf("compile invocation: %v", err)
+	}
+	place := artifact.Place{Node: "bigboi", Root: "runs", Path: "lane/runs/K"}
+	check := func(input artifact.Input) error {
+		raw, err := json.Marshal(artifact.Invocation{Kind: artifact.InvocationKind, Op: "run", OpVersion: 1,
+			Params: json.RawMessage(`{}`), Inputs: map[string]artifact.Input{"in": input}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sch.Validate(inst)
+	}
+	for _, input := range []artifact.Input{
+		{Address: addrA, Kind: artifact.KindBlob},
+		{Address: addrA, Kind: artifact.KindManifest},
+		{Kind: artifact.KindLocal, Place: place},
+	} {
+		if err := check(input); err != nil {
+			t.Errorf("%s input failed schema: %v", input.Kind, err)
+		}
+	}
+	for why, input := range map[string]artifact.Input{
+		"a local input with an address": {Address: addrA, Kind: artifact.KindLocal, Place: place},
+		"a blob naming a place":         {Address: addrA, Kind: artifact.KindBlob, Place: place},
+		"a dot segment":                 {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "lane/./K"}},
+		"an empty segment":              {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "lane//K"}},
+		"a traversal":                   {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "../K"}},
+	} {
+		if check(input) == nil {
+			t.Errorf("%s passed the schema", why)
+		}
 	}
 }
 
@@ -175,10 +220,10 @@ func TestStrictDecodeRejectsUnknownField(t *testing.T) {
 func TestEnvelopeRejects(t *testing.T) {
 	cases := map[string]string{
 		"bad version": `{"v":"9.9","type":"ok","id":"x","body":{}}`,
-		"bad type":    `{"v":"0.5","type":"OK!","id":"x","body":{}}`,
-		"empty id":    `{"v":"0.5","type":"ok","id":"","body":{}}`,
-		"no body":     `{"v":"0.5","type":"ok","id":"x"}`,
-		"unknown key": `{"v":"0.5","type":"ok","id":"x","body":{},"extra":1}`,
+		"bad type":    `{"v":"0.6","type":"OK!","id":"x","body":{}}`,
+		"empty id":    `{"v":"0.6","type":"ok","id":"","body":{}}`,
+		"no body":     `{"v":"0.6","type":"ok","id":"x"}`,
+		"unknown key": `{"v":"0.6","type":"ok","id":"x","body":{},"extra":1}`,
 	}
 	for name, frame := range cases {
 		t.Run(name, func(t *testing.T) {

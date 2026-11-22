@@ -215,7 +215,19 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		return
 	}
 
-	// 2. Lay out inputs (verified, traversal-guarded).
+	// 2. Find local inputs where they lie, then fetch the rest (verified,
+	// traversal-guarded). A local input on another node means the job was placed
+	// on the wrong machine; one this node lacks is the job's fault.
+	local, err := r.localInputs(&inv)
+	var elsewhere *wrongNode
+	if errors.As(err, &elsewhere) {
+		r.release(dc, g, wire.ReleaseWrongHardware, err.Error())
+		return
+	}
+	if err != nil {
+		r.fail(dc, g, wire.ClassBadInput, err.Error())
+		return
+	}
 	if err := r.cas.LayoutInputs(jobCtx, workdir, &inv); err != nil {
 		r.releaseForCAS(dc, g, err)
 		return
@@ -243,6 +255,9 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	inputs := map[string]string{}
 	for name := range inv.Inputs {
 		inputs[name] = filepath.ToSlash(filepath.Join("inputs", name))
+	}
+	for name, path := range local {
+		inputs[name] = path
 	}
 	deadlineTS := int64(0)
 	if !deadline.IsZero() {

@@ -62,6 +62,9 @@ func New(store *Store, cfg Config, clock Clock) (*Dispatcher, error) {
 
 		gpuOffers: map[string]gpuOffer{},
 	}
+	if err := d.renewRunningLeases(); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 

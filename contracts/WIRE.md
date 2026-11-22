@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.5", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.6", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -62,8 +62,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.5", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
-| `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`. |
+| `hello` | `{contract:"0.6", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement) and that is pinned to no other node than this runner's (`policy.node`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`. |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
 | `fail` | `{lease_id, job_id, attempt, error_class, message ≤ 4 KiB}` → `ok` | compute failed. Attempt burned; the job's declared policy maps `error_class` → retriable (backoff) or terminal. Idempotent per `(job_id, attempt)`. |
@@ -119,7 +119,9 @@ policy: {
   gpu?: {                       # absent: the job never receives a GPU
     memory_mb: int ≥ 1,         # the most GPU memory (MiB) the job will use
     mode?: shared | mps | exclusive   (default shared)
-  }
+  },
+  node?: string                 # run only on the runners whose hello names this node; the
+                                # app sets it from the job's local artifacts (D11)
 }
 ```
 Staleness (`on_drift`) is **deliberately absent** — it is reconciler (app) policy, enforced
@@ -142,7 +144,8 @@ RUNNING jobs it placed there, because a job that just started may not have alloc
 - Of the GPUs that fit, the grant names the one with the most free memory in `job.gpu`.
 - A GPU job that has waited `gpu_starve_after_s` (default 1200) since it became runnable
   starts first wherever it fits. Until it starts, the GPUs a runner asking for work in its
-  lane could place it on, once they drain, take no other new GPU job.
+  lane could place it on, once they drain, take no other new GPU job; a job pinned to a
+  node holds back only that node's GPUs.
 - The runner enforces the placement: it shows the job only the granted GPU and passes
   `memory_mb` and `mode` on (see `COMMAND.md`).
 

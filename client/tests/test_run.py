@@ -16,7 +16,7 @@ from nacl.signing import SigningKey
 
 from dispatch_client.cas import CasClient, Credential
 from dispatch_client.cli import _parser
-from dispatch_client.run import follow, run_step
+from dispatch_client.run import Place, follow, run_step
 from test_cas import StubPep
 
 
@@ -30,9 +30,10 @@ class Plane:
     """The app verbs run_step uses. The job runs when its log is first read: the worker reads
     the invocation, writes one log chunk, a report file and a frames folder."""
 
-    def __init__(self, server: StubPep, fail: bool = False):
+    def __init__(self, server: StubPep, fail: bool = False, kept: dict[str, Any] | None = None):
         self.server = server
         self.fail = fail
+        self.kept = kept
         self.jobs: list[dict[str, Any]] = []
         self.acked: list[str] = []
         self.invocation: dict[str, Any] = {}
@@ -76,6 +77,8 @@ class Plane:
                 },
                 "metrics": {"exit": 0},
             }
+            if self.kept:
+                self.result["outputs"]["kept"] = self.kept
             chunk = {"offset": 0, "address": _store(self.server, self.log), "size": len(self.log)}
             return {"entries": [chunk], "next_offset": len(self.log), "done": False}
         return {"entries": [], "next_offset": after, "done": True}
@@ -177,6 +180,38 @@ def test_run_step_uploads_runs_streams_and_fetches(pep, tmp_path):
     assert second.bytes["uploaded"] < 4096
 
 
+def test_local_inputs_are_read_in_place_and_local_outputs_stay(pep, tmp_path):
+    server, cas = pep
+    kept = {"kind": "local", "node": "bigboi", "root": "runs", "path": "K/fit", "size": 0}
+    plane = Plane(server, kept=kept)
+    result = run_step(
+        plane,  # type: ignore[arg-type]
+        cas,
+        lane="pose",
+        argv=["python", "-m", "scan.fit", "/in/run"],
+        local={"run": Place.parse("bigboi:runs/K")},
+        outputs=["report"],
+        dest=tmp_path / "out",
+        log=lambda data: None,
+    )
+    assert plane.invocation["inputs"] == {
+        "run": {"kind": "local", "node": "bigboi", "root": "runs", "path": "K"}
+    }
+    assert plane.jobs[0]["policy"] == {"node": "bigboi"}
+    assert result.ok and result.local == {"kept": Place("bigboi", "runs", "K/fit")}
+    assert result.summary()["local"] == {"kept": "bigboi:runs/K/fit"}
+    assert not (tmp_path / "out" / "kept").exists()
+    assert result.bytes["uploaded"] < 1024  # the invocation alone
+
+
+@pytest.mark.parametrize(
+    "text", ["bigboi:runs", "bigboi/runs/K", ":runs/K", "bigboi:Runs/K", "bigboi:runs/../K"]
+)
+def test_bad_places_are_refused(text):
+    with pytest.raises(ValueError):
+        Place.parse(text)
+
+
 def test_failed_job_returns_without_outputs_or_ack(pep, tmp_path):
     server, cas = pep
     plane = Plane(server, fail=True)
@@ -194,6 +229,9 @@ def test_failed_job_returns_without_outputs_or_ack(pep, tmp_path):
         {"params": {"argv": ["x"]}},
         {"outputs": ["Report"]},
         {"argv": []},
+        {"local": {"a": Place("n1", "runs", "x"), "b": Place("n2", "runs", "y")}},
+        {"local": {"a": Place("n1", "runs", "x")}, "node": "n2"},
+        {"local": {"a": Place("n1", "runs", "x/./y")}},
     ],
 )
 def test_bad_run_requests_fail_before_queueing(pep, tmp_path, change):
@@ -216,6 +254,8 @@ def test_run_command_keeps_the_whole_argv():
                 "l",
                 "--input",
                 "v=a.mp4",
+                "--local",
+                "run=bigboi:runs/K",
                 "--",
                 "python",
                 "-m",
@@ -228,3 +268,4 @@ def test_run_command_keeps_the_whole_argv():
     argv = args["argv"][1:] if args["argv"][:1] == ["--"] else args["argv"]
     assert argv == ["python", "-m", "scan.fit", "--lane", "other"]
     assert args["input"] == ["v=a.mp4"] and args["lane"] == "l"
+    assert args["local"] == ["run=bigboi:runs/K"] and args["node"] is None

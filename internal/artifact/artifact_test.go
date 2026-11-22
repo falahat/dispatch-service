@@ -180,3 +180,48 @@ func TestActionResultValidate(t *testing.T) {
 		t.Error("action_result with an unknown output kind accepted")
 	}
 }
+
+// A local artifact names a place and carries no address; a blob or manifest
+// carries an address and names no place. Every place part is checked.
+func TestLocalArtifactValidate(t *testing.T) {
+	const a = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	run := artifact.Place{Node: "bigboi", Root: "runs", Path: "lane/runs/K"}
+	inv := artifact.Invocation{
+		Kind: artifact.InvocationKind, Op: "run", OpVersion: 1,
+		Inputs: map[string]artifact.Input{"run": {Kind: artifact.KindLocal, Place: run}},
+	}
+	if err := inv.Validate(); err != nil {
+		t.Fatalf("valid local input rejected: %v", err)
+	}
+	result := artifact.ActionResult{
+		Kind: artifact.ActionResultKind, InvocationAddress: a,
+		Outputs: map[string]artifact.Output{"run": {Kind: artifact.KindLocal, Place: run}},
+		Runner:  artifact.RunnerInfo{Node: "bigboi", Version: "v"},
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatalf("valid local output rejected: %v", err)
+	}
+	bad := map[string]artifact.Input{
+		"address on a local input": {Kind: artifact.KindLocal, Address: a, Place: run},
+		"place on a blob":          {Kind: artifact.KindBlob, Address: a, Place: run},
+		"no node":                  {Kind: artifact.KindLocal, Place: artifact.Place{Root: "runs", Path: "K"}},
+		"node with a slash":        {Kind: artifact.KindLocal, Place: artifact.Place{Node: "a/b", Root: "runs", Path: "K"}},
+		"root out of shape":        {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "Runs", Path: "K"}},
+		"no path":                  {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs"}},
+		"absolute path":            {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "/etc"}},
+		"traversal":                {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "K/../../etc"}},
+		"dot segment":              {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "./K"}},
+		"empty segment":            {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "lane//K"}},
+		"trailing slash":           {Kind: artifact.KindLocal, Place: artifact.Place{Node: "bigboi", Root: "runs", Path: "K/"}},
+	}
+	for why, input := range bad {
+		inv.Inputs = map[string]artifact.Input{"run": input}
+		if err := inv.Validate(); err == nil {
+			t.Errorf("input with %s accepted", why)
+		}
+		result.Outputs = map[string]artifact.Output{"run": {Kind: input.Kind, Address: input.Address, Place: input.Place}}
+		if err := result.Validate(); err == nil {
+			t.Errorf("output with %s accepted", why)
+		}
+	}
+}

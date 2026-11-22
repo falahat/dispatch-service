@@ -10,7 +10,10 @@
 //     invocation's params, so compute containers in any language parse them
 //     unambiguously (decimals ride as strings);
 //   - traversal guard: manifest paths are relative, ..-free, backslash-free,
-//     control-char-free — checked here in addition to the schema.
+//     control-char-free — checked here in addition to the schema;
+//   - a local artifact is a place, not content: it names a file or folder on one
+//     node under one of the roots that node's runner was installed with, and
+//     nothing hashes or copies it.
 package artifact
 
 import (
@@ -51,27 +54,75 @@ func (a Address) Hex() string { return strings.TrimPrefix(string(a), "sha256:") 
 // / verify-on-write check every consumer MUST perform.
 func (a Address) Matches(b []byte) bool { return ComputeAddress(b) == a }
 
-// Kind enumerates how an input blob is fetched.
+// Kind enumerates how an input reaches the compute and where an output is kept.
 type Kind string
 
 const (
 	KindBlob     Kind = "blob"
 	KindManifest Kind = "manifest"
+	KindLocal    Kind = "local"
 )
 
-// Input is one named input of an invocation.
+// Input is one named input of an invocation: a blob or a manifest by address,
+// or a local artifact by its place.
 type Input struct {
-	Address Address `json:"address"`
+	Address Address `json:"address,omitempty"`
 	Kind    Kind    `json:"kind"`
+	Place
 }
 
 // Output is one named output of an action result: the address and size of one
 // blob. Kind manifest means that blob is a manifest of a folder's files. An
 // empty Kind is a blob, so results stored before folder outputs stay valid.
+// Kind local is an output kept where the compute wrote it: its place, and the
+// file's size (a folder's is not counted).
 type Output struct {
-	Address Address `json:"address"`
+	Address Address `json:"address,omitempty"`
 	Size    int64   `json:"size"`
 	Kind    Kind    `json:"kind,omitempty"`
+	Place
+}
+
+// Place locates a local artifact: Path under the root named Root that Node's
+// runner was installed with. The node's runner is the only component that
+// resolves it, and only inside that root.
+type Place struct {
+	Node string `json:"node,omitempty"`
+	Root string `json:"root,omitempty"`
+	Path string `json:"path,omitempty"`
+}
+
+var nodeRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// Validate checks that the place names a node and a root in their own shapes,
+// and a path in the one spelling ValidatePlacePath allows.
+func (p Place) Validate() error {
+	if !nodeRe.MatchString(p.Node) {
+		return fmt.Errorf("artifact: invalid node %q", p.Node)
+	}
+	if !nameRe.MatchString(p.Root) {
+		return fmt.Errorf("artifact: invalid root %q", p.Root)
+	}
+	return ValidatePlacePath(p.Path)
+}
+
+// validateKind checks the fields one input or output of this kind carries: an
+// address for blob and manifest, a place for local, never both.
+func validateKind(kind Kind, address Address, place Place) error {
+	switch kind {
+	case KindBlob, KindManifest:
+		if place != (Place{}) {
+			return fmt.Errorf("a %s names no place", kind)
+		}
+		return address.Validate()
+	case KindLocal:
+		if address != "" {
+			return errors.New("a local artifact has no address")
+		}
+		return place.Validate()
+	default:
+		return fmt.Errorf("invalid kind %q", kind)
+	}
 }
 
 // Invocation is the app-authored description of one computation. It is stored
@@ -120,11 +171,8 @@ func (inv *Invocation) Validate() error {
 		if !nameRe.MatchString(name) {
 			return fmt.Errorf("artifact: invalid input name %q", name)
 		}
-		if err := in.Address.Validate(); err != nil {
+		if err := validateKind(in.Kind, in.Address, in.Place); err != nil {
 			return fmt.Errorf("artifact: input %q: %w", name, err)
-		}
-		if in.Kind != KindBlob && in.Kind != KindManifest {
-			return fmt.Errorf("artifact: input %q: invalid kind %q", name, in.Kind)
 		}
 	}
 	return nil
@@ -204,14 +252,15 @@ func (r *ActionResult) Validate() error {
 		if !nameRe.MatchString(name) {
 			return fmt.Errorf("artifact: invalid output name %q", name)
 		}
-		if err := out.Address.Validate(); err != nil {
+		kind := out.Kind
+		if kind == "" {
+			kind = KindBlob
+		}
+		if err := validateKind(kind, out.Address, out.Place); err != nil {
 			return fmt.Errorf("artifact: output %q: %w", name, err)
 		}
 		if out.Size < 0 {
 			return fmt.Errorf("artifact: output %q: negative size", name)
-		}
-		if out.Kind != "" && out.Kind != KindBlob && out.Kind != KindManifest {
-			return fmt.Errorf("artifact: output %q: invalid kind %q", name, out.Kind)
 		}
 	}
 	if len(r.Metrics) > 64 {
@@ -253,6 +302,21 @@ func ValidateRelPath(p string) error {
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
 			return fmt.Errorf("artifact: traversal segment in path: %q", p)
+		}
+	}
+	return nil
+}
+
+// ValidatePlacePath is the traversal guard for a local artifact's path. It also
+// refuses empty and "." segments, so one place has one spelling and equal
+// places compare equal as strings.
+func ValidatePlacePath(p string) error {
+	if err := ValidateRelPath(p); err != nil {
+		return err
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == "." {
+			return fmt.Errorf("artifact: empty or . segment in path: %q", p)
 		}
 	}
 	return nil

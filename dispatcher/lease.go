@@ -168,6 +168,10 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 			return nil
 		}
 
+		node, err := runnerNode(tx, runnerID)
+		if err != nil {
+			return err
+		}
 		offered, err := offeredGPUs(tx, gpus)
 		if err != nil {
 			return err
@@ -178,7 +182,7 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 		if len(offered) > 0 {
 			// A GPU job past the starvation limit starts first where it fits; until
 			// then the GPUs where it could run take no other new GPU job.
-			starved, need, usable, err := d.starvedGPUJob(tx, offered, now)
+			starved, need, usable, err := d.starvedGPUJob(tx, offered, node, now)
 			if err != nil {
 				return err
 			}
@@ -205,7 +209,7 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 		start := int(d.claimSeq.Add(1) % uint64(numLanes))
 		filter := filterFor(offered, reserve)
 		for i := 0; i < numLanes && !ok; i++ {
-			job, ok, err = selectClaimableInLane(tx, open[(start+i)%numLanes], now, filter)
+			job, ok, err = selectClaimableInLane(tx, open[(start+i)%numLanes], node, now, filter)
 			if err != nil {
 				return err
 			}
@@ -291,16 +295,18 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 	return result, nil
 }
 
-// selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane that the
-// runner's GPUs admit: next_attempt_at in the past, ordered by priority then age. The
-// caller rotates over the open lanes for cross-lane fairness (see tryClaim), so this
-// stays a single-lane query.
-func selectClaimableInLane(tx *sql.Tx, lane string, now int64, f gpuFilter) (Job, bool, error) {
-	cond, args := f.sql()
+// selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane that a
+// runner on node may run and its GPUs admit: next_attempt_at in the past, ordered
+// by priority then age. The caller rotates over the open lanes for cross-lane
+// fairness (see tryClaim), so this stays a single-lane query.
+func selectClaimableInLane(tx *sql.Tx, lane, node string, now int64, f gpuFilter) (Job, bool, error) {
+	gpuCond, gpuArgs := f.sql()
+	nodeCond, nodeArgs := onNode(node)
 	query := `SELECT ` + jobColumns + ` FROM jobs
-		WHERE state='QUEUED' AND lane=? AND next_attempt_at<=? AND ` + cond + `
+		WHERE state='QUEUED' AND lane=? AND next_attempt_at<=? AND ` + gpuCond + ` AND ` + nodeCond + `
 		ORDER BY priority ASC, created_ts ASC LIMIT 1`
-	row := tx.QueryRow(query, append([]any{lane, now}, args...)...)
+	args := append(append([]any{lane, now}, gpuArgs...), nodeArgs...)
+	row := tx.QueryRow(query, args...)
 	job, err := scanJob(row)
 	if err == sql.ErrNoRows {
 		return Job{}, false, nil

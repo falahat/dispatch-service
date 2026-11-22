@@ -233,8 +233,9 @@ func (d *Dispatcher) lanesByGPU(now int64) map[string]map[string]bool {
 
 // starvedGPUJob returns the GPU job that has waited longest past the starvation
 // limit among those that a runner asking for work now could start on one of the
-// offered GPUs once it drains, with the UUIDs of those GPUs.
-func (d *Dispatcher) starvedGPUJob(tx *sql.Tx, offered []offeredGPU, now int64) (Job, gpuNeed, map[string]bool, error) {
+// offered GPUs once it drains, with the UUIDs of those GPUs. The offered GPUs are
+// on node, so a job pinned to another node is never among them.
+func (d *Dispatcher) starvedGPUJob(tx *sql.Tx, offered []offeredGPU, node string, now int64) (Job, gpuNeed, map[string]bool, error) {
 	byGPU := d.lanesByGPU(now)
 	var lanes []string
 	for _, o := range offered {
@@ -247,13 +248,15 @@ func (d *Dispatcher) starvedGPUJob(tx *sql.Tx, offered []offeredGPU, now int64) 
 	if len(lanes) == 0 {
 		return Job{}, gpuNeed{}, nil, nil
 	}
+	nodeCond, nodeArgs := onNode(node)
 	args := []any{now - int64(d.cfg.GPUStarveAfterS)*1000}
 	for _, lane := range lanes {
 		args = append(args, lane)
 	}
 	rows, err := tx.Query(`SELECT j.job_id, j.lane, g.memory_mb, g.mode FROM jobs j JOIN job_gpu g ON g.job_id=j.job_id
 		WHERE j.state='QUEUED' AND j.next_attempt_at<=? AND j.lane IN (?`+strings.Repeat(",?", len(lanes)-1)+`)
-		ORDER BY j.next_attempt_at ASC, j.created_ts ASC LIMIT 64`, args...)
+		AND j.`+nodeCond+`
+		ORDER BY j.next_attempt_at ASC, j.created_ts ASC LIMIT 64`, append(args, nodeArgs...)...)
 	if err != nil {
 		return Job{}, gpuNeed{}, nil, err
 	}

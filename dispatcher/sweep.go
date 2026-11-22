@@ -92,6 +92,18 @@ func (d *Dispatcher) Sweep() (wire.SweepResult, error) {
 	return out, nil
 }
 
+// renewRunningLeases gives every running lease a full TTL from now. It runs as
+// the dispatcher starts (decision D12): while the dispatcher was down no runner
+// could renew, so a lease that lapsed then says nothing about its runner. A
+// runner that is really gone still loses its lease one TTL later, in the sweep.
+func (d *Dispatcher) renewRunningLeases() error {
+	deadline := d.now() + int64(d.cfg.LeaseTTLS)*1000
+	return d.store.writeTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE jobs SET lease_deadline_ts=? WHERE state='RUNNING' AND lease_deadline_ts < ?`, deadline, deadline)
+		return err
+	})
+}
+
 // RunSweeper runs the periodic sweep until ctx is cancelled.
 func (d *Dispatcher) RunSweeper(ctx context.Context) {
 	interval := time.Duration(d.cfg.SweepIntervalS) * time.Second

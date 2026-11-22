@@ -19,6 +19,17 @@ delivered in the ordinary completion inbox. The application persists its result,
 acknowledges it.
 Application failure can be an integer exit metric; an executor crash is a queue failure.
 
+## Local roots
+
+`--root NAME=DIR` (repeatable) installs a root: an absolute folder on this machine whose
+files jobs read in place and keep their outputs in, fixed at installation like the command.
+A local input under it arrives in `InvokeRequest.inputs` as its absolute path where it
+lies, not under `inputs/`. The command names a local output as `{"root": NAME, "path":
+P}` in place of a path under `outputs/`; the runner checks that P exists under that root
+and reports it without reading it ([ARTIFACTS.md](ARTIFACTS.md), D10). Several jobs at
+once on one machine are several runner instances (`COUNT` in the worker profile), each
+with its own credential; the plane packs their GPU jobs by declared memory.
+
 Stdout/stderr remain outside workload mounts in `invoke.log`. The runner publishes
 CAS-addressed chunks through its heartbeat, with byte offsets acknowledged by the
 dispatcher. The app-only `logs` verb reads these chunks independently of completion
@@ -40,7 +51,9 @@ index>` (for `docker --gpus device=` or a CDI device), `CUDA_VISIBLE_DEVICES=<GP
 `DISPATCH_GPU_INDEX`, `DISPATCH_GPU_UUID`, `DISPATCH_GPU_MEMORY_MB` (the job's declared
 most) and `DISPATCH_GPU_MODE` (`shared`, `mps` or `exclusive`). An `mps` job also gets
 `CUDA_MPS_PIPE_DIRECTORY` from `--mps-pipe DIR` when that machine's MPS daemon answers.
-A job without a GPU gets `CUDA_VISIBLE_DEVICES=` and no `NVIDIA_VISIBLE_DEVICES`. A
+A job without a GPU gets `CUDA_VISIBLE_DEVICES=` and no `NVIDIA_VISIBLE_DEVICES`.
+An executor that measures its job's peak GPU memory reports it as the integer metric
+`peak_vram_mb`, so its application can declare what its jobs really use. A
 runner without `--gpus` leaves the environment as it found it. `--nvidia-smi PROGRAM`
 reads the GPUs through PROGRAM, called with nvidia-smi's arguments, in place of the local
 `nvidia-smi`: a runner whose command drives another machine offers that machine's GPUs.

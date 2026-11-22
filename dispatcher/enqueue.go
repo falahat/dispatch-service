@@ -92,6 +92,11 @@ func (d *Dispatcher) Enqueue(req wire.Enqueue) (wire.EnqueueResult, *wire.Error)
 					return err
 				}
 			}
+			if ej.Policy != nil && ej.Policy.Node != nil {
+				if err := insertJobNode(tx, jobID, *ej.Policy.Node); err != nil {
+					return err
+				}
+			}
 			if err := saveSubmission(tx, ej.SubmissionKey, fingerprint, jobID); err != nil {
 				return err
 			}
@@ -161,6 +166,11 @@ func validatePolicy(p *wire.Policy) error {
 		case wire.BackoffQuick, wire.BackoffStandard, wire.BackoffLong:
 		default:
 			return errors.New("enqueue: invalid backoff_class")
+		}
+	}
+	if p.Node != nil {
+		if err := validateNode(*p.Node); err != nil {
+			return err
 		}
 	}
 	if p.GPU != nil {

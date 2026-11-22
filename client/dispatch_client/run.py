@@ -3,6 +3,8 @@
 ``run_step`` is the Python form and ``dispatchctl run`` the command-line one. The invocation they build
 carries the command in ``params.argv`` and the output names in ``params.outputs``; the worker's
 installed command (contracts/COMMAND.md) runs that argv. ``follow`` picks up a job already queued.
+A local input (a ``Place``) is read where it lies on its node and pins the job there; a local output
+stays where the command left it and is reported, not fetched (contracts/ARTIFACTS.md).
 """
 
 from __future__ import annotations
@@ -19,6 +21,42 @@ from .cas import CasClient
 from .client import DispatchClient
 
 _NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class Place:
+    """A file or folder where it lies on ``node``, at ``path`` under its runner's root ``root``."""
+
+    node: str
+    root: str
+    path: str
+
+    @classmethod
+    def parse(cls, text: str) -> Place:
+        """Read ``NODE:ROOT/PATH``."""
+        node, colon, rest = text.partition(":")
+        root, slash, path = rest.partition("/")
+        if not colon or not slash:
+            raise ValueError(f"local place {text!r}: expected NODE:ROOT/PATH")
+        return cls(node, root, path).checked()
+
+    def checked(self) -> Place:
+        segments = self.path.split("/")
+        if (
+            not _NODE_RE.match(self.node)
+            or not _NAME_RE.match(self.root)
+            or any(part in ("", ".", "..") for part in segments)
+            or any(char == "\\" or ord(char) < 0x20 for char in self.path)
+        ):
+            raise ValueError(f"local place {self}: invalid node, root or path")
+        return self
+
+    def artifact(self) -> dict[str, str]:
+        return {"kind": "local", "node": self.node, "root": self.root, "path": self.path}
+
+    def __str__(self) -> str:
+        return f"{self.node}:{self.root}/{self.path}"
 
 
 @dataclass
@@ -26,7 +64,8 @@ class RunResult:
     """What a run produced.
 
     ``state`` is the job's state when the run ended: SUCCEEDED once its outputs were saved and
-    acknowledged, PERSISTING when saved without acknowledging. ``seconds`` holds ``upload``,
+    acknowledged, PERSISTING when saved without acknowledging. ``local`` holds the outputs kept
+    where they lie on the worker's node. ``seconds`` holds ``upload``,
     ``queued`` (submit to start), ``run`` (start to result; both on the dispatcher's clock),
     ``fetch`` and ``total``. ``bytes`` holds the CAS traffic of this run: ``uploaded``,
     ``already_stored`` (inputs the store held, not sent) and ``downloaded`` (outputs and log).
@@ -35,6 +74,7 @@ class RunResult:
     job_id: str
     state: str
     outputs: dict[str, Path]
+    local: dict[str, Place]
     metrics: dict[str, Any]
     seconds: dict[str, Optional[float]]
     bytes: dict[str, int]
@@ -51,6 +91,7 @@ class RunResult:
             "state": self.state,
             "reason": self.job.get("reason") or None,
             "outputs": {name: str(path) for name, path in self.outputs.items()},
+            "local": {name: str(place) for name, place in self.local.items()},
             "metrics": self.metrics,
             "seconds": self.seconds,
             "bytes": self.bytes,
@@ -100,6 +141,8 @@ def submit(
     params: Optional[Mapping[str, Any]] = None,
     job_key: Optional[str] = None,
     gpu: Optional[Mapping[str, Any]] = None,
+    local: Optional[Mapping[str, Place]] = None,
+    node: Optional[str] = None,
     op: str = "run",
     op_version: int = 1,
 ) -> str:
@@ -107,7 +150,9 @@ def submit(
 
     ``job_key`` defaults to one derived from the lane and the invocation, so submitting the same
     run while it is queued or running joins that job instead of starting another. ``gpu`` is the
-    job's GPU need, e.g. ``{"memory_mb": 8192, "mode": "shared"}``.
+    job's GPU need, e.g. ``{"memory_mb": 8192, "mode": "shared"}``. ``local`` inputs are read where
+    they lie and pin the job to their node; ``node`` pins a job without them, e.g. one whose
+    local outputs belong there.
     """
     if not argv or not all(isinstance(arg, str) for arg in argv):
         raise ValueError("argv must be a non-empty list of strings")
@@ -118,12 +163,22 @@ def submit(
     if {"argv", "outputs"} & extra.keys():
         raise ValueError("params may not set argv or outputs")
     _check_params(extra, "params")
+    places = {name: place.checked() for name, place in (local or {}).items()}
+    for name in places:
+        if not _NAME_RE.match(name) or name in (inputs or {}):
+            raise ValueError(f"local input name {name!r} must match [a-z0-9_]{{1,64}} once")
+    nodes = {place.node for place in places.values()} | ({node} if node else set())
+    if len(nodes) > 1:
+        raise ValueError(f"a job runs on one node, not {sorted(nodes)}")
     invocation = {
         "kind": "invocation/v0",
         "op": op,
         "op_version": op_version,
         "params": {**extra, "argv": list(argv), "outputs": list(outputs)},
-        "inputs": upload_inputs(cas, inputs or {}),
+        "inputs": {
+            **upload_inputs(cas, inputs or {}),
+            **{name: place.artifact() for name, place in places.items()},
+        },
     }
     address = cas.put_json(invocation)
     job: dict[str, Any] = {
@@ -131,15 +186,25 @@ def submit(
         "lane": lane,
         "invocation_address": address,
     }
-    if gpu is not None:
-        job["policy"] = {"gpu": dict(gpu)}
+    policy: dict[str, Any] = {"gpu": dict(gpu)} if gpu is not None else {}
+    if nodes:
+        policy["node"] = nodes.pop()
+    if policy:
+        job["policy"] = policy
     return str(client.enqueue([job])[0]["job_id"])
 
 
 def fetch_outputs(cas: CasClient, result: Mapping[str, Any], dest: Path) -> dict[str, Path]:
     """Save each output of an action result under ``dest/<name>``: a blob as a file, a manifest
-    as a folder. Nothing already at ``dest/<name>`` is replaced."""
-    outputs = result.get("outputs") or {}
+    as a folder. Nothing already at ``dest/<name>`` is replaced; local outputs stay where they
+    lie."""
+    outputs = {
+        name: output
+        for name, output in (result.get("outputs") or {}).items()
+        if output.get("kind") != "local"
+    }
+    if not outputs:
+        return {}
     for name in outputs:
         if not isinstance(name, str) or not _NAME_RE.match(name):
             raise ValueError(f"output name {name!r} must match [a-z0-9_]{{1,64}}")
@@ -203,12 +268,18 @@ def follow(
     if isinstance(result, str):
         result = json.loads(result)
     outputs: dict[str, Path] = {}
+    local: dict[str, Place] = {}
     metrics: dict[str, Any] = {}
     fetched = None
     if job["state"] in ("PERSISTING", "SUCCEEDED") and isinstance(result, dict):
         start = time.monotonic()
         outputs = fetch_outputs(cas, result, Path(dest) if dest else Path("dispatch-out", job_id))
         fetched = round(time.monotonic() - start, 3)
+        local = {
+            name: Place(output["node"], output["root"], output["path"])
+            for name, output in (result.get("outputs") or {}).items()
+            if output.get("kind") == "local"
+        }
         metrics = dict(result.get("metrics") or {})
         if ack and job["state"] == "PERSISTING":
             client.ack(job_id, "persisted")
@@ -218,6 +289,7 @@ def follow(
         job_id=job_id,
         state=job["state"],
         outputs=outputs,
+        local=local,
         metrics=metrics,
         seconds={
             "queued": wait,
@@ -242,6 +314,8 @@ def run_step(
     params: Optional[Mapping[str, Any]] = None,
     job_key: Optional[str] = None,
     gpu: Optional[Mapping[str, Any]] = None,
+    local: Optional[Mapping[str, Place]] = None,
+    node: Optional[str] = None,
     op: str = "run",
     op_version: int = 1,
     log: Optional[Callable[[bytes], None]] = None,
@@ -265,6 +339,8 @@ def run_step(
         params=params,
         job_key=job_key,
         gpu=gpu,
+        local=local,
+        node=node,
         op=op,
         op_version=op_version,
     )

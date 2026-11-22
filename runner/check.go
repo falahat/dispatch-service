@@ -103,7 +103,11 @@ func Check(ctx context.Context, image, fixtureDir string) (*CheckReport, error) 
 	if ierr != nil || failure != nil {
 		return rep, fmt.Errorf("check: fixture invoke failed: %v %v", ierr, failure)
 	}
-	for name, rel := range res.Outputs {
+	for name, out := range res.Outputs {
+		if out.Local != nil {
+			return rep, fmt.Errorf("check: the fixture names local output %q; a fixture writes under outputs/", name)
+		}
+		rel := out.Path
 		if _, err := insideOutputs(rel); err != nil {
 			return rep, fmt.Errorf("check: declared output %q: %v", name, err)
 		}

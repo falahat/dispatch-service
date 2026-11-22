@@ -40,9 +40,10 @@ func violation(format string, args ...any) error {
 	return &outputViolation{reason: fmt.Sprintf(format, args...)}
 }
 
-// publishOutputs uploads every named output. made is the outputs folder as the
-// runner created it; a folder found there under another identity is refused.
-func (r *Runner) publishOutputs(ctx context.Context, outputsPath string, made os.FileInfo, named map[string]string) (map[string]artifact.Output, error) {
+// publishOutputs uploads every output named under outputs/ and reports every
+// local one where it lies. made is the outputs folder as the runner created it;
+// a folder found there under another identity is refused.
+func (r *Runner) publishOutputs(ctx context.Context, outputsPath string, made os.FileInfo, named map[string]NamedOutput) (map[string]artifact.Output, error) {
 	root, err := os.OpenRoot(outputsPath)
 	if err != nil {
 		return nil, violation("open outputs folder: %v", err)
@@ -53,8 +54,16 @@ func (r *Runner) publishOutputs(ctx context.Context, outputsPath string, made os
 		return nil, violation("the outputs folder was replaced during the run")
 	}
 	published := make(map[string]artifact.Output, len(named))
-	for name, rel := range named {
-		inner, err := insideOutputs(rel)
+	for name, out := range named {
+		if out.Local != nil {
+			kept, err := r.keepLocalOutput(*out.Local)
+			if err != nil {
+				return nil, err
+			}
+			published[name] = kept
+			continue
+		}
+		inner, err := insideOutputs(out.Path)
 		if err != nil {
 			return nil, err
 		}

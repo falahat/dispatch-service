@@ -88,8 +88,8 @@ type InvokeRequest struct {
 
 // InvokeResult is a successful /invoke response.
 type InvokeResult struct {
-	Outputs map[string]string `json:"outputs"`
-	Metrics map[string]int64  `json:"metrics"`
+	Outputs map[string]NamedOutput `json:"outputs"`
+	Metrics map[string]int64       `json:"metrics"`
 }
 
 // InvokeFailure classifies a compute failure (maps to fail{error_class}).
@@ -121,7 +121,7 @@ func (c *InvokeClient) Invoke(ctx context.Context, req InvokeRequest) (*InvokeRe
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var out struct {
-			Outputs map[string]string          `json:"outputs"`
+			Outputs map[string]NamedOutput     `json:"outputs"`
 			Metrics map[string]json.RawMessage `json:"metrics"`
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {

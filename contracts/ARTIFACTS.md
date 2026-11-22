@@ -37,6 +37,16 @@ grant. The compute container receives it verbatim.
 - `kind: "manifest"` → the runner fetches the manifest, then every listed entry into
   `inputs/<name>/<entry.path>`, verifying each. Incremental by construction: entries the
   runner already holds (same address) need no transfer.
+- `kind: "local"` → `{"kind": "local", "node": "bigboi", "root": "runs", "path": "K/fit"}`,
+  with no address: a file or folder where it lies on `node`, at `path` (a manifest entry's
+  path shape with no `.` segment) under the root its runner was installed with as `root`
+  (`--root NAME=DIR`, [COMMAND.md](COMMAND.md#local-roots)). The runner on that node checks
+  the place through an `os.Root` opened on the root, so no `..`, absolute path or link
+  leads out of it, and hands the compute the place's path where it lies; nothing is
+  fetched, hashed or copied. The job is pinned to that node (`policy.node`,
+  [WIRE.md](WIRE.md#policy-block-dispatcher-enforced-only)); a runner on another node
+  gives it back (`release{wrong_hardware}`), and a root that runner lacks or a missing
+  path fails it as `bad_input` (D10, D11).
 
 ## Computation identity — the invocation's own address (no separate digest)
 
@@ -55,6 +65,9 @@ every component but the authoring app compares addresses as opaque strings.
   bytes (sorted keys) so re-building the same computation yields the same address and the
   action cache hits. It is never correctness-critical: a formatting drift costs at most a
   memo miss (a recompute), never a wrong result.
+- A local input is named by its place, not its bytes, so an invocation that has one does
+  not pin what was read: reusing its result takes the app's own knowledge that the place
+  is unchanged.
 - **`params` numbers MUST still be integers** (decimals as strings, `"temperature": "0.7"`;
   the schema rejects fractional/exponent forms) — retained not for digest determinism but
   because `params` are read by **compute containers in arbitrary languages**, where float
@@ -97,6 +110,11 @@ An output is one file (`kind: "blob"`, or no `kind`) or one folder (`kind: "mani
 A folder output's address names a `manifest/v0` of the folder's files, paths relative to
 that folder, and its `size` counts the manifest's own bytes. A folder output is already a
 valid `manifest` input, so a later invocation takes it by address with no copy.
+
+An output may instead be local, `{"kind": "local", "node", "root", "path", "size"}`: a place
+the compute named under one of its runner's roots, reported where it lies and never read or
+uploaded. `size` is a file's size, and 0 for a folder. It is a valid local input for a later
+job on that node (D10).
 
 The runner **echoes** `invocation_address` from its grant (it cannot lie — it fetched exactly
 that address, whose bytes are hash-bound). The app resolves `outputs` from the CAS

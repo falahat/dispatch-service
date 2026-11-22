@@ -20,14 +20,16 @@ the AWS Lambda Runtime API.
      "job_id": "j_…",
      "invocation": { …verbatim invocation/v0… },
      "workdir": "/work/j_…",              // both containers see the same volume
-     "inputs":  { "audio": "inputs/audio" },        // paths relative to workdir, laid out by the runner
+     "inputs":  { "audio": "inputs/audio" },        // relative to workdir, laid out by the runner; a local input: its absolute path
      "outputs_dir": "outputs",                       // write results under workdir/outputs/
      "deadline_ts": 1789999999000
    }
    ```
    Success → `200 {"outputs": {"transcript": "outputs/transcript.json", "frames": "outputs/frames"}, "metrics": {…}}`
    (paths relative to workdir, each under `outputs/`; a path naming a folder publishes
-   that folder's files as one output; integer metrics). Failure →
+   that folder's files as one output; `{"root": …, "path": …}` names a local output under
+   one of the runner's roots; integer metrics). A pair serving local artifacts mounts each
+   runner root at the same path in both containers. Failure →
    `500 {"error_class": "oom" | "timeout" | "bad_input" | "fatal" | "unknown", "message": "…" }`.
    **One invoke in flight**: a second concurrent `POST /invoke` → `409`.
 

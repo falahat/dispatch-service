@@ -1,7 +1,7 @@
 # dispatch-client
 
 Pure-stdlib Python client for the dispatch-service **app surface** (wire contract
-v0.5). No third-party runtime dependencies — just `socket`, `struct`, `json`,
+v0.6). No third-party runtime dependencies — just `socket`, `struct`, `json`,
 `threading`.
 
 ## Install
@@ -63,8 +63,8 @@ fails the fetch before anything appears at `dest`.
 
 `dispatchctl run` uploads the inputs, queues the job, streams its log to stderr, saves its
 outputs and acknowledges the job, then prints a JSON summary: job, state, output paths,
-metrics, seconds (upload, queued, run, fetch, total) and bytes (uploaded, already stored,
-downloaded).
+local outputs, metrics, seconds (upload, queued, run, fetch, total) and bytes (uploaded,
+already stored, downloaded).
 
 ```sh
 export DISPATCH_ADDR=unix:/run/dispatch/app.sock DISPATCH_CAS_URL=http://127.0.0.1:8443 \
@@ -83,6 +83,16 @@ same run while it is queued or running joins that job. Ctrl-C stops watching, no
 `dispatchctl follow JOB_ID` picks it up again. `--no-ack` leaves the job in the completion
 inbox for another consumer. The exit status is 0 only when the job succeeded and its `exit`
 metric, if any, is 0. `run_step` and `follow` in `dispatch_client.run` are the Python forms.
+
+`--local NAME=NODE:ROOT/PATH` passes an input that already lies on NODE, at PATH under the
+root its runner was installed with as ROOT: nothing is uploaded, the job runs on NODE, and
+the command reads the input where it lies ([local artifacts](../contracts/ARTIFACTS.md)).
+`--node NODE` pins a job without local inputs. A local output the command keeps under a
+root is listed under `local` in the summary as `NODE:ROOT/PATH` and stays where it is.
+
+```sh
+dispatchctl run --lane pose --local run=bigboi:runs/K -- python /pose/scripts/fit.py /in/run
+```
 
 ## Address format
 

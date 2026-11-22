@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.5" },
+        "v": { "const": "0.6" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -54,6 +54,10 @@
             "memory_mb": { "$ref": "#/$defs/gpu_mb" },
             "mode": { "$ref": "#/$defs/gpu_mode", "default": "shared" }
           }
+        },
+        "node": {
+          "$ref": "artifacts.schema.json#/$defs/node",
+          "$comment": "run only on runners whose hello names this node: where the job's local artifacts are"
         }
       }
     },
@@ -63,7 +67,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.5" },
+        "contract": { "const": "0.6" },
         "runner": {
           "type": "object",
           "additionalProperties": false,

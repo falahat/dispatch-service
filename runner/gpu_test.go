@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/falahat/dispatch-service/internal/wire"
 )
@@ -38,14 +39,18 @@ func TestParseGPUsReadsNvidiaSMI(t *testing.T) {
 
 func TestGPUsReadThroughAnotherProgram(t *testing.T) {
 	// --nvidia-smi: a runner that drives another machine reads that machine's GPUs.
-	// --gpu-queued: the machine's own GPU queue judges the GPU, so it is offered whole, and read once.
+	// --gpu-queued: the machine's own GPU queue judges the GPU, so it is offered whole, read once, and its processes
+	// are never asked for.
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a shell script")
 	}
 	reader := filepath.Join(t.TempDir(), "remote-smi")
-	script := "#!/bin/sh\ncase $1 in --query-gpu=*) echo '0, GPU-cccccccc-0000-0000-0000-000000000003, 23034, 9000';;\n" +
-		"*) echo 'GPU-cccccccc-0000-0000-0000-000000000003, python';; esac\n"
+	list := "#!/bin/sh\ncase $1 in --query-gpu=*) echo '0, GPU-cccccccc-0000-0000-0000-000000000003, 23034, 9000';;\n"
 	for _, queued := range []bool{false, true} {
+		script := list + "*) echo 'GPU-cccccccc-0000-0000-0000-000000000003, python';; esac\n"
+		if queued {
+			script = list + "*) exit 1;; esac\n"
+		}
 		if err := os.WriteFile(reader, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -63,6 +68,21 @@ func TestGPUsReadThroughAnotherProgram(t *testing.T) {
 		if again := r.offerGPUs(context.Background()); queued && !reflect.DeepEqual(again, want) || !queued && again != nil {
 			t.Fatalf("queued %v, offered again with no program to read: %+v", queued, again)
 		}
+	}
+	// A whole reading that failed is tried again a minute later, not at the next request, which it would hold up.
+	r := New(Config{RunnerID: "r", Lanes: []string{"embed"}, Command: []string{"true"}, GPUs: "all", NvidiaSMI: reader, GPUQueued: true}, nil, nil, nil)
+	if got := r.offerGPUs(context.Background()); got != nil {
+		t.Fatalf("offered with no program to read: %+v", got)
+	}
+	if err := os.WriteFile(reader, []byte(list+"esac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.offerGPUs(context.Background()); got != nil {
+		t.Fatalf("read again within the minute: %+v", got)
+	}
+	r.gpuWarned = r.gpuWarned.Add(-time.Minute)
+	if got := r.offerGPUs(context.Background()); len(got) != 1 || got[0].FreeMB != 23034 {
+		t.Fatalf("not read again a minute later: %+v", got)
 	}
 }
 

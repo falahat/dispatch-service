@@ -102,9 +102,10 @@ func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 
 // lease long-polls for a job. A nil grant with nil error means "no work".
 func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, error) {
+	gpus := r.offerGPUs(ctx) // before the wait starts: a slow reading must not use up the long-poll's time
 	dc.setReadTimeout(time.Duration(r.cfg.LeaseWaitS+15) * time.Second)
 	defer dc.setReadTimeout(0)
-	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS, GPUs: r.offerGPUs(ctx)})
+	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS, GPUs: gpus})
 	if err != nil {
 		return nil, err
 	}

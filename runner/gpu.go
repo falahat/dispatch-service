@@ -46,7 +46,11 @@ func ParseGPUDevices(spec string) (all bool, indexes map[int]bool, err error) {
 // and a command that waits in the machine's own GPU queue starts its job when
 // that queue finds room for it beside the jobs started by hand.
 func readGPUs(ctx context.Context, reader, spec string, whole bool) ([]wire.GPUReading, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	budget := 10 * time.Second
+	if whole {
+		budget = 30 * time.Second // read once, and nvidia-smi under WSL takes seconds while its card is busy
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	if reader == "" {
 		reader = nvidiaSMI
@@ -56,18 +60,19 @@ func readGPUs(ctx context.Context, reader, spec string, whole bool) ([]wire.GPUR
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
+	if whole {
+		gpus, err := parseGPUs(string(list), "", spec)
+		for i := range gpus {
+			gpus[i].FreeMB = gpus[i].TotalMB
+		}
+		return gpus, err
+	}
 	apps, err := exec.CommandContext(ctx, reader, "--query-compute-apps=gpu_uuid,process_name",
 		"--format=csv,noheader").Output()
 	if err != nil {
 		return nil, fmt.Errorf("nvidia-smi: %w", err)
 	}
-	gpus, err := parseGPUs(string(list), string(apps), spec)
-	if whole {
-		for i := range gpus {
-			gpus[i].FreeMB, gpus[i].Processes = gpus[i].TotalMB, 0
-		}
-	}
-	return gpus, err
+	return parseGPUs(string(list), string(apps), spec)
 }
 
 // parseGPUs turns nvidia-smi's GPU list and compute-process list into readings
@@ -106,14 +111,16 @@ func parseGPUs(list, apps, spec string) ([]wire.GPUReading, error) {
 
 // offerGPUs reads the runner's GPUs for a request for work. A failed reading
 // offers none, so the runner still takes jobs that need no GPU. A whole offer
-// (--gpu-lock, --gpu-queued) does not change, so it is read once.
+// (--gpu-lock, --gpu-queued) does not change, so it is read once, without the
+// processes it would not offer, and a failed one is tried again a minute later,
+// not at every request.
 func (r *Runner) offerGPUs(ctx context.Context) []wire.GPUReading {
 	if r.cfg.GPUs == "" {
 		return nil
 	}
 	whole := r.cfg.GPULock != "" || r.cfg.GPUQueued
 	r.mu.Lock()
-	if whole && r.offered != nil {
+	if whole && (r.offered != nil || time.Since(r.gpuWarned) < time.Minute) {
 		defer r.mu.Unlock()
 		return r.offered
 	}

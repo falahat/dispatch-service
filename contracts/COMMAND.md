@@ -68,7 +68,9 @@ memory free and no processes.
 `--gpu-queued` (`GPU_QUEUED=1` in the worker profile) says the command itself waits in the
 machine's own GPU queue, the one jobs started by hand wait in, before it uses its GPU. Such
 a runner also offers each GPU with all its memory free and no processes: the plane packs
-its jobs by what they declare, and the machine's queue orders them among the rest.
+its jobs by what they declare, and the machine's queue orders them among the rest. A whole
+offer does not change, so a runner with either flag reads its GPUs once, not for each
+request for work.
 
 `--no-deadline` supplies `deadline_ts=0` and adds no execution watchdog. A
 `single_attempt` lane makes execution, shipping and lease-loss failures terminal.

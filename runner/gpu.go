@@ -105,12 +105,20 @@ func parseGPUs(list, apps, spec string) ([]wire.GPUReading, error) {
 }
 
 // offerGPUs reads the runner's GPUs for a request for work. A failed reading
-// offers none, so the runner still takes jobs that need no GPU.
+// offers none, so the runner still takes jobs that need no GPU. A whole offer
+// (--gpu-lock, --gpu-queued) does not change, so it is read once.
 func (r *Runner) offerGPUs(ctx context.Context) []wire.GPUReading {
 	if r.cfg.GPUs == "" {
 		return nil
 	}
-	gpus, err := readGPUs(ctx, r.cfg.NvidiaSMI, r.cfg.GPUs, r.cfg.GPULock != "" || r.cfg.GPUQueued)
+	whole := r.cfg.GPULock != "" || r.cfg.GPUQueued
+	r.mu.Lock()
+	if whole && r.offered != nil {
+		defer r.mu.Unlock()
+		return r.offered
+	}
+	r.mu.Unlock()
+	gpus, err := readGPUs(ctx, r.cfg.NvidiaSMI, r.cfg.GPUs, whole)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {

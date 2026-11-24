@@ -255,7 +255,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	if g.Job.GPU != nil && r.cfg.GPULock != "" {
 		unlock, err := takeGPULock(jobCtx, r.cfg.GPULock)
 		if err != nil {
-			if jobCtx.Err() != nil && ctx.Err() == nil && r.wasAbandoned(g.Job.JobID) {
+			if r.stoppedOrAbandoned(ctx, jobCtx, g.Job.JobID) {
 				return
 			}
 			r.release(dc, g, wire.ReleaseWrongHardware, "gpu lock: "+err.Error())
@@ -285,9 +285,9 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		GPU:        g.Job.GPU,
 	})
 	if ierr != nil {
-		// Transport/protocol fault. If we were told to abandon (ctx cancelled),
-		// stay silent — the job was cancelled server-side.
-		if jobCtx.Err() != nil && ctx.Err() == nil && r.wasAbandoned(g.Job.JobID) {
+		// Transport/protocol fault, unless the invoke was cut short because the job
+		// was abandoned or the runner is stopping.
+		if r.stoppedOrAbandoned(ctx, jobCtx, g.Job.JobID) {
 			return
 		}
 		if errors.Is(ierr, context.DeadlineExceeded) {
@@ -298,6 +298,9 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		return
 	}
 	if failure != nil {
+		if ctx.Err() != nil {
+			return // a command stopped with the runner says nothing about its job
+		}
 		// A command's log tail is usually why it failed: ship it before the failure,
 		// on the runner's live context, as a result's log is shipped before it.
 		if err := r.flushLog(ctx, dc); err != nil {
@@ -453,6 +456,16 @@ func (r *Runner) wasAbandoned(jobID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.current != nil && r.current.jobID == jobID && r.current.abandoned
+}
+
+// stoppedOrAbandoned reports whether the job's context ended because the job was
+// abandoned or because the runner itself is stopping. Neither is the job failing,
+// so the runner reports nothing: an abandoned job was settled by the dispatcher,
+// and a stopping runner leaves its lease to expire, after which the job runs
+// again as it would after a crash. Reporting the cut-short invoke as a failure
+// used to fail every job running at a reboot or a compute restart as fatal.
+func (r *Runner) stoppedOrAbandoned(ctx, jobCtx context.Context, jobID string) bool {
+	return jobCtx.Err() != nil && (ctx.Err() != nil || r.wasAbandoned(jobID))
 }
 
 func (r *Runner) throttleWait() time.Duration {

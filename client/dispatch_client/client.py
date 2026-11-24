@@ -24,6 +24,11 @@ from typing import Any, Iterator, Optional, cast
 
 from . import frame
 
+# How long completions() waits before each new subscribe after the first. A dispatcher
+# that is down refuses a connect at once, so without a pause the stream retried in a
+# tight loop for as long as the dispatcher was away.
+RESUBSCRIBE_DELAY_S = 1.0
+
 
 class DispatchError(Exception):
     """An ``error`` reply from the dispatcher, carrying its code and message."""
@@ -281,8 +286,9 @@ class DispatchClient:
         """Yield completion bodies as they arrive, forever, until :meth:`close`.
 
         Opens a dedicated subscription connection, sends ``subscribe``, and
-        yields each ``completion`` body dict. On a ``takeover`` frame or a
-        dropped connection it reconnects and resubscribes; the server redelivers
+        yields each ``completion`` body dict. On a ``takeover`` frame, a refused
+        connect or a dropped connection it waits :data:`RESUBSCRIBE_DELAY_S`, then
+        reconnects and resubscribes; the server redelivers
         the un-acked PERSISTING set on every (re)subscribe, so no cursor is
         tracked. Ack each yielded job (via :meth:`ack`) to drain it from the
         inbox — acks go on the separate request/reply connection.
@@ -291,7 +297,11 @@ class DispatchClient:
         other work. Call :meth:`close` (or break out and call it) to stop.
         """
         self._sub_stop.clear()
+        resubscribing = False
         while not self._sub_stop.is_set():
+            if resubscribing and self._sub_stop.wait(RESUBSCRIBE_DELAY_S):
+                return
+            resubscribing = True
             try:
                 sock = _connect(self._address)
             except OSError:

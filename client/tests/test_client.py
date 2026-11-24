@@ -343,6 +343,29 @@ def test_request_timeout_surfaces_instead_of_hanging():
         wedge.close()
 
 
+def test_completions_wait_between_refused_connects(monkeypatch):
+    """A dispatcher that is down refuses every connect at once. The completion stream
+    waits between tries instead of retrying in a tight loop, and stopping the stream
+    ends that wait at once."""
+    tries = []
+
+    def refused(address, timeout=None):
+        tries.append(address)
+        raise ConnectionRefusedError("the dispatcher is down")
+
+    monkeypatch.setattr("dispatch_client.client._connect", refused)
+    client = DispatchClient("127.0.0.1:9")
+    stream = threading.Thread(target=lambda: list(client.completions()), daemon=True)
+    stream.start()
+    time.sleep(0.5)
+    stopped = time.monotonic()
+    client.stop_completions()
+    stream.join(timeout=5)
+    assert not stream.is_alive()
+    assert time.monotonic() - stopped < 0.5, "stopping must end the wait at once"
+    assert len(tries) == 1, f"{len(tries)} connects in half a second to a dispatcher that is down"
+
+
 def test_subscription_takeover(dispatcher):
     """Two subscribe connections: the first receives a takeover frame."""
     host, port = dispatcher.app_addr.split(":")

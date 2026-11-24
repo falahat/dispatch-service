@@ -42,7 +42,7 @@ func (d *Dispatcher) Sweep() (wire.SweepResult, error) {
 			if err := insertAttempt(tx, j.JobID, j.Attempt, j.LeaseRunnerID, j.LeaseID, "lease_expired", "", "deadline", 0, now); err != nil {
 				return err
 			}
-			if j.Attempt < j.Policy.MaxAttempts {
+			if !j.CancelRequested && j.Attempt < j.Policy.MaxAttempts { // a cancelled job never runs again
 				newAttempt := j.Attempt + 1
 				nextAt := now + d.jitter(j.Policy, newAttempt)
 				if _, err := tx.Exec(

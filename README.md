@@ -30,6 +30,8 @@ The existing network runner can invoke either a paired HTTP compute container
 or an owner-installed command. Both use the same PEP, CAS, queue, leases and
 completion acknowledgements. Tailworker owns environment setup; the application
 owns its workload command and persistence. See [the command contract](contracts/COMMAND.md).
+A command that knows why its job failed reports the failure's class, so the job's
+policy, not the application, decides whether it runs again.
 The executor can publish opaque progress during execution without completing the job.
 `job`, `jobs`, `wait` and exact submission `lookup` expose the same job view.
 The operator CLI prints these native JSON results; `trace JOB` is an alias for

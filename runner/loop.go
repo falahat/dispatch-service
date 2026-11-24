@@ -288,8 +288,12 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		return
 	}
 	if failure != nil {
-		class := mapErrorClass(failure.ErrClass)
-		r.fail(dc, g, class, failure.Message)
+		// A command's log tail is usually why it failed: ship it before the failure,
+		// on the runner's live context, as a result's log is shipped before it.
+		if err := r.flushLog(ctx, dc); err != nil {
+			r.log.Warn("command log before its failure", "job", g.Job.JobID, "err", err)
+		}
+		r.fail(dc, g, mapErrorClass(failure.ErrClass), failure.Message)
 		return
 	}
 

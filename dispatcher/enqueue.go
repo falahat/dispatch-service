@@ -152,7 +152,7 @@ func saveSubmission(tx *sql.Tx, key, fingerprint, jobID string) error {
 }
 
 func validatePolicy(p *wire.Policy) error {
-	if p.MaxAttempts != nil && (*p.MaxAttempts < 1 || *p.MaxAttempts > 10) {
+	if p.MaxAttempts != nil && (*p.MaxAttempts < 1 || *p.MaxAttempts > 20) {
 		return errors.New("enqueue: max_attempts out of range")
 	}
 	if p.Priority != nil && (*p.Priority < 0 || *p.Priority > 9) {

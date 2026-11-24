@@ -7,11 +7,11 @@
 #     restrict,command="ssh-exec.sh serve WORK COMMAND [ARG...]" ssh-ed25519 ...
 #
 # drive sends the job's inputs/ to HOST, runs COMMAND there in WORK/JOB with the runner's stdin (its workdir rewritten)
-# and GPU grant, streams the command's output into the job log, brings back outputs/ and invoke-result.json when it
-# exits 0, and deletes WORK/JOB. On SIGTERM it stops the remote command first and waits for it. serve answers only
-# nvidia-smi --query-...=/--format=... (the runner reads HOST's GPUs through a --nvidia-smi wrapper), the blob cache's
-# have and put, and link, run, stop, get and drop of one job folder; it runs no command but its own, and both ends
-# unpack only regular files and folders. Progress files are not relayed.
+# and GPU grant, streams the command's output into the job log, brings back outputs/ and invoke-result.json (or
+# invoke-failure.json) when it exits 0, and deletes WORK/JOB. On SIGTERM it stops the remote command first and waits
+# for it. serve answers only nvidia-smi --query-...=/--format=... (the runner reads HOST's GPUs through a --nvidia-smi
+# wrapper), the blob cache's have and put, and link, run, stop, get and drop of one job folder; it runs no command but
+# its own, and both ends unpack only regular files and folders. Progress files are not relayed.
 #
 # HOST keeps every input and output file it has held in WORK/.cache, named by its sha256, so a file crosses once: the
 # same code, or a step's outputs as the next step's inputs, are not sent again. `ssh-exec.sh send SSH_CONFIG HOST JOB`
@@ -216,7 +216,10 @@ serve)
   stop)
     pid=$(cat "$dir/run.pid"); kill -TERM "$pid" 2> /dev/null || true
     while kill -0 "$pid" 2> /dev/null; do sleep 1; done ;;
-  get) python3 -c "$blobs" keep "$cache" "$dir" || true; cd "$dir"; exec tar -cf - outputs invoke-result.json ;;
+  get)
+    python3 -c "$blobs" keep "$cache" "$dir" || true; cd "$dir"
+    said=(); for f in invoke-result.json invoke-failure.json; do [ ! -f "$f" ] || said+=("$f"); done
+    exec tar -cf - outputs "${said[@]}" ;;
   drop) rm -rf -- "$dir"; exec python3 -c "$blobs" prune "$cache" "${SSH_EXEC_CACHE_MB:-10240}" ;;
   *) echo "ssh-exec: unknown request" >&2; exit 2 ;;
   esac ;;

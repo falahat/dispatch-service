@@ -256,7 +256,7 @@ async fn write_frame(s: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
 
 async fn write_error(s: &mut TcpStream, id: &str, code: &str, msg: &str) -> std::io::Result<()> {
     let frame = serde_json::json!({
-        "v": "0.6",
+        "v": "0.7",
         "type": "error",
         "id": if id.is_empty() { "0" } else { id },
         "body": { "code": code, "message": msg, "retryable": false }

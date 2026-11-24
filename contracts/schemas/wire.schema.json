@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.6" },
+        "v": { "const": "0.7" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -35,7 +35,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
         "backoff_class": { "enum": ["quick", "standard", "long"], "default": "standard" },
         "error_class_overrides": {
           "type": "object",
@@ -67,7 +67,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.6" },
+        "contract": { "const": "0.7" },
         "runner": {
           "type": "object",
           "additionalProperties": false,

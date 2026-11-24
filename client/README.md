@@ -1,7 +1,7 @@
 # dispatch-client
 
 Pure-stdlib Python client for the dispatch-service **app surface** (wire contract
-v0.6). No third-party runtime dependencies — just `socket`, `struct`, `json`,
+v0.7). No third-party runtime dependencies — just `socket`, `struct`, `json`,
 `threading`.
 
 ## Install
@@ -82,7 +82,9 @@ the CAS already holds is not sent again, and folder files move 8 at a time. Subm
 same run while it is queued or running joins that job. Ctrl-C stops watching, not the job;
 `dispatchctl follow JOB_ID` picks it up again. `--no-ack` leaves the job in the completion
 inbox for another consumer. The exit status is 0 only when the job succeeded and its `exit`
-metric, if any, is 0. `run_step` and `follow` in `dispatch_client.run` are the Python forms.
+metric, if any, is 0. `run_step` and `follow` in `dispatch_client.run` are the Python forms;
+`run_step` also takes the rest of a job's `policy` (`max_attempts`, `backoff_class`, ...) and a
+`cost_estimate_usd`, which parks the job until it is approved against the plane's budget.
 
 `--local NAME=NODE:ROOT/PATH` passes an input that already lies on NODE, at PATH under the
 root its runner was installed with as ROOT: nothing is uploaded, the job runs on NODE, and

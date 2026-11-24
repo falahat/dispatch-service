@@ -145,6 +145,8 @@ def submit(
     local: Optional[Mapping[str, Place]] = None,
     node: Optional[str] = None,
     keep: Optional[Mapping[str, str]] = None,
+    policy: Optional[Mapping[str, Any]] = None,
+    cost_estimate_usd: Optional[str] = None,
     op: str = "run",
     op_version: int = 1,
 ) -> str:
@@ -155,7 +157,9 @@ def submit(
     job's GPU need, e.g. ``{"memory_mb": 8192, "mode": "shared"}``. ``local`` inputs are read where
     they lie and pin the job to their node; ``node`` pins a job without them. ``keep`` names
     outputs the command writes where they are to stay, ``{name: "ROOT/PATH"}`` under the roots
-    of the job's node.
+    of the job's node. ``policy`` holds the rest of the job's policy (``max_attempts``,
+    ``backoff_class``, ...; WIRE.md), and ``cost_estimate_usd`` ("1.25") prices the job: it waits
+    for approval against the plane's budget.
     """
     if not argv or not all(isinstance(arg, str) for arg in argv):
         raise ValueError("argv must be a non-empty list of strings")
@@ -200,11 +204,17 @@ def submit(
         "lane": lane,
         "invocation_address": address,
     }
-    policy: dict[str, Any] = {"gpu": dict(gpu)} if gpu is not None else {}
+    rules = dict(policy or {})
+    if {"gpu", "node"} & rules.keys():
+        raise ValueError("policy may not set gpu or node: pass gpu, node or a local input")
+    if gpu is not None:
+        rules["gpu"] = dict(gpu)
     if nodes:
-        policy["node"] = nodes.pop()
-    if policy:
-        job["policy"] = policy
+        rules["node"] = nodes.pop()
+    if rules:
+        job["policy"] = rules
+    if cost_estimate_usd is not None:
+        job["cost_estimate_usd"] = cost_estimate_usd
     return str(client.enqueue([job])[0]["job_id"])
 
 
@@ -331,6 +341,8 @@ def run_step(
     local: Optional[Mapping[str, Place]] = None,
     node: Optional[str] = None,
     keep: Optional[Mapping[str, str]] = None,
+    policy: Optional[Mapping[str, Any]] = None,
+    cost_estimate_usd: Optional[str] = None,
     op: str = "run",
     op_version: int = 1,
     log: Optional[Callable[[bytes], None]] = None,
@@ -357,6 +369,8 @@ def run_step(
         local=local,
         node=node,
         keep=keep,
+        policy=policy,
+        cost_estimate_usd=cost_estimate_usd,
         op=op,
         op_version=op_version,
     )

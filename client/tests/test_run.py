@@ -200,6 +200,7 @@ def test_local_inputs_are_read_in_place_and_local_outputs_stay(pep, tmp_path):
         "run": {"kind": "local", "node": "bigboi", "root": "runs", "path": "K"}
     }
     assert plane.jobs[0]["policy"] == {"node": "bigboi"}
+    assert "cost_estimate_usd" not in plane.jobs[0]
     assert result.ok and result.local == {"kept": Place("bigboi", "runs", "K/fit")}
     assert result.summary()["local"] == {"kept": "bigboi:runs/K/fit"}
     assert not (tmp_path / "out" / "kept").exists()
@@ -212,6 +213,30 @@ def test_local_inputs_are_read_in_place_and_local_outputs_stay(pep, tmp_path):
 def test_bad_places_are_refused(text):
     with pytest.raises(ValueError):
         Place.parse(text)
+
+
+def test_a_job_carries_its_policy_and_price(pep, tmp_path):
+    server, cas = pep
+    plane = Plane(server)
+    run_step(
+        plane,  # type: ignore[arg-type]
+        cas,
+        lane="pose-cloudrun",
+        argv=["run"],
+        node="cloudrun",
+        gpu={"memory_mb": 15360},
+        policy={"max_attempts": 13, "backoff_class": "long"},
+        cost_estimate_usd="0.40",
+        dest=tmp_path / "out",
+        log=lambda data: None,
+    )
+    assert plane.jobs[0]["policy"] == {
+        "max_attempts": 13,
+        "backoff_class": "long",
+        "gpu": {"memory_mb": 15360},
+        "node": "cloudrun",
+    }
+    assert plane.jobs[0]["cost_estimate_usd"] == "0.40"
 
 
 def test_failed_job_returns_without_outputs_or_ack(pep, tmp_path):
@@ -237,6 +262,8 @@ def test_failed_job_returns_without_outputs_or_ack(pep, tmp_path):
         {"keep": {"fit": "runs/K"}},
         {"keep": {"fit": "runs/../K"}, "node": "n1"},
         {"keep": {"report": "runs/K"}, "node": "n1"},
+        {"policy": {"node": "n1"}},
+        {"policy": {"gpu": {"memory_mb": 1}}},
     ],
 )
 def test_bad_run_requests_fail_before_queueing(pep, tmp_path, change):

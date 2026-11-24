@@ -124,7 +124,8 @@ func (d *Dispatcher) Fail(runnerID string, req wire.Fail) *wire.Error {
 			return err
 		}
 
-		retriable := job.Policy.IsRetriable(req.ErrorClass) && job.Attempt < job.Policy.MaxAttempts
+		// A job whose cancellation was requested never runs again, whatever failed.
+		retriable := !job.CancelRequested && job.Policy.IsRetriable(req.ErrorClass) && job.Attempt < job.Policy.MaxAttempts
 		if retriable {
 			newAttempt := job.Attempt + 1
 			backoff := d.jitter(job.Policy, newAttempt)
@@ -206,7 +207,7 @@ func (d *Dispatcher) Release(runnerID string, req wire.Release) *wire.Error {
 		newReleaseCount := job.ReleaseCount + 1
 		// The cap depends on WHY. Infrastructure noise (CAS unreachable, a failed output
 		// upload) must not burn the same tiny poison budget as a verdict about this job.
-		if d.cfg.Lane(job.Lane).SingleAttempt || newReleaseCount >= job.Policy.ReleaseCapFor(req.Reason) {
+		if d.cfg.Lane(job.Lane).SingleAttempt || job.CancelRequested || newReleaseCount >= job.Policy.ReleaseCapFor(req.Reason) {
 			// Preserve the distinguishing reason instead of collapsing every cause to
 			// 'unstartable'. The app reads this to decide what to DO, and a cas_miss — a
 			// content-addressed input that aged out of the CAS — is trivially fixable by

@@ -274,6 +274,25 @@ func TestFailRetriableThenTerminal(t *testing.T) {
 	}
 }
 
+// A job may ask for up to 20 attempts, enough for a dozen tries through a
+// provider outage, and no more.
+func TestMaxAttemptsBound(t *testing.T) {
+	d, _ := newTestDispatcher(t)
+	for _, c := range []struct {
+		key      string
+		attempts int
+		ok       bool
+	}{{"twenty", 20, true}, {"twenty-one", 21, false}} {
+		n := c.attempts
+		_, werr := d.Enqueue(wire.Enqueue{Jobs: []wire.EnqueueJob{{
+			JobKey: c.key, Lane: "embed", InvocationAddress: invAddr(c.key), Policy: &wire.Policy{MaxAttempts: &n},
+		}}})
+		if (werr == nil) != c.ok {
+			t.Fatalf("max_attempts %d: accepted %v, want %v (%v)", n, werr == nil, c.ok, werr)
+		}
+	}
+}
+
 func TestFailExhaustsAttempts(t *testing.T) {
 	d, clk := newTestDispatcher(t)
 	inv := invAddr("j")

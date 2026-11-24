@@ -60,6 +60,43 @@ func TestSingleAttemptIncludesInfrastructureAndLeaseLoss(t *testing.T) {
 	}
 }
 
+// A job whose cancellation was requested never runs again: not after a
+// retriable failure, a release or a lost lease, however many attempts remain.
+func TestCancelRequestedJobNeverRunsAgain(t *testing.T) {
+	for _, outcome := range []string{"fail", "release", "lease_loss"} {
+		t.Run(outcome, func(t *testing.T) {
+			d, clock := newTestDispatcher(t)
+			d.cfg.WaitForExecutor = true
+			many := 20
+			id := enqueueOne(t, d, outcome, "embed", invAddr(outcome), &wire.Policy{MaxAttempts: &many})
+			hello(t, d, "worker", "embed")
+			grant, _ := leaseOne(t, d, "worker", "embed")
+			if err := d.Cancel(wire.Cancel{JobID: id, Reason: "owner: stop it"}); err != nil {
+				t.Fatal(err)
+			}
+			switch outcome {
+			case "fail":
+				if err := d.Fail("worker", wire.Fail{JobID: id, LeaseID: grant.Lease.LeaseID, Attempt: 1, ErrorClass: wire.ClassNetwork}); err != nil {
+					t.Fatal(err)
+				}
+			case "release":
+				if err := d.Release("worker", wire.Release{JobID: id, LeaseID: grant.Lease.LeaseID, Reason: wire.ReleaseCASUnreachable}); err != nil {
+					t.Fatal(err)
+				}
+			case "lease_loss":
+				clock.Set(grant.Lease.DeadlineTS + 1)
+				if _, err := d.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job, err := d.GetJob(id)
+			if err != nil || job.State != "FAILED" || job.Attempt != 1 {
+				t.Fatalf("a cancelled job ran again or stayed live: %+v %v", job, err)
+			}
+		})
+	}
+}
+
 func TestIndependentWaitersAndCancellationSettlement(t *testing.T) {
 	d, _ := newTestDispatcher(t)
 	d.cfg.WaitForExecutor = true

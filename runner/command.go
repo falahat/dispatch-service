@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,19 +62,50 @@ func (c *commandExecutor) Invoke(ctx context.Context, request InvokeRequest) (*I
 	if err := command.Run(); err != nil && (ctx.Err() == nil || command.ProcessState == nil || command.ProcessState.ExitCode() != 0) {
 		return nil, &InvokeFailure{ErrClass: "fatal", Message: err.Error()}, nil
 	}
-	file, err := os.Open(filepath.Join(request.Workdir, "invoke-result.json"))
+	// A command that exits 0 reports either its result or, in place of it, a
+	// classified failure, the HTTP compute's 500 body, so the job's policy
+	// decides whether the failure runs again (COMMAND.md).
+	var failure InvokeFailure
+	failed, err := readCommandFile(request.Workdir, "invoke-failure.json", &failure)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("command failure: %w", err)
+	}
+	if failed && failure.ErrClass == "" {
+		return nil, nil, errors.New("command failure: error_class missing")
+	}
+	var result InvokeResult
+	done, err := readCommandFile(request.Workdir, "invoke-result.json", &result)
+	switch {
+	case err != nil:
+		return nil, nil, fmt.Errorf("command result: %w", err)
+	case failed && done:
+		return nil, nil, errors.New("command wrote both a result and a failure")
+	case failed:
+		return nil, &failure, nil
+	case !done:
+		return nil, nil, errors.New("command wrote neither a result nor a failure")
+	}
+	return &result, nil, nil
+}
+
+// readCommandFile decodes the command's NAME in the workdir into value, strictly:
+// at most 1 MiB, no unknown fields, nothing after it. A missing file is false.
+func readCommandFile(workdir, name string, value any) (bool, error) {
+	file, err := os.Open(filepath.Join(workdir, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(io.LimitReader(file, 1<<20))
 	decoder.DisallowUnknownFields()
-	var result InvokeResult
-	if err := decoder.Decode(&result); err != nil {
-		return nil, nil, fmt.Errorf("command result: %w", err)
+	if err := decoder.Decode(value); err != nil {
+		return false, fmt.Errorf("%s: %w", name, err)
 	}
 	if decoder.Decode(new(any)) != io.EOF {
-		return nil, nil, fmt.Errorf("command result contains trailing data")
+		return false, fmt.Errorf("%s contains trailing data", name)
 	}
-	return &result, nil, nil
+	return true, nil
 }

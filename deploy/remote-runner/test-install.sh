@@ -39,7 +39,9 @@ case "$2" in
   enable) echo "$4" >>"$HOME/started"; rm -f "$HOME/$4.inactive";;
   start) echo "$3" >>"$HOME/started"; rm -f "$HOME/$3.inactive";;
   show)
-    if test -e "$HOME/$3.inactive"; then echo ActiveState=inactive; else echo ActiveState=active; fi
+    # A stopping unit reads active once more, then inactive.
+    if test -e "$HOME/$3.stopping"; then mv "$HOME/$3.stopping" "$HOME/$3.inactive"; echo ActiveState=active
+    elif test -e "$HOME/$3.inactive"; then echo ActiveState=inactive; else echo ActiveState=active; fi
     echo Result=success;;
   *) exit 91;;
 esac
@@ -162,12 +164,21 @@ home = pathlib.Path.home()
 operation = sys.argv[1]
 with (home / 'operations').open('a') as log:
     log.write(operation + '\n')
+# A drained runner hears its drain and stops. An unheard runner never does; the
+# dispatcher's last contact with it stays recent for the number of fleet reads
+# written in $HOME/unheard.
+unheard = home / 'unheard'
+online = True
+if operation == 'fleet' and unheard.exists():
+    reads = int(unheard.read_text())
+    unheard.write_text(str(reads - 1))
+    online = reads > 0
 rows = []
 for path in sorted((home / '.config/plane-runners/command/cred').glob('*.json')):
     identity = json.loads(path.read_text())['pubkey_hex']
-    if operation == 'drain' and identity == sys.argv[2]:
-        (home / ('command-runner@' + path.stem + '.service.inactive')).touch()
-    rows.append(dict(runner_id=identity, online=True, draining=False,
+    if operation == 'drain' and identity == sys.argv[2] and not unheard.exists():
+        (home / ('command-runner@' + path.stem + '.service.stopping')).touch()
+    rows.append(dict(runner_id=identity, online=online, draining=False,
                      quarantined=False, last_seen_ts=time.time_ns() // 1000000))
 print(json.dumps(dict(runners=rows) if operation == 'fleet' else {}))
 PY
@@ -190,4 +201,19 @@ cp "$HOME/operations" "$temporary/operations.saved"
 if bash "$here/worker.sh" apply --env "$temporary/changed.env" --machine owned \
     --runner "$temporary/runner" --client "$client" --signer 'exit 99' --note invalid; then exit 1; fi
 test "$(grep -c drain "$HOME/operations")" = "$(grep -c drain "$temporary/operations.saved")"
+# A runner still at its boot gate never hears its drain: once the dispatcher's
+# last contact with it ages out, apply stops with the drain in place, replacing
+# and resuming nothing.
+printf '1\n' >"$HOME/unheard"
+cp "$HOME/operations" "$temporary/operations.saved"
+cp "$HOME/started" "$temporary/started.saved"
+status=0
+timeout 60 bash "$here/worker.sh" apply --env "$temporary/command.env" --machine owned \
+    --runner "$temporary/runner" --client "$client" --signer 'exit 99' --note unheard \
+    2>"$temporary/unheard.err" || status=$?
+test "$status" = 1
+grep -F 'worker: command-runner@1.service is running, but the dispatcher has not heard from it' "$temporary/unheard.err"
+tail -n +"$(($(wc -l <"$temporary/operations.saved") + 1))" "$HOME/operations" >"$temporary/unheard.operations"
+printf '%s\n' drain drain fleet fleet | cmp - "$temporary/unheard.operations"
+cmp "$temporary/started.saved" "$HOME/started"
 echo 'remote-runner unit rendering: green'

@@ -69,27 +69,13 @@ def worker_state(name, action):
         ):
             raise ValueError("incomplete worker enrollment; inspect before continuing")
         unit = f"{name}-runner@{index}.service" if native else f"{name}-runner.service"
-        while True:
-            fields = dict(
-                line.split("=", 1)
-                for line in command(
-                    [
-                        "systemctl",
-                        "--user",
-                        "show",
-                        unit,
-                        "--property=ActiveState,Result",
-                    ],
-                    capture_output=True,
-                ).stdout.splitlines()
-            )
-            if action != "settle" or fields["ActiveState"] not in (
-                "active",
-                "activating",
-                "deactivating",
-            ):
-                break
-            time.sleep(0.25)
+        fields = dict(
+            line.split("=", 1)
+            for line in command(
+                ["systemctl", "--user", "show", unit, "--property=ActiveState,Result"],
+                capture_output=True,
+            ).stdout.splitlines()
+        )
         if action == "settle" and (
             fields["ActiveState"] != "inactive" or fields["Result"] != "success"
         ):
@@ -97,7 +83,7 @@ def worker_state(name, action):
                 "runner did not drain cleanly; inspect it before replacing"
             )
         runners.append(
-            {"runner_id": identity, "active": fields["ActiveState"] == "active"}
+            {"runner_id": identity, "unit": unit, "state": fields["ActiveState"]}
         )
     if action == "settle" and not native:
         command(["systemctl", "--user", "stop", f"{name}-compute.service"])
@@ -130,7 +116,8 @@ def worker_state(name, action):
         "profile": profile,
         "runners": runners,
         **images,
-        "active": all(runner["active"] for runner in runners) and all(images.values()),
+        "active": all(runner["state"] == "active" for runner in runners)
+        and all(images.values()),
     }
 
 
@@ -189,6 +176,12 @@ def main():
             ).stdout
         )
 
+    def fleet():
+        return {
+            runner["runner_id"]: runner
+            for runner in control("fleet").get("runners") or []
+        }
+
     with tempfile.TemporaryDirectory() as directory:
         stage = Path(directory)
         desired = None
@@ -227,6 +220,28 @@ def main():
                     )
                 for runner in current["runners"]:
                     control("drain", runner["runner_id"])
+                # A runner hears its drain only through the dispatcher, so wait
+                # for one only while the dispatcher still hears from it; a runner
+                # still at its boot gate never would.
+                while True:
+                    running = [
+                        runner
+                        for runner in state("inspect")["runners"]
+                        if runner["state"] in ("active", "activating", "deactivating")
+                    ]
+                    if not running:
+                        break
+                    heard = fleet()
+                    for runner in running:
+                        if not heard.get(runner["runner_id"], {}).get("online"):
+                            raise ValueError(
+                                runner["unit"]
+                                + " is running, but the dispatcher has not heard"
+                                " from it within a lease, so it cannot hear its"
+                                " drain (a runner joins only once its compute is"
+                                " ready); inspect it, then apply again"
+                            )
+                    time.sleep(0.25)
                 state("settle")
             install = [
                 "bash",
@@ -241,7 +256,7 @@ def main():
             for secret in args.secret:
                 install += ["--secret", *secret]
             command(install)
-            previous = control("fleet").get("runners") or []
+            previous = fleet()
             enroll = [
                 "bash",
                 str(here / "enroll.sh"),
@@ -258,18 +273,15 @@ def main():
                 enroll += ["--signer", args.signer, "--note", args.note]
             command(enroll)
         else:
-            previous = []
+            previous = {}
         while True:
             current = state("inspect")
-            fleet = {
-                runner["runner_id"]: runner
-                for runner in control("fleet").get("runners") or []
-            }
+            rows = fleet()
             runners = (
                 []
                 if current is None
                 else [
-                    fleet.get(runner["runner_id"], {}) for runner in current["runners"]
+                    rows.get(runner["runner_id"], {}) for runner in current["runners"]
                 ]
             )
             ready = bool(runners) and all(
@@ -291,14 +303,7 @@ def main():
                 or ready
                 and all(
                     runner["last_seen_ts"]
-                    > next(
-                        (
-                            old["last_seen_ts"]
-                            for old in previous
-                            if old["runner_id"] == runner["runner_id"]
-                        ),
-                        0,
-                    )
+                    > previous.get(runner["runner_id"], {}).get("last_seen_ts", 0)
                     for runner in runners
                 )
             ):

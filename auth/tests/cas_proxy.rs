@@ -17,6 +17,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::KeyPair;
 use dispatch_auth::cas_proxy::{BackendStyle, CasConfig, CasProxy};
 use dispatch_auth::cred::{mint, MintParams};
+use dispatch_auth::lease_book::LeaseBook;
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
 use dispatch_auth::revocation::RevocationStore;
@@ -154,6 +155,21 @@ impl Drop for Pep {
 }
 
 async fn start_pep(backend: &str, max_blob_bytes: u64, max_req: u32, max_bytes: u64) -> Pep {
+    start_pep_with(backend, max_blob_bytes, max_req, max_bytes, None).await
+}
+
+/// A PEP that narrows runner credentials to the live leases `book` records.
+async fn start_narrowing_pep(backend: &str, book: LeaseBook) -> Pep {
+    start_pep_with(backend, 1 << 30, 1000, 1 << 40, Some(book)).await
+}
+
+async fn start_pep_with(
+    backend: &str,
+    max_blob_bytes: u64,
+    max_req: u32,
+    max_bytes: u64,
+    leases: Option<LeaseBook>,
+) -> Pep {
     let dir = tempfile::tempdir().unwrap();
     let ns = NonceStore::open(dir.path().join("n.redb"), dispatch_auth::DEFAULT_WINDOW_MS).unwrap();
     let revocation_path = dir.path().join("revocations.json");
@@ -172,6 +188,10 @@ async fn start_pep(backend: &str, max_blob_bytes: u64, max_req: u32, max_bytes: 
         Quota::new(max_req, max_bytes),
         now,
     );
+    let proxy = match leases {
+        Some(book) => proxy.with_leases(book),
+        None => proxy,
+    };
     let ln = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = ln.local_addr().unwrap();
     let task = tokio::spawn(proxy.serve(ln));
@@ -619,4 +639,115 @@ async fn send_chunked(
         status,
         body: text.into_owned(),
     }
+}
+
+// ---------- adversarial: per-lease narrowing of runner credentials (D8) ----------
+//
+// A credential whose authority grants `right("lease")` is a runner's. With a lease book,
+// the PEP lets it read only the blobs of the jobs it holds a live lease on, and store a
+// blob only while it holds one; every other credential keeps the reach its rights give.
+// Whether a credential is a runner's comes from a Datalog query over its authority
+// block, which fails two ways: an error that makes every credential count as a runner's
+// (applications are refused), or an empty answer that makes none count (runners read
+// everything). Each way breaks one of the tests below.
+
+/// The lease book the PEP reads, looking jobs up in `store`. The stub store answers every
+/// lookup with an echo, not an invocation, so the book opens a granted job's invocation
+/// address and nothing more.
+fn lease_book(store: &str) -> LeaseBook {
+    LeaseBook::new(CasConfig {
+        backend: store.to_string(),
+        max_blob_bytes: 1 << 20,
+        style: BackendStyle::Passthrough,
+    })
+}
+
+/// Record in `book` that `runner` was granted the job whose invocation is at `invocation`,
+/// as the frame proxy does when it relays a grant.
+async fn grant_lease(book: &LeaseBook, runner: &str, invocation: &str) {
+    let lease = serde_json::json!({
+        "v": "0.10", "type": "lease", "id": "r1",
+        "body": { "lanes": ["embed"], "wait_s": 30 }
+    });
+    let granted = serde_json::json!({
+        "v": "0.10", "type": "grant", "id": "r1",
+        "body": {
+            "lease": { "lease_id": "l1", "ttl_s": 300 },
+            "job": { "job_id": "j1", "invocation_address": format!("sha256:{invocation}") }
+        }
+    });
+    book.observe(
+        runner,
+        "lease",
+        &serde_json::to_vec(&lease).unwrap(),
+        &serde_json::to_vec(&granted).unwrap(),
+        NOW,
+    )
+    .await;
+    assert!(
+        book.may_read(runner, invocation, NOW),
+        "the grant was not recorded"
+    );
+}
+
+/// A signed PUT of `body` to `addr` with a fresh nonce at `NOW`.
+async fn signed_put(pep: &Pep, sk: &SigningKey, pk: &str, cred: &str, addr: &str) -> Resp {
+    let path = blob_path(addr);
+    let nonce = nonce_b64();
+    let pop = sign_cas(sk, "PUT", &path, &nonce, NOW);
+    let hdrs = auth_headers(cred, pk, &nonce, NOW, &pop);
+    send(&pep.addr, "PUT", &path, &hdrs, b"x", Some("1")).await
+}
+
+#[tokio::test]
+async fn a_runner_reads_the_blobs_of_its_lease_and_no_others() {
+    let store = start_store().await;
+    let book = lease_book(&store);
+    let pep = start_narrowing_pep(&store, book.clone()).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["lease", "cas_get", "cas_put"]);
+    grant_lease(&book, &pk, ADDR).await;
+
+    let (path, hdrs) = signed_get(&sk, &pk, &cred, ADDR);
+    let r = send(&pep.addr, "GET", &path, &hdrs, b"", None).await;
+    assert_eq!(r.status, 200, "its own job's blob: {}", r.body);
+
+    let (path, hdrs) = signed_get(&sk, &pk, &cred, ADDR2);
+    let r = send(&pep.addr, "GET", &path, &hdrs, b"", None).await;
+    assert_eq!(r.status, 403, "another job's blob: {}", r.body);
+    assert_eq!(r.body, "not_in_lease");
+}
+
+#[tokio::test]
+async fn a_runner_stores_a_blob_only_while_it_holds_a_lease() {
+    let store = start_store().await;
+    let book = lease_book(&store);
+    let pep = start_narrowing_pep(&store, book.clone()).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["lease", "cas_get", "cas_put"]);
+
+    let r = signed_put(&pep, &sk, &pk, &cred, ADDR2).await;
+    assert_eq!(r.status, 403, "a PUT with no lease held: {}", r.body);
+    assert_eq!(r.body, "not_in_lease");
+
+    grant_lease(&book, &pk, ADDR).await;
+    let r = signed_put(&pep, &sk, &pk, &cred, ADDR2).await;
+    assert_eq!(r.status, 200, "a PUT while it holds a lease: {}", r.body);
+}
+
+#[tokio::test]
+async fn an_application_credential_is_not_narrowed() {
+    // No `lease` right, no lease held: it reads and stores any blob its rights allow.
+    let store = start_store().await;
+    let book = lease_book(&store);
+    let pep = start_narrowing_pep(&store, book).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["cas_get", "cas_put"]);
+
+    let (path, hdrs) = signed_get(&sk, &pk, &cred, ADDR2);
+    let r = send(&pep.addr, "GET", &path, &hdrs, b"", None).await;
+    assert_eq!(r.status, 200, "an application's GET: {}", r.body);
+
+    let r = signed_put(&pep, &sk, &pk, &cred, ADDR2).await;
+    assert_eq!(r.status, 200, "an application's PUT: {}", r.body);
 }

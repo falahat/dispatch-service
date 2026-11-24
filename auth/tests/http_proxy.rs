@@ -886,6 +886,28 @@ async fn wrong_right_is_403() {
     );
 }
 
+#[tokio::test]
+async fn wrong_right_is_403_on_query_auth() {
+    // A signed URL is authorized like a header credential: one granting sync_write, but
+    // not audio_get, cannot fetch /audio.
+    let backend = start_echo().await;
+    let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
+    let (sk, pk) = holder();
+    let cred = pep.mint(&pk, &["sync_write"]);
+    let pr = proof(&sk, "GET", "/audio", &cred, b"", &jti());
+    let q = format!(
+        "/audio?id=ep42&biscuit={}&dpop={}",
+        urlenc(&cred),
+        urlenc(&pr)
+    );
+    let r = send(&pep.addr, "GET", &q, &[], b"").await;
+    assert_eq!(r.status, 403, "wrong right must be forbidden: {}", r.body);
+    assert_eq!(
+        r.body, r#"authorization denied: right "audio_get" not granted"#,
+        "refused for another reason"
+    );
+}
+
 // ---------- adversarial: DPoP proof integrity ----------
 
 #[tokio::test]

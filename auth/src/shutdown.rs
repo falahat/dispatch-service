@@ -1,11 +1,12 @@
-//! Graceful stop for the PEP's surfaces. Once a stop is requested, each surface stops
-//! accepting and lets the requests in flight finish. The process waits for them up to its
-//! drain deadline (`bin/pep.rs`), then exits.
+//! How the PEP's surfaces accept and stop. Each accepted connection probes a silent peer.
+//! Once a stop is requested, each surface stops accepting and lets the requests in flight
+//! finish. The process waits for them up to its drain deadline (`bin/pep.rs`), then exits.
 
 use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::HttpService;
 use hyper_util::rt::TokioIo;
+use socket2::{SockRef, TcpKeepalive};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -19,6 +20,17 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// descriptors, every accept fails at once until a connection closes, so trying again at
 /// once would spin and log a warning per try.
 const ACCEPT_RETRY: Duration = Duration::from_secs(1);
+
+/// TCP keepalive on each accepted connection. A peer that vanished without a close (its
+/// power lost, its network path gone) fails its connection about 20 s after its last sign
+/// of life: idle 10 s, then two probes 5 s apart. Without it such a connection stayed open
+/// until a reply sent to it timed out, many minutes later, or for good if none was, and a
+/// runner's lease long-poll on it ran its full wait, granting a job that came meanwhile to
+/// no one.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(target_os = "linux")]
+const KEEPALIVE_PROBES: u32 = 2;
 
 /// Tells a surface when to stop. The default one never stops.
 #[derive(Clone, Default)]
@@ -59,6 +71,9 @@ where
             Some(_) = open.join_next(), if !open.is_empty() => {}
             accepted = listener.accept() => match accepted {
                 Ok((stream, peer)) => {
+                    if let Err(e) = keep_alive(&stream) {
+                        log::warn!("{surface}: keepalive for {peer}: {e}");
+                    }
                     open.spawn(serve(stream, peer, stop.clone()));
                 }
                 Err(e) => {
@@ -70,6 +85,15 @@ where
     }
     drop(listener);
     while open.join_next().await.is_some() {}
+}
+
+fn keep_alive(stream: &TcpStream) -> std::io::Result<()> {
+    let probes = TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    #[cfg(target_os = "linux")]
+    let probes = probes.with_retries(KEEPALIVE_PROBES);
+    SockRef::from(stream).set_tcp_keepalive(&probes)
 }
 
 /// Serves one HTTP/1 connection. After a stop it finishes the request in flight and
@@ -89,4 +113,39 @@ where
         () = stop.requested() => conn.as_mut().graceful_shutdown(),
     }
     conn.await
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// Every surface probes its peers: a connection it accepts carries the keepalive
+    /// timing, so a runner that vanished without a close is noticed.
+    #[tokio::test]
+    async fn an_accepted_connection_probes_a_silent_peer() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, mut seen) = tokio::sync::mpsc::channel(1);
+        let (stopper, stop) = channel();
+        let surface = tokio::spawn(accept_until(listener, stop, "test", move |stream, _, _| {
+            let seen_tx = seen_tx.clone();
+            async move {
+                let socket = SockRef::from(&stream);
+                let timing = (
+                    socket.keepalive().unwrap(),
+                    socket.tcp_keepalive_time().unwrap(),
+                    socket.tcp_keepalive_interval().unwrap(),
+                    socket.tcp_keepalive_retries().unwrap(),
+                );
+                seen_tx.send(timing).await.unwrap();
+            }
+        }));
+        let _client = TcpStream::connect(addr).await.unwrap();
+        assert_eq!(
+            seen.recv().await.unwrap(),
+            (true, KEEPALIVE_IDLE, KEEPALIVE_INTERVAL, KEEPALIVE_PROBES)
+        );
+        stopper.send_replace(true);
+        surface.await.unwrap();
+    }
 }

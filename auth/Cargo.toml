@@ -46,6 +46,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "client-legacy", "http1"] }
 http-body-util = "0.1"
+# TCP keepalive timing on accepted connections (shutdown.rs). tokio already builds it with
+# `all`, which the probe count needs.
+socket2 = { version = "0.6", features = ["all"] }
 bytes = "1"
 log = "0.4"
 # Without `humantime`: its jiff dependency drags defmt and the unmaintained

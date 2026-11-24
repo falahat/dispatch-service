@@ -61,7 +61,9 @@ type liveJob struct {
 	jobID     string
 	cancel    context.CancelFunc
 	abandoned bool
-	logOffset int64
+	logBase   int64          // the job's log end at the grant, where this attempt's invoke.log starts (D16)
+	logOffset int64          // the job's log end the dispatcher has acknowledged
+	logSent   *wire.LogChunk // shipped and not yet acknowledged; resent exactly until it is
 }
 
 // markAbandoned cancels the in-flight job if it matches jobID and records that

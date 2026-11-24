@@ -20,9 +20,13 @@ type logsResult struct {
 	Done       bool            `json:"done"`
 }
 
+// logEndSQL selects the end of the log a job's attempts have shipped so far. A
+// retried job's log continues there: its grant carries it as log_offset (D16).
+const logEndSQL = `SELECT COALESCE(MAX(offset+size),0) FROM job_logs WHERE job_id=?`
+
 func appendLog(tx *sql.Tx, job Job, chunk wire.LogChunk) error {
 	var end int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(offset+size),0) FROM job_logs WHERE job_id=?`, job.JobID).Scan(&end); err != nil {
+	if err := tx.QueryRow(logEndSQL, job.JobID).Scan(&end); err != nil {
 		return err
 	}
 	if chunk.Offset < end {
@@ -85,7 +89,7 @@ func (d *Dispatcher) logs(ctx context.Context, request logsRequest) (logsResult,
 			return result, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
 		}
 		var end int64
-		if err := d.store.db.QueryRow(`SELECT COALESCE(MAX(offset+size),0) FROM job_logs WHERE job_id=?`, request.JobID).Scan(&end); err != nil {
+		if err := d.store.db.QueryRow(logEndSQL, request.JobID).Scan(&end); err != nil {
 			return result, &wire.Error{Code: wire.CodeInternal, Message: err.Error()}
 		}
 		result.Done = job.State != "QUEUED" && job.State != "RUNNING" && job.State != "AWAITING_APPROVAL" && result.NextOffset >= end

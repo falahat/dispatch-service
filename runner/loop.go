@@ -193,11 +193,14 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		jobCtx, cancel = context.WithDeadline(ctx, deadline)
 	}
 	defer cancel()
-	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel})
-	defer r.clearCurrent()
-
+	// A workdir left by a crash goes before the job is current, so a heartbeat never
+	// ships an earlier attempt's invoke.log as this one's.
 	workdir := filepath.Join(r.cfg.WorkRoot, g.Job.JobID)
 	_ = os.RemoveAll(workdir)
+	r.setCurrent(&liveJob{leaseID: g.Lease.LeaseID, jobID: g.Job.JobID, cancel: cancel,
+		logBase: g.Job.LogOffset, logOffset: g.Job.LogOffset})
+	defer r.clearCurrent()
+
 	outputsPath := filepath.Join(workdir, outputsDir)
 	if err := os.MkdirAll(outputsPath, 0o755); err != nil {
 		r.release(dc, g, wire.ReleaseShipping, "mkdir workdir: "+err.Error())

@@ -266,6 +266,11 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 			return err
 		}
 
+		var logOffset int64
+		if err := tx.QueryRow(logEndSQL, job.JobID).Scan(&logOffset); err != nil {
+			return err
+		}
+
 		gj := wire.GrantJob{
 			JobID:             job.JobID,
 			JobKey:            job.JobKey,
@@ -274,6 +279,7 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 			Attempt:           job.Attempt,
 			ExpectedWallS:     job.Policy.ExpectedWallS, // sizes the runner's per-job budget
 			GPU:               placed,
+			LogOffset:         logOffset,
 		}
 		if job.BatchScale != "" {
 			gj.Hints = &wire.GrantHints{BatchScale: job.BatchScale}

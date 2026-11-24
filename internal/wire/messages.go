@@ -203,6 +203,7 @@ type GrantJob struct {
 	ExpectedWallS     int              `json:"expected_wall_s,omitempty"` // 0 = unset; sizes the runner's job budget
 	Hints             *GrantHints      `json:"hints,omitempty"`
 	GPU               *GrantGPU        `json:"gpu,omitempty"`
+	LogOffset         int64            `json:"log_offset,omitempty"` // where this attempt's command log continues (D16)
 }
 
 // GrantHints are optional sizing feedback (decimals as strings per the rule).

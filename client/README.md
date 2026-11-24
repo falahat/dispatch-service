@@ -1,7 +1,7 @@
 # dispatch-client
 
 Pure-stdlib Python client for the dispatch-service **app surface** (wire contract
-v0.7). No third-party runtime dependencies — just `socket`, `struct`, `json`,
+v0.8). No third-party runtime dependencies — just `socket`, `struct`, `json`,
 `threading`.
 
 ## Install

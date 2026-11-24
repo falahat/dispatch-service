@@ -14,14 +14,15 @@ import (
 
 // failingCommand prints a line, then reports the failure class it is given on its
 // first attempt; a later attempt, which finds the marker the first one left in
-// the runner's root, succeeds.
+// the runner's root, prints another line and succeeds.
 const failingCommand = `import json, os, sys
 request = json.load(sys.stdin)
 marker = os.path.join(request['roots']['state'], 'tried')
-os.write(1, b'stage log line\n')
 if os.path.exists(marker):
+    os.write(1, b'retried stage log line\n')
     json.dump({'outputs': {}, 'metrics': {'exit': 0}}, open('invoke-result.json', 'w'))
 else:
+    os.write(1, b'stage log line\n')
     open(marker, 'w').close()
     json.dump({'error_class': sys.argv[1], 'message': 'the stage said why'}, open('invoke-failure.json', 'w'))
 `
@@ -94,10 +95,15 @@ func TestCommandFailureOfAFinalClassEndsTheJob(t *testing.T) {
 	}
 }
 
-// A retriable class runs the job again, as the job's policy allows.
+// A retriable class runs the job again, as the job's policy allows. The job's log
+// holds both attempts' output in order: the retry's log continues after the first
+// attempt's (D16).
 func TestCommandFailureOfARetriableClassRunsAgain(t *testing.T) {
-	view, _ := runFailingCommand(t, "network", 2)
+	view, log := runFailingCommand(t, "network", 2)
 	if view.State != "PERSISTING" || view.Attempt != 2 {
 		t.Fatalf("job = %s after attempt %d, want PERSISTING after 2", view.State, view.Attempt)
+	}
+	if log != "stage log line\nretried stage log line\n" {
+		t.Fatalf("job log = %q, want the first attempt's line, then the retry's", log)
 	}
 }

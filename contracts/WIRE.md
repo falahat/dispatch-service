@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.7", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.8", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -62,8 +62,8 @@ poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.7", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
-| `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement) and that is pinned to no other node than this runner's (`policy.node`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`. |
+| `hello` | `{contract:"0.8", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement) and that is pinned to no other node than this runner's (`policy.node`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, log_offset?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`; `log_offset` is where this attempt's command log continues (see below). |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
 | `fail` | `{lease_id, job_id, attempt, error_class, message ≤ 4 KiB}` → `ok` | compute failed. Attempt burned; the job's declared policy maps `error_class` → retriable (backoff) or terminal. A job whose cancellation was requested is terminal whatever the class (D15). Idempotent per `(job_id, attempt)`. |
@@ -161,9 +161,13 @@ Repeating the same submission returns that job; changing its request returns `co
 reply with `lookup`, without replaying the request or maintaining another execution ID.
 `job`, `jobs`, `wait` and `lookup` share one projection, including progress and results.
 The signed heartbeat binds this CAS address to the current lease and runner.
-Chunks are contiguous, 1–1,048,576 bytes; exact replay is idempotent. `beat_ok`
-returns `log_offset`, the acknowledged byte end. The runner flushes all chunks
-before `complete`. Result node/version come from the authenticated fleet row.
+Chunks are contiguous, 1–1,048,576 bytes; exact replay is idempotent, so a runner
+resends a chunk whose `beat_ok` it never received exactly as it sent it. `beat_ok`
+returns `log_offset`, the acknowledged byte end. A job keeps one log across its
+attempts: the grant's `log_offset` is where its earlier attempts' log ends, and the
+new attempt's first chunk starts there (D16). The runner flushes all chunks before
+`complete`, and before the `fail` a command reports. Result node/version come from
+the authenticated fleet row.
 
 With `wait_for_executor=true`, running cancellation sets `cancel_requested` and
 retains the lease while the executor receives `abandon`, cleans up, and completes.

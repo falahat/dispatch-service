@@ -40,7 +40,8 @@ with its own credential; the plane packs their GPU jobs by declared memory.
 
 Stdout/stderr remain outside workload mounts in `invoke.log`. The runner publishes
 CAS-addressed chunks through its heartbeat, with byte offsets acknowledged by the
-dispatcher. The app-only `logs` verb reads these chunks independently of completion
+dispatcher. A retried job's log continues after its earlier attempts' (D16), so the
+app-only `logs` verb reads every attempt's output, in order, independently of completion
 subscriptions. Bytes are verified by the existing CAS client, never executed.
 
 The executor may atomically replace `invoke-progress.json` with a JSON object

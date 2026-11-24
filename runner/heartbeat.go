@@ -98,7 +98,7 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 		}
 		r.mu.Lock()
 		if r.current != nil && r.current.jobID == status.CurrentJobID {
-			r.current.logOffset = *beat.LogOffset
+			r.current.logOffset, r.current.logSent = *beat.LogOffset, nil
 		}
 		r.mu.Unlock()
 	}

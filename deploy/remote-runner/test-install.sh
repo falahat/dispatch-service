@@ -93,11 +93,11 @@ grep -Fx 'Volume=/var/lib/tailworker/locks:/var/lib/tailworker/locks:ro' "$units
 grep -Fx 'Environment=SMOKESCREEN_ROLE_NETS=172.30.0.0/24=model' "$units/first-smokescreen.container"
 # Quadlet applies [Install] when it generates units, so compute starts its guard at boot.
 # Units only want each other and restart on failure: a requirement would fail its
-# dependents for good when a unit fails at boot. A compute restart takes its runner
-# back to the boot gate.
+# dependents for good when a unit fails at boot. Nothing is part of compute: a
+# compute may exit after every response (INVOKE.md), and its runner must outlive it.
 sed -n '/^\[Unit\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'Before=first-compute.service'
 sed -n '/^\[Install\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'WantedBy=first-compute.service'
-for dependency in Wants After PartOf; do
+for dependency in Wants After; do
     sed -n '/^\[Unit\]$/,/^$/p' "$units/first-runner.container" | grep -Fx "$dependency=first-compute.service"
 done
 for role in runner smokescreen; do
@@ -105,7 +105,7 @@ for role in runner smokescreen; do
 done
 # A compute may exit 0 after each response for a fresh process (INVOKE.md).
 sed -n '/^\[Service\]$/,/^$/p' "$units/first-compute.container" | grep -Fx 'Restart=always'
-if grep -E '^(Requires|RequiredBy|BindsTo)=' "$units"/first-*.container; then exit 1; fi
+if grep -E '^(Requires|RequiredBy|BindsTo|PartOf)=' "$units"/first-*.container; then exit 1; fi
 grep -Fx 'Exec="--public" "value"' "$units/first-compute.container"
 grep -Fx 'Internal=true' "$units/first-model.network"
 test -f "$HOME/.config/plane-runners/first/smokescreen/allowlist.yaml"

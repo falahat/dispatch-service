@@ -79,10 +79,11 @@ Tailworker resolves the approved machine and transfers images; the kit installs
 rootless Quadlet units pinned to their image IDs. The runner starts at boot and
 starts its compute; with MODEL_EGRESS=1, compute starts its smokescreen guard
 first. Each unit restarts after a failure, and compute after any exit, so one that
-fails at boot holds no other down, and a compute restart sends its runner back to
-its boot gate. A runner stopped at that gate exits cleanly, and a running one takes
-no job while its compute is not ready. `NAME` isolates each application's containers, networks,
-volumes and credentials, so applications can share a machine.
+fails at boot holds no other down. A compute restart leaves its runner running, and
+the runner takes no job while its compute is not ready. A runner stopped at its boot
+gate exits cleanly, and one stopped mid-job releases the job as `interrupted`.
+`NAME` isolates each application's containers, networks, volumes and credentials,
+so applications can share a machine.
 The worker creates its own seed. Only its public key and the application's signed
 capability cross SSH; compute never mounts the runner credential. Optional
 `--secret NAME FILE` copies an owned mode-0600 provider secret into a namespaced

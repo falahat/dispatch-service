@@ -44,7 +44,8 @@ as at boot. The runner starts its compute, and with model egress compute starts
 its smokescreen guard first. Each restarts after a failure, and compute after any
 exit (INVOKE.md): they only want each
 other, since a requirement would leave the rest down for good when one fails at
-boot, and a compute restart takes its runner back to its boot gate.
+boot. A compute restart leaves its runner running, taking no lease until compute
+is ready again.
 Existing credentials are refused;
 inspect partial setup before repeating it. Key revocation remains with the
 application signer. No cloud API, network-policy change or machine creation is

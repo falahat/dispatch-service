@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,17 +28,39 @@ import (
 type planePEP struct {
 	cmd          *exec.Cmd
 	exited       chan error
+	log          *syncBuffer // what the PEP has logged so far
 	runnerListen string
 	casListen    string
 	signerBin    string
 	secrets      string
 }
 
-func startPlanePEP(t *testing.T, srv *dispatcher.Server, casURL string) *planePEP {
+// syncBuffer collects a process's output while a test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// startPlanePEP starts a PEP. With openFiles above zero, it may hold at most that many
+// file descriptors.
+func startPlanePEP(t *testing.T, srv *dispatcher.Server, casURL string, openFiles int) *planePEP {
 	t.Helper()
 	pep := binPath(t, "pep")
 	p := &planePEP{
 		exited:       make(chan error, 1),
+		log:          &syncBuffer{},
 		runnerListen: freePort(t),
 		casListen:    freePort(t),
 		signerBin:    binPath(t, "signer"),
@@ -45,6 +69,9 @@ func startPlanePEP(t *testing.T, srv *dispatcher.Server, casURL string) *planePE
 	p.secrets = filepath.Join(tmp, "secrets.json")
 	rootPub := runSigner(t, p.signerBin, p.secrets, "pubkey")
 	p.cmd = exec.Command(pep)
+	if openFiles > 0 {
+		p.cmd = exec.Command("sh", "-c", fmt.Sprintf(`ulimit -n %d && exec "$0"`, openFiles), pep)
+	}
 	p.cmd.Env = append(os.Environ(),
 		"PEP_ROOT_PUBKEY="+rootPub,
 		"PEP_DISPATCHER_ADDR="+srv.RunnerAddr(),
@@ -55,7 +82,7 @@ func startPlanePEP(t *testing.T, srv *dispatcher.Server, casURL string) *planePE
 		"PEP_REVOCATION_DB="+filepath.Join(tmp, "revocations.json"),
 		"RUST_LOG=warn",
 	)
-	p.cmd.Stdout, p.cmd.Stderr = os.Stderr, os.Stderr
+	p.cmd.Stdout, p.cmd.Stderr = os.Stderr, io.MultiWriter(os.Stderr, p.log)
 	if err := p.cmd.Start(); err != nil {
 		t.Fatalf("start pep: %v", err)
 	}
@@ -158,7 +185,7 @@ func TestTheStoppedPEPFinishesItsWork(t *testing.T) {
 			close(answer)
 		}
 	}()
-	p := startPlanePEP(t, srv, casSrv.URL)
+	p := startPlanePEP(t, srv, casSrv.URL, 0)
 	runner := p.waitingLease(t)
 
 	reader, err := runnerpkg.NewPoPSigner(p.credential(t, "cas_get"))
@@ -243,7 +270,7 @@ func TestARunnerThatLeavesMidLeaseIsGrantedNothing(t *testing.T) {
 	srv := startDispatcherWaiting(t, 30)
 	casSrv := httptest.NewServer(newStubCAS().handler())
 	defer casSrv.Close()
-	p := startPlanePEP(t, srv, casSrv.URL)
+	p := startPlanePEP(t, srv, casSrv.URL, 0)
 
 	p.waitingLease(t).Close()
 	time.Sleep(time.Second) // the close travels through the PEP to the dispatcher

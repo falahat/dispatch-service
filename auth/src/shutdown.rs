@@ -8,11 +8,17 @@ use hyper::service::HttpService;
 use hyper_util::rt::TokioIo;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// How long a surface waits to accept again after an accept fails. Out of file
+/// descriptors, every accept fails at once until a connection closes, so trying again at
+/// once would spin and log a warning per try.
+const ACCEPT_RETRY: Duration = Duration::from_secs(1);
 
 /// Tells a surface when to stop. The default one never stops.
 #[derive(Clone, Default)]
@@ -55,7 +61,10 @@ where
                 Ok((stream, peer)) => {
                     open.spawn(serve(stream, peer, stop.clone()));
                 }
-                Err(e) => log::warn!("{surface}: accept: {e}"),
+                Err(e) => {
+                    log::warn!("{surface}: accept: {e}");
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                }
             },
         }
     }

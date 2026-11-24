@@ -17,7 +17,9 @@ import (
 // in-flight job hits the lease TTL, gets reclaimed + requeued mid-run, and the
 // re-lease invokes a compute that is still busy with the orphaned run. That is
 // exactly the failure mode that silently collapses a drain, so the heartbeat must
-// heal its connection the same way the work loop already does.
+// heal its connection the same way the work loop already does. A reply that does not
+// come within replyTimeout fails the beat or the redial's hello like a dead connection,
+// so a connection held open with no one answering is replaced too.
 func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -59,7 +61,9 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	status, lease := r.currentStatus()
 	chunk, logErr := r.logChunk(ctx)
 	progress, progressErr := r.commandProgress(status.CurrentJobID)
+	dc.setReadTimeout(replyTimeout)
 	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk, Progress: progress})
+	dc.setReadTimeout(0)
 	if err != nil {
 		return err // dead connection -> caller reconnects so lease renewal resumes
 	}

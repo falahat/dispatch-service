@@ -146,7 +146,11 @@ it matched says so.
   failing to bind) → `500`, saying only `internal error`; the detail goes to the PEP's
   log. The runner and CAS surfaces answer such faults the same way. The PEP parses its
   Datalog once and refuses to boot if a rule does not parse or bind
-  (`auth/src/policy.rs`).
+  (`auth/src/policy.rs`). A `403` names the rule of each check that failed, or the right
+  no policy granted. Text a request chose (the checks a holder appended to its
+  credential, a runner's verb and lanes, a path) reaches the answer and the log only
+  escaped to printable ASCII and cut to 512 characters (`auth/src/printable.rs`), so it
+  cannot start a log line of its own or send a terminal escape.
 - Per-identity rate exceeded → `429`.
 - Matched a route, auth passes (or passthrough) → forwarded to `backend` with application
   parameters preserved, the true buffered length set, and auth + hop-by-hop fields removed.

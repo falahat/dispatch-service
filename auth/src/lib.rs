@@ -14,6 +14,7 @@ pub mod lease_book;
 pub mod nonce;
 pub mod policy;
 pub mod pop;
+pub mod printable;
 pub mod quota;
 pub mod revocation;
 pub mod shutdown;

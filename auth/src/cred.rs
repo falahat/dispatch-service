@@ -15,6 +15,7 @@ use crate::error::{AuthError, Result};
 use crate::nonce::NonceStore;
 use crate::policy;
 use crate::pop;
+use crate::printable::printable;
 use crate::revocation::RevocationStore;
 // Facts are built from typed terms; the checks, policy and query come from crate::policy,
 // biscuit's own Datalog text parsed once, with every `{param}` bound by `set` to a typed
@@ -128,32 +129,34 @@ pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<Str
     Some(rights.into_iter().map(|(right,)| right).collect())
 }
 
-/// The PEP's own rule failed to go into an authorizer or block: a PEP bug, so it is denied
-/// as one, with nothing for the caller to read.
 /// Why the authorizer refused, precisely enough to tell one refusal from another: the rule
 /// of each check that failed, else the right no policy granted. biscuit's own message is
 /// "authorization failed" whatever failed, so neither the log nor a test could tell a
-/// refusal for one reason from a refusal for another.
+/// refusal for one reason from a refusal for another. A block's rule is its writer's text,
+/// and biscuit prints its strings as they are, so the reason is made printable: the holder
+/// of a credential writes the checks it appends, and a runner names the lanes it asks for.
 fn refusal(e: &BiscuitError, right: &str) -> String {
-    let checks = match e {
+    let why = match e {
         BiscuitError::FailedLogic(Logic::NoMatchingPolicy { checks }) if checks.is_empty() => {
-            return format!("right {right:?} not granted");
+            format!("right {right:?} not granted")
         }
         BiscuitError::FailedLogic(
             Logic::Unauthorized { checks, .. } | Logic::NoMatchingPolicy { checks },
-        ) if !checks.is_empty() => checks,
-        other => return other.to_string(),
+        ) if !checks.is_empty() => checks
+            .iter()
+            .map(|check| match check {
+                FailedCheck::Block(failed) => failed.rule.as_str(),
+                FailedCheck::Authorizer(failed) => failed.rule.as_str(),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        other => other.to_string(),
     };
-    checks
-        .iter()
-        .map(|check| match check {
-            FailedCheck::Block(failed) => failed.rule.as_str(),
-            FailedCheck::Authorizer(failed) => failed.rule.as_str(),
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+    printable(&why)
 }
 
+/// The PEP's own rule failed to go into an authorizer or block: a PEP bug, so it is denied
+/// as one, with nothing for the caller to read.
 fn internal(_: BiscuitError) -> AuthError {
     AuthError::Internal
 }

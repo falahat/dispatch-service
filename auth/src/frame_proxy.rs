@@ -13,6 +13,7 @@ use crate::cred::{verify, AuthedRequest};
 use crate::error::AuthError;
 use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
+use crate::printable::printable;
 use crate::revocation::RevocationStore;
 use crate::shutdown::{self, Stop};
 use crate::Op;
@@ -167,7 +168,11 @@ impl FrameProxy {
             ) {
                 Ok(id) => id,
                 Err(e) => {
-                    log::warn!("frame: {} denied: {}", verb, e);
+                    log::warn!(
+                        "frame: {} denied: {}",
+                        printable(&verb),
+                        printable(&e.to_string())
+                    );
                     let (code, message) = refusal(&e);
                     write_error(&mut runner, &id, code, &message).await?;
                     continue;

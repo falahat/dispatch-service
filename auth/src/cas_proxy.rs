@@ -7,6 +7,7 @@ use crate::cred::{authority_rights, verify, AuthedRequest};
 use crate::error::AuthError;
 use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
+use crate::printable::printable;
 use crate::quota::Quota;
 use crate::revocation::RevocationStore;
 use crate::shutdown::{self, Stop};
@@ -175,7 +176,7 @@ impl CasProxy {
                 log::warn!(
                     "cas: {} {} denied: not in a live lease of {}",
                     method,
-                    path,
+                    printable(&path),
                     identity.id
                 );
                 return text(StatusCode::FORBIDDEN, "not_in_lease");
@@ -308,7 +309,12 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
         AuthError::Denied(_) | AuthError::Revoked => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    log::warn!("cas: {} {} denied: {}", method, path, e);
+    log::warn!(
+        "cas: {} {} denied: {}",
+        method,
+        printable(path),
+        printable(&e.to_string())
+    );
     text(status, &e.client_message())
 }
 

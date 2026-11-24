@@ -7,6 +7,7 @@
 use crate::cred::{verify_http_dpop, DpopHttpRequest};
 use crate::error::AuthError;
 use crate::nonce::NonceStore;
+use crate::printable::printable;
 use crate::quota::Quota;
 use crate::revocation::RevocationStore;
 use crate::shutdown::{self, Stop};
@@ -415,7 +416,7 @@ impl HttpProxy {
         let buffered = match buffer_capped(body, self.cfg.max_body_bytes).await {
             Ok(b) => b,
             Err(BufferError::TooLarge) => {
-                log::warn!("http: 413 oversize body on {method} {path}");
+                log::warn!("http: 413 oversize body on {method} {}", printable(&path));
                 return text(StatusCode::PAYLOAD_TOO_LARGE, "too_large");
             }
             Err(BufferError::Read) => return text(StatusCode::BAD_REQUEST, "body_read"),
@@ -769,7 +770,11 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
         AuthError::Denied(_) | AuthError::Revoked => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    log::warn!("http: {method} {path} denied: {e}");
+    log::warn!(
+        "http: {method} {} denied: {}",
+        printable(path),
+        printable(&e.to_string())
+    );
     text(status, &e.client_message())
 }
 

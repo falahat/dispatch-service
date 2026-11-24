@@ -535,10 +535,8 @@ impl HttpProxy {
         let fwd = match fwd.body(boxed) {
             Ok(r) => r,
             Err(e) => {
-                return text(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("proxy_build: {e}"),
-                )
+                log::warn!("http: building the backend request: {e}");
+                return text(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
             }
         };
         match self.client.request(fwd).await {
@@ -772,7 +770,7 @@ fn deny(method: &Method, path: &str, e: AuthError) -> Response<BoxedBody> {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     log::warn!("http: {method} {path} denied: {e}");
-    text(status, &format!("{e}"))
+    text(status, &e.client_message())
 }
 
 fn text(status: StatusCode, msg: &str) -> Response<BoxedBody> {
@@ -780,4 +778,42 @@ fn text(status: StatusCode, msg: &str) -> Response<BoxedBody> {
         .map_err(|e: Infallible| match e {})
         .boxed();
     Response::builder().status(status).body(body).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn said(resp: Response<BoxedBody>) -> (StatusCode, String) {
+        let status = resp.status();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_fault_of_the_pep_answers_500_internal_error() {
+        for fault in [
+            AuthError::Store("redb: disk full at /data/nonces.redb".into()),
+            AuthError::Io("broken pipe".into()),
+            AuthError::Internal,
+        ] {
+            let answer = said(deny(&Method::GET, "/x", fault)).await;
+            assert_eq!(
+                answer,
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string()
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_still_says_why() {
+        let answer = said(deny(&Method::GET, "/x", AuthError::Replay)).await;
+        assert_eq!(
+            answer,
+            (StatusCode::UNAUTHORIZED, "replayed nonce".to_string())
+        );
+    }
 }

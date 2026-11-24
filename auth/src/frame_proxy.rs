@@ -167,20 +167,9 @@ impl FrameProxy {
             ) {
                 Ok(id) => id,
                 Err(e) => {
-                    let code = match e {
-                        AuthError::Denied(_) | AuthError::Revoked => "forbidden",
-                        AuthError::Store(_) | AuthError::Io(_) | AuthError::Internal => "internal",
-                        AuthError::Freshness
-                        | AuthError::Replay
-                        | AuthError::Malformed(_)
-                        | AuthError::BiscuitSignature
-                        | AuthError::PopFailed
-                        | AuthError::DpopFailed(_)
-                        | AuthError::MissingPubkey
-                        | AuthError::MissingIdentity => "unauthenticated",
-                    };
                     log::warn!("frame: {} denied: {}", verb, e);
-                    write_error(&mut runner, &id, code, &format!("{e}")).await?;
+                    let (code, message) = refusal(&e);
+                    write_error(&mut runner, &id, code, &message).await?;
                     continue;
                 }
             };
@@ -302,6 +291,23 @@ async fn write_frame(s: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
     s.flush().await
 }
 
+/// The error code and message a runner gets for a frame that failed verification.
+fn refusal(e: &AuthError) -> (&'static str, String) {
+    let code = match e {
+        AuthError::Denied(_) | AuthError::Revoked => "forbidden",
+        AuthError::Store(_) | AuthError::Io(_) | AuthError::Internal => "internal",
+        AuthError::Freshness
+        | AuthError::Replay
+        | AuthError::Malformed(_)
+        | AuthError::BiscuitSignature
+        | AuthError::PopFailed
+        | AuthError::DpopFailed(_)
+        | AuthError::MissingPubkey
+        | AuthError::MissingIdentity => "unauthenticated",
+    };
+    (code, e.client_message())
+}
+
 async fn write_error(s: &mut TcpStream, id: &str, code: &str, msg: &str) -> std::io::Result<()> {
     let frame = serde_json::json!({
         "v": "0.9",
@@ -311,4 +317,36 @@ async fn write_error(s: &mut TcpStream, id: &str, code: &str, msg: &str) -> std:
     });
     let bytes = serde_json::to_vec(&frame).unwrap();
     write_frame(s, &bytes).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runner_learns_nothing_of_the_peps_own_faults() {
+        for fault in [
+            AuthError::Store("redb: disk full".into()),
+            AuthError::Io("broken pipe".into()),
+            AuthError::Internal,
+        ] {
+            assert_eq!(
+                refusal(&fault),
+                ("internal", "internal error".to_string()),
+                "{fault:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_runner_is_told_why() {
+        assert_eq!(
+            refusal(&AuthError::Replay),
+            ("unauthenticated", "replayed nonce".to_string())
+        );
+        assert_eq!(
+            refusal(&AuthError::Revoked),
+            ("forbidden", "credential revoked".to_string())
+        );
+    }
 }

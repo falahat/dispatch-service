@@ -36,4 +36,42 @@ pub enum AuthError {
     Internal,
 }
 
+impl AuthError {
+    /// What the client is told. A fault of the PEP's own (its nonce store, IO, its rules)
+    /// says only `internal error`: its detail is for the PEP's log, never the caller.
+    pub fn client_message(&self) -> String {
+        match self {
+            AuthError::Store(_) | AuthError::Io(_) | AuthError::Internal => {
+                AuthError::Internal.to_string()
+            }
+            refused => refused.to_string(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, AuthError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fault_of_the_pep_says_only_internal_error() {
+        for fault in [
+            AuthError::Store("redb: database file is corrupt at /data/nonces.redb".into()),
+            AuthError::Io("No space left on device (os error 28)".into()),
+            AuthError::Internal,
+        ] {
+            assert_eq!(fault.client_message(), "internal error", "{fault:?}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_still_says_why() {
+        assert_eq!(AuthError::Replay.client_message(), "replayed nonce");
+        assert_eq!(
+            AuthError::Denied("no lane".into()).client_message(),
+            "authorization denied: no lane"
+        );
+    }
+}

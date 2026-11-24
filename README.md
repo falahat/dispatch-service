@@ -105,22 +105,29 @@ update and their refusals without starting services or using real credentials.
 ## Gates
 
 ```sh
+cargo build --manifest-path auth/Cargo.toml --bins
 go test ./...
 (cd deploy/smokescreen && go test ./...)
 cargo test --manifest-path auth/Cargo.toml
 bash deploy/remote-runner/test-install.sh
+bash deploy/remote-runner/test-ssh-exec.sh
 ```
+
+The e2e tests run the `pep` and `signer` in `auth/target/debug` and skip when they are
+missing, so build them first: a stale build tests old code.
 
 The Rust PEP is the only credential-verification engine. Backends receive verified
 identity and never parse credentials. Model and ingest egress use separate source-network
 roles; unknown roles are denied. The priced-work cap defaults to `$0.00`.
 
-The PEP stops on SIGTERM or SIGINT. It stops accepting, closes idle connections, finishes
-the requests in flight for up to 5 s, and exits 0 (`auth/src/shutdown.rs`). A runner's
-lease that is still waiting is dropped at once: it holds no work yet. The dispatcher ends
-a long-poll whose connection closes, and undoes a grant that never left it (D19), so a
-runner it has seen go is granted nothing. A surface whose accept fails (out of file
-descriptors, say) logs it and tries again 1 s later.
+The PEP stops on SIGTERM or SIGINT. It stops accepting, closes each keep-alive connection
+that is waiting for its next request, lets the requests in flight finish, and exits 0
+(`auth/src/shutdown.rs`). It waits at most 5 s; a connection that has not sent its first
+request yet holds the exit until then. A runner's lease that is still waiting is dropped
+at once: it holds no work yet. The dispatcher ends a long-poll whose connection closes,
+and undoes a grant that never left it (D19), so a runner it has seen go is granted
+nothing. A surface whose accept fails (out of file descriptors, say) logs it and tries
+again 1 s later.
 
 Each accepted connection probes a silent peer with TCP keepalive: idle 10 s, then two
 probes 5 s apart. A runner that vanished without a close (its power lost, its network

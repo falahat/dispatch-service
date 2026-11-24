@@ -3,8 +3,8 @@
 # key's forced command would run. A job's inputs reach the remote folder (an executable stays executable, an empty
 # folder stays) over several connections, its GPU grant goes along, its output and result come back and its remote
 # folder is deleted; a command's failure comes back in place of its result. A file the remote cache holds, an earlier
-# input or output, is read-only there and is not sent again; a pruned cache is refilled; a stopped job's remote command
-# receives SIGTERM.
+# input or output, is read-only there and is not sent again; a pruned cache is refilled; a command that rewrites an
+# input in place leaves the next job's copy as it was sent; a stopped job's remote command receives SIGTERM.
 set -euo pipefail
 kit=$(cd "$(dirname "$0")" && pwd)
 t=$(mktemp -d); trap 'rm -rf -- "$t"' EXIT
@@ -21,6 +21,7 @@ cat > "$t/command" <<EOF
 set -eu
 python3 -c 'import json, os, sys; assert json.load(sys.stdin)["workdir"] == os.getcwd()'
 [ "\$(cat inputs/code/x.txt)" = code ] && [ -x inputs/code/run.sh ] && [ -d inputs/empty ] || exit 3
+if [ "\${PWD##*/}" = j_rewrite ]; then chmod u+w inputs/code/x.txt; echo rewritten > inputs/code/x.txt; fi
 trap 'echo stopped > $t/mark; exit 143' TERM
 echo "remote log line"
 if [ "\${PWD##*/}" = j_stop ]; then touch $t/started; while :; do sleep 0.1; done; fi
@@ -53,6 +54,9 @@ SSH_EXEC_CACHE_MB=0 drive j_2 > /dev/null
 rm -r outputs/out invoke-result.json; : > "$t/verbs"
 drive j_3 > /dev/null
 [ "$(puts)" = "$(spread 8)" ] && [ -f outputs/out/grant.txt ] || fail "a pruned cache was not refilled"
+rm -r outputs/out invoke-result.json
+drive j_rewrite > /dev/null; rm -r outputs/out invoke-result.json
+drive j_4 > /dev/null || fail "a command that rewrote its input in place changed the next job's input"
 rm -r outputs/out invoke-result.json
 
 drive j_fail > /dev/null

@@ -17,8 +17,9 @@
 # same code, or a step's outputs as the next step's inputs, are not sent again. `ssh-exec.sh send SSH_CONFIG HOST JOB`
 # (drive's first step) asks HOST which of ./inputs it lacks and sends only those, spread over SSH_EXEC_STREAMS
 # (default 8) separate connections, since one connection to a far machine carries far less than the link (to the pose
-# VM, 2026-11-20: 0.33 MB/s on one, 0.8 MB/s on 4, 1.4-1.5 MB/s on 8 of a 1.75 MB/s uplink); then HOST links the
-# job's files from its cache. drop keeps the cache under SSH_EXEC_CACHE_MB (default 10240), least recently used first.
+# VM, 2026-11-20: 0.33 MB/s on one, 0.8 MB/s on 4, 1.4-1.5 MB/s on 8 of a 1.75 MB/s uplink); then HOST copies the
+# job's files from its cache, so a command that rewrites an input changes only its own copy. drop keeps the cache under
+# SSH_EXEC_CACHE_MB (default 10240), least recently used first.
 set -euo pipefail
 streams=${SSH_EXEC_STREAMS:-8}
 [[ $streams =~ ^[1-9][0-9]?$ ]] || { echo "ssh-exec: SSH_EXEC_STREAMS must be 1 to 99" >&2; exit 2; }
@@ -122,7 +123,8 @@ elif verb == "put":  # a tar of files named by their sha256 on stdin: each joins
                 sys.exit("ssh-exec: %s does not hash to its name" % member.name)
             os.chmod(part, 0o444)
             os.replace(part, final)
-elif verb == "link":  # the index on stdin: build the job folder anew from the cache
+elif verb == "link":  # the index on stdin: build the job folder anew from copies of the cache's files. A hard link
+    # would let a command that writes an input in place (as root, or after a chmod) change it under every later job.
     cache, job = args
     if os.path.lexists(job):
         shutil.rmtree(job)
@@ -137,11 +139,8 @@ elif verb == "link":  # the index on stdin: build the job folder anew from the c
             os.makedirs(path, exist_ok=True)
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if entry.get("exec"):
-            shutil.copyfile(blob(cache, entry["sha256"]), path)
-            os.chmod(path, 0o500)
-        else:
-            os.link(blob(cache, entry["sha256"]), path)
+        shutil.copyfile(blob(cache, entry["sha256"]), path)
+        os.chmod(path, 0o700 if entry.get("exec") else 0o600)  # the owner's, as the runner lays out inputs itself
 elif verb == "keep":  # the job's regular output files join the cache too, so a next step's inputs need not cross
     cache, job = args
     for root, _, names in os.walk(os.path.join(job, "outputs")):
@@ -149,7 +148,7 @@ elif verb == "keep":  # the job's regular output files join the cache too, so a 
             path = os.path.join(root, name)
             st = os.lstat(path)
             if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
-                os.chmod(path, 0o444)  # read-only like every cached file, as later jobs' inputs link to it
+                os.chmod(path, 0o444)  # read-only like every cached file
                 try:
                     os.link(path, blob(cache, sha256(path)), follow_symlinks=False)
                 except FileExistsError:

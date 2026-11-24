@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
@@ -149,7 +148,7 @@ func New(cfg Config, signer Signer, wrapper FrameWrapper, log *slog.Logger) *Run
 	}
 	return &Runner{
 		cfg:     cfg,
-		cas:     NewCAS(cfg.CASBaseURL, &http.Client{}, signer),
+		cas:     NewCAS(cfg.CASBaseURL, nil, signer),
 		invoke:  invoke,
 		log:     log,
 		wrapper: wrapper,

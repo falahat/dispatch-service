@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/falahat/dispatch-service/internal/artifact"
 )
@@ -36,13 +37,28 @@ type CAS struct {
 	signer  Signer
 }
 
+// casAnswerTimeout bounds how long the CAS may take to start answering a request,
+// counted from when the request, body included, has been sent; the response body
+// may then take as long as it needs. A CAS that never answers fails the transfer as
+// unreachable, so its job is released and goes back to the queue instead of holding
+// the runner while its heartbeats renew the lease.
+const casAnswerTimeout = 30 * time.Second
+
 // NewCAS builds a CAS client against baseURL (e.g. http://pep:8080). signer may
-// be nil for direct/trusted deployments.
+// be nil for direct/trusted deployments, and hc nil for a client bounded by
+// casAnswerTimeout.
 func NewCAS(baseURL string, hc *http.Client, signer Signer) *CAS {
 	if hc == nil {
-		hc = &http.Client{}
+		hc = answerBoundClient(casAnswerTimeout)
 	}
 	return &CAS{baseURL: strings.TrimRight(baseURL, "/"), hc: hc, signer: signer}
+}
+
+// answerBoundClient fails a request whose response has not begun within timeout.
+func answerBoundClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = timeout
+	return &http.Client{Transport: transport}
 }
 
 func (c *CAS) blobPath(a artifact.Address) string {

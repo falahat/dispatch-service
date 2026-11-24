@@ -17,6 +17,10 @@ stream-verify PUTs itself; blobs are content-addressed, so no migration.)
 Errors: `401 unauthenticated · 403 forbidden · 404 not_found · 400 hash_mismatch ·
 409 busy · 413 too_large · 429 quota_exceeded · 507 store_full`.
 
+A client bounds how long a response may take to begin, counted from when the request, body
+included, is sent (the runner: 30 s), so a hung store fails a transfer instead of stalling
+it. The body may then take as long as it needs.
+
 ## Auth (enforced by the PEP, per request)
 
 - Biscuit + PoP; canonical string `cas/v0 <METHOD> /blobs/sha256/<hex> <nonce> <ts>` —
@@ -29,7 +33,9 @@ Errors: `401 unauthenticated · 403 forbidden · 404 not_found · 400 hash_misma
   `right("lease")` (a runner's) may GET only the blobs of a job it holds a live lease on: the
   invocation, each input, and each file of a `manifest` input. It may HEAD or PUT only while
   it holds a live lease. Anything else is `403 not_in_lease`. The PEP records each grant it
-  relays on the runner surface before the runner sees it; the lease ends at the runner's
+  relays on the runner surface before the runner sees it, reading the job's invocation and
+  manifests from the store for at most 5 s; past that the lease covers only the invocation,
+  and the runner, refused the rest, releases the job. The lease ends at the runner's
   `complete`, `fail` or `release`, and one that heartbeats do not renew expires after its
   `ttl_s` (a heartbeat reply that tells the runner to abandon the job stops renewal). An
   application credential (`cas_get`/`cas_put` without `lease`) is not narrowed. A PEP that

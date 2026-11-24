@@ -4,7 +4,8 @@
 //! only while it holds a live lease. Other credentials, such as an application's, are not
 //! narrowed.
 //!
-//! The frame proxy records each grant it relays before the runner sees it. A lease ends when
+//! The frame proxy records each grant it relays before the runner sees it, waiting on the CAS
+//! backend for at most [`LOOKUP_TIMEOUT`] to learn the job's blobs. A lease ends when
 //! the runner sends complete, fail or release for it. A heartbeat reply renews it, unless the
 //! reply tells the runner to abandon the job; a lease not renewed expires after its TTL.
 
@@ -18,7 +19,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+/// How long recording a grant may wait on the CAS backend. The runner sees the grant only
+/// once it is recorded, and stops waiting for it 15 s after its long-poll ends
+/// (runner/loop.go); a healthy backend answers in milliseconds.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INVOCATION_BYTES: usize = 1 << 20;
 const MAX_MANIFEST_BYTES: usize = 64 << 20;
 const MAX_INPUTS: usize = 64;
@@ -73,7 +79,17 @@ impl LeaseBook {
                 ) else {
                     return;
                 };
-                let reads = self.job_reads(&invocation).await;
+                let reads =
+                    match tokio::time::timeout(LOOKUP_TIMEOUT, self.job_reads(&invocation)).await {
+                        Ok(reads) => reads,
+                        Err(_) => {
+                            log::warn!(
+                                "lease book: the CAS backend did not answer for job {job_id} \
+                                 within {LOOKUP_TIMEOUT:?}; its runner may read only the invocation"
+                            );
+                            HashSet::from([invocation])
+                        }
+                    };
                 let mut leases = self.leases.lock().unwrap();
                 leases.entry(runner.to_string()).or_default().insert(
                     lease_id.to_string(),
@@ -147,8 +163,9 @@ impl LeaseBook {
     }
 
     /// The blobs a job reads: its invocation, each input, and each file of a manifest input.
-    /// A blob the backend lacks or that does not parse adds nothing more; the runner then
-    /// fails to fetch it and releases the job.
+    /// A blob the backend lacks or that does not parse adds nothing more, and a lookup past
+    /// [`LOOKUP_TIMEOUT`] keeps only the invocation; the runner then fails to fetch what is
+    /// missing and releases the job.
     async fn job_reads(&self, invocation: &str) -> HashSet<String> {
         let mut reads = HashSet::from([invocation.to_string()]);
         let Some(invocation) = self.fetch_json(invocation, MAX_INVOCATION_BYTES).await else {

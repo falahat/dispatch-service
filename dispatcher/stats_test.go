@@ -56,6 +56,7 @@ func TestStatsSnapshot(t *testing.T) {
 
 	// Jump past the default window, then jobB: claim -> terminal fail.
 	clk.Set(t0 + 950_000)
+	heardFrom(t, d, "R1")
 	g2, _ := leaseOne(t, d, "R1", "transcribe")
 	if g2 == nil || g2.Job.JobID != jobB {
 		t.Fatalf("expected grant for %s, got %+v", jobB, g2)

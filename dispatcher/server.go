@@ -308,7 +308,7 @@ func (s *Server) unclaim(g wire.Grant) {
 }
 
 // untilClosed returns a context that ends when the runner's connection closes, so a
-// long-poll never grants a job to a runner that has gone, and a func that ends the watch.
+// long-poll grants no job into a closed connection, and a func that ends the watch.
 // A runner sends nothing while it awaits a reply, so the watch can only read EOF, an
 // error, or a protocol violation. The func returns that, or nil if the connection is
 // still open.

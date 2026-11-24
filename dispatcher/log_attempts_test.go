@@ -35,6 +35,7 @@ func TestRetriedJobsLogContinuesAfterItsEarlierAttempts(t *testing.T) {
 	}
 	job, _ := d.GetJob(id)
 	clk.Set(job.NextAttemptAt + 1)
+	heardFrom(t, d, "R1")
 
 	second, _ := leaseOne(t, d, "R1", "embed")
 	if second == nil || second.Job.LogOffset != 9 {

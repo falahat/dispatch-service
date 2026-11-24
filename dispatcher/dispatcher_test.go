@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -69,6 +70,24 @@ func leaseOne(t *testing.T, d *Dispatcher, runner string, lanes ...string) (*wir
 		t.Fatalf("lease: %v", werr)
 	}
 	return g, e
+}
+
+// heardFrom stamps the runners as heard from now, as the heartbeats they send while the
+// test clock jumps ahead would: a runner unheard for two heartbeat intervals is granted
+// nothing.
+func heardFrom(t *testing.T, d *Dispatcher, runners ...string) {
+	t.Helper()
+	err := d.store.writeTx(func(tx *sql.Tx) error {
+		for _, id := range runners {
+			if err := touchRunner(tx, id, d.now()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("heard from %v: %v", runners, err)
+	}
 }
 
 func sampleResult(inv artifact.Address) artifact.ActionResult {
@@ -259,6 +278,7 @@ func TestFailRetriableThenTerminal(t *testing.T) {
 
 	// Advance past backoff; re-claim carries the halved hint.
 	clk.Set(job.NextAttemptAt + 1)
+	heardFrom(t, d, "R1")
 	g2, _ := leaseOne(t, d, "R1", "embed")
 	if g2 == nil || g2.Job.Attempt != 2 || g2.Job.Hints == nil || g2.Job.Hints.BatchScale != "0.5" {
 		t.Fatalf("re-claim missing oom hint: %+v", g2)
@@ -315,6 +335,7 @@ func TestFailExhaustsAttempts(t *testing.T) {
 				t.Fatalf("attempt1 should requeue, got %s", job.State)
 			}
 			clk.Set(job.NextAttemptAt + 1)
+			heardFrom(t, d, "R1")
 		} else if job.State != "FAILED" {
 			t.Fatalf("attempt2 should exhaust to FAILED, got %s", job.State)
 		}
@@ -343,6 +364,7 @@ func TestReleaseCapTerminalReason(t *testing.T) {
 				t.Fatalf("release should requeue with attempt unchanged: state=%s attempt=%d", job.State, job.Attempt)
 			}
 			clk.Set(job.NextAttemptAt + 1)
+			heardFrom(t, d, "R1")
 		} else if job.State != "FAILED" || job.Reason != "unstartable:wrong_hardware" {
 			t.Fatalf("terminal release should FAIL naming the reason: state=%s reason=%s", job.State, job.Reason)
 		}
@@ -376,6 +398,7 @@ func TestTransientReleaseDoesNotBurnThePoisonBudget(t *testing.T) {
 						i, job.State, job.Attempt, job.Reason)
 				}
 				clk.Set(job.NextAttemptAt + 1)
+				heardFrom(t, d, "R1")
 			}
 		})
 	}
@@ -398,6 +421,7 @@ func TestTransientReleaseStillTerminates(t *testing.T) {
 		}
 		job, _ := d.GetJob(id)
 		clk.Set(job.NextAttemptAt + 1)
+		heardFrom(t, d, "R1")
 	}
 	job, _ := d.GetJob(id)
 	if job.State != "FAILED" {
@@ -424,6 +448,7 @@ func TestCASMissDeadLettersAsRecoverable(t *testing.T) {
 		}
 		job, _ := d.GetJob(id)
 		clk.Set(job.NextAttemptAt + 1)
+		heardFrom(t, d, "R1")
 	}
 	job, _ := d.GetJob(id)
 	if job.State != "FAILED" || job.Reason != "input_evicted" {
@@ -541,6 +566,7 @@ func TestTwoWitnessQuarantine(t *testing.T) {
 		}
 		job, _ := d.GetJob(id)
 		clk.Set(job.NextAttemptAt + 1)
+		heardFrom(t, d, "A", "B")
 		// B claims and completes; app acks -> success on a different runner.
 		gB, _ := leaseOne(t, d, "B", "embed")
 		if gB == nil || gB.Job.JobID != id {

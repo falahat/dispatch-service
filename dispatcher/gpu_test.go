@@ -123,6 +123,7 @@ func TestStarvedGPUJobHoldsBackOtherGPUStarts(t *testing.T) {
 	hello(t, d, "r2", "transcribe")
 	gpuJob(t, d, "big", "embed", 20000, "")
 	clk.Advance(int64(d.cfg.GPUStarveAfterS) * 1000)
+	heardFrom(t, d, "r1", "r2")
 	gpuJob(t, d, "small", "embed", 2000, "")
 	gpuJob(t, d, "other-lane", "transcribe", 2000, "")
 	enqueueOne(t, d, "cpu", "embed", invAddr("cpu"), nil)

@@ -151,6 +151,20 @@ func upsertRunner(tx *sql.Tx, runnerID string, st wire.HeartbeatStatus, version 
 	return err
 }
 
+// runnerHeardSince reports whether the runner said hello or sent a heartbeat at or after
+// since. A runner with no fleet row has never said hello, so it has not been heard.
+func runnerHeardSince(tx *sql.Tx, runnerID string, since int64) (bool, error) {
+	var lastSeen sql.NullInt64
+	err := tx.QueryRow(`SELECT last_seen_ts FROM runners WHERE runner_id=?`, runnerID).Scan(&lastSeen)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return lastSeen.Valid && lastSeen.Int64 >= since, nil
+}
+
 func runnerDraining(tx *sql.Tx, runnerID string) (bool, error) {
 	var v int
 	err := tx.QueryRow(`SELECT draining FROM runners WHERE runner_id=?`, runnerID).Scan(&v)

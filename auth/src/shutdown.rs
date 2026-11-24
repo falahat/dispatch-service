@@ -21,12 +21,12 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// once would spin and log a warning per try.
 const ACCEPT_RETRY: Duration = Duration::from_secs(1);
 
-/// TCP keepalive on each accepted connection. A peer that vanished without a close (its
-/// power lost, its network path gone) fails its connection about 20 s after its last sign
-/// of life: idle 10 s, then two probes 5 s apart. Without it such a connection stayed open
-/// until a reply sent to it timed out, many minutes later, or for good if none was, and a
-/// runner's lease long-poll on it ran its full wait, granting a job that came meanwhile to
-/// no one.
+/// TCP keepalive on each accepted connection: idle 10 s, then two probes 5 s apart, so a
+/// peer that vanished without a close (its power lost, its network path gone) fails its
+/// connection about 20 s after its last sign of life. The peer is whatever holds the other
+/// end of the connection: behind a relay such as Tailscale Serve, that is the relay, which
+/// answers the probes for a runner that has gone. The dispatcher's heartbeat check (D20)
+/// is what notices such a runner.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
@@ -120,7 +120,7 @@ mod tests {
     use super::*;
 
     /// Every surface probes its peers: a connection it accepts carries the keepalive
-    /// timing, so a runner that vanished without a close is noticed.
+    /// timing, so a peer that vanished without a close is noticed.
     #[tokio::test]
     async fn an_accepted_connection_probes_a_silent_peer() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -26,7 +26,15 @@ const (
 	claimDrained
 	claimHeld
 	claimRateLimited
+	claimSilent
 )
+
+// silentAfterBeats is how many heartbeat intervals a runner may go unheard (no hello, no
+// heartbeat) before it is granted nothing: it may have gone without a close. Its
+// connections can outlive it, since a relay in front of the PEP (Tailscale Serve) holds
+// them open and answers TCP keepalive for it, so the heartbeat, sent on its own
+// connection even while idle, is the dispatcher's one sign that it is still there.
+const silentAfterBeats = 2
 
 type claimResult struct {
 	outcome     claimOutcome
@@ -65,7 +73,7 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 		if werr != nil {
 			return nil, nil, werr
 		}
-		if res.outcome == claimGranted || res.outcome == claimQuarantined || res.outcome == claimDrained || res.outcome == claimHeld {
+		if res.outcome == claimGranted || res.outcome == claimQuarantined || res.outcome == claimDrained || res.outcome == claimHeld || res.outcome == claimSilent {
 			d.stopWaiting(runnerID) // its lanes no longer start work on its GPUs
 		}
 		switch res.outcome {
@@ -79,7 +87,10 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 			return nil, &wire.Empty{Reason: "drained"}, nil
 		case claimRateLimited:
 			return nil, &wire.Empty{RetryAfterS: intptr(res.retryAfterS)}, nil
-		case claimNoWork, claimHeld: // a held runner waits like an idle one; unhold wakes it
+		// A held runner waits like an idle one, and unhold wakes it. A silent runner waits
+		// too, granted nothing until it is heard again, so one that is still there gets
+		// work as soon as its heartbeat lands rather than asking again and again.
+		case claimNoWork, claimHeld, claimSilent:
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				return nil, &wire.Empty{}, nil
@@ -133,6 +144,15 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 		}
 		if held {
 			result.outcome = claimHeld
+			return nil
+		}
+		silentSince := now - int64(silentAfterBeats*d.cfg.HeartbeatIntervalS)*1000
+		heard, err := runnerHeardSince(tx, runnerID, silentSince)
+		if err != nil {
+			return err
+		}
+		if !heard {
+			result.outcome = claimSilent
 			return nil
 		}
 

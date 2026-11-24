@@ -59,6 +59,7 @@ func TestStarvedPinnedJobHoldsBackOnlyItsNode(t *testing.T) {
 	node := "bigboi"
 	enqueueOne(t, d, "big", "pose", invAddr("big"), &wire.Policy{GPU: &need, Node: &node})
 	clk.Advance(int64(d.cfg.GPUStarveAfterS) * 1000)
+	heardFrom(t, d, "bigboi-1", "laptop-1")
 	gpuJob(t, d, "small", "pose", 1000, "")
 
 	busy := []wire.GPUReading{reading(gpuA, 0, 8192, 2000, 1)}

@@ -9,6 +9,7 @@ use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
 use crate::quota::Quota;
 use crate::revocation::RevocationStore;
+use crate::shutdown::{self, Stop};
 use crate::Op;
 use biscuit_auth::PublicKey;
 use bytes::Bytes;
@@ -17,7 +18,7 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioExecutor;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -68,6 +69,7 @@ pub struct CasProxy {
     client: Client<HttpConnector, BoxedBody>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     leases: Option<LeaseBook>, // narrows runner credentials to their live leases
+    stop: Stop,
 }
 
 impl CasProxy {
@@ -89,6 +91,7 @@ impl CasProxy {
             client,
             now,
             leases: None,
+            stop: Stop::default(),
         }
     }
 
@@ -100,31 +103,29 @@ impl CasProxy {
         self
     }
 
-    /// Serve until the listener errors (or forever).
+    /// Stop serving when `stop` is requested: accept nothing more and finish the requests
+    /// in flight. Without it the proxy serves until the process ends.
+    pub fn with_stop(mut self, stop: Stop) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    /// Serve until a stop is requested and the requests in flight have finished.
     pub async fn serve(self, listener: TcpListener) {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!("cas: accept: {e}");
-                    continue;
-                }
-            };
-            let io = TokioIo::new(stream);
+        let stop = self.stop.clone();
+        shutdown::accept_until(listener, stop, "cas", move |stream, _, stop| {
             let proxy = self.clone();
-            tokio::spawn(async move {
+            async move {
                 let svc = service_fn(move |req| {
                     let p = proxy.clone();
                     async move { Ok::<_, Infallible>(p.handle(req).await) }
                 });
-                if let Err(e) = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, svc)
-                    .await
-                {
+                if let Err(e) = shutdown::serve_http1(stream, svc, stop).await {
                     log::debug!("cas: connection: {e}");
                 }
-            });
-        }
+            }
+        })
+        .await;
     }
 
     async fn handle(&self, req: Request<Incoming>) -> Response<BoxedBody> {

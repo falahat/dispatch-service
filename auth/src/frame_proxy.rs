@@ -13,6 +13,7 @@ use crate::cred::{verify, AuthedRequest};
 use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
 use crate::revocation::RevocationStore;
+use crate::shutdown::{self, Stop};
 use crate::Op;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biscuit_auth::PublicKey;
@@ -32,6 +33,7 @@ pub struct FrameProxy {
     dispatcher_addr: String, // loopback address of the dispatcher runner surface
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     leases: Option<LeaseBook>, // records each relayed grant for the CAS proxy's narrowing
+    stop: Stop,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +61,7 @@ impl FrameProxy {
             dispatcher_addr,
             now,
             leases: None,
+            stop: Stop::default(),
         }
     }
 
@@ -69,30 +72,39 @@ impl FrameProxy {
         self
     }
 
-    pub async fn serve(self, listener: TcpListener) {
-        loop {
-            let (stream, peer) = match listener.accept().await {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!("frame: accept: {e}");
-                    continue;
-                }
-            };
-            let proxy = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = proxy.handle_conn(stream).await {
-                    log::debug!("frame: conn {peer}: {e}");
-                }
-            });
-        }
+    /// Stop serving when `stop` is requested: accept nothing more, finish the frames in
+    /// flight and close idle connections. Without it the proxy serves until the process ends.
+    pub fn with_stop(mut self, stop: Stop) -> Self {
+        self.stop = stop;
+        self
     }
 
-    async fn handle_conn(&self, mut runner: TcpStream) -> std::io::Result<()> {
+    /// Serve until a stop is requested and the frames in flight have been answered.
+    pub async fn serve(self, listener: TcpListener) {
+        let stop = self.stop.clone();
+        shutdown::accept_until(listener, stop, "frame", move |stream, peer, stop| {
+            let proxy = self.clone();
+            async move {
+                if let Err(e) = proxy.handle_conn(stream, stop).await {
+                    log::debug!("frame: conn {peer}: {e}");
+                }
+            }
+        })
+        .await;
+    }
+
+    async fn handle_conn(&self, mut runner: TcpStream, mut stop: Stop) -> std::io::Result<()> {
         // One loopback connection to the dispatcher per runner connection (1:1),
         // so the dispatcher sees a stable identity for the connection.
         let mut backend = TcpStream::connect(&self.dispatcher_addr).await?;
 
         loop {
+            // Between frames nothing is in flight, so a stop closes the connection here.
+            tokio::select! {
+                biased;
+                begun = readable_or_closed(&runner) => begun?,
+                () = stop.requested() => return Ok(()),
+            }
             let outer = match read_frame(&mut runner).await {
                 Ok(Some(f)) => f,
                 Ok(None) => return Ok(()), // clean close
@@ -179,6 +191,16 @@ impl FrameProxy {
             // Forward the clean inner frame to the dispatcher and pipe the reply. A grant is
             // recorded before the runner sees it, so its first read is already allowed.
             write_frame(&mut backend, &inner).await?;
+            // While the reply is awaited, a runner that leaves, or a stop during a lease,
+            // closes the dispatcher's side, which ends its long-poll, so no job is granted
+            // into a dead connection. A lease holds no work while it waits; any other frame
+            // is answered. A reply that has begun to arrive is always relayed.
+            tokio::select! {
+                biased;
+                begun = readable_or_closed(&backend) => begun?,
+                gone = closed(&runner) => return gone,
+                () = stop.requested(), if verb == "lease" => return Ok(()),
+            }
             match read_frame(&mut backend).await? {
                 Some(reply) => {
                     if let Some(book) = &self.leases {
@@ -226,6 +248,23 @@ fn hello_id_matches(inner: &[u8], identity: &str) -> bool {
         .and_then(|i| i.as_str())
         .map(|s| s == identity)
         .unwrap_or(false)
+}
+
+/// Resolves once `s` has bytes to read or has closed, consuming nothing.
+async fn readable_or_closed(s: &TcpStream) -> std::io::Result<()> {
+    s.peek(&mut [0u8; 1]).await.map(|_| ())
+}
+
+/// Resolves when the runner closes its connection while it awaits a reply. It sends
+/// nothing then, so a byte from it breaks the protocol and ends the connection as an error.
+async fn closed(runner: &TcpStream) -> std::io::Result<()> {
+    match runner.peek(&mut [0u8; 1]).await? {
+        0 => Ok(()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "runner sent a frame before its reply",
+        )),
+    }
 }
 
 async fn read_frame(s: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {

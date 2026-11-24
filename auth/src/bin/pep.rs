@@ -19,9 +19,14 @@ use dispatch_auth::lease_book::LeaseBook;
 use dispatch_auth::nonce::NonceStore;
 use dispatch_auth::quota::Quota;
 use dispatch_auth::revocation::RevocationStore;
+use dispatch_auth::shutdown;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+
+/// How long a stopping PEP lets the requests in flight finish: well inside the 10 s a
+/// container runtime waits before it kills the process.
+const DRAIN: Duration = Duration::from_secs(5);
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -86,9 +91,41 @@ async fn bind(listen: &str, surface: &str) -> TcpListener {
     })
 }
 
+/// Resolves on the first SIGTERM (a container or service stop) or SIGINT. The handlers
+/// are installed by this call, not when the future is first awaited.
+#[cfg(unix)]
+fn stop_signal() -> impl std::future::Future<Output = ()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let handle = |kind: SignalKind| {
+        signal(kind).unwrap_or_else(|e| {
+            eprintln!("pep: handle {kind:?}: {e}");
+            std::process::exit(1);
+        })
+    };
+    let mut term = handle(SignalKind::terminate());
+    let mut interrupt = handle(SignalKind::interrupt());
+    async move {
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+    }
+}
+
+/// Resolves on Ctrl-C, the only stop request a non-Unix development build gets.
+#[cfg(not(unix))]
+async fn stop_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Handled before anything is served: as PID 1 in a container a signal with no handler
+    // is dropped, so a stop waited out the runtime's grace period and ended in SIGKILL.
+    let stop_requested = stop_signal();
+    let (stopper, stop) = shutdown::channel();
 
     let root_b64 = env_req("PEP_ROOT_PUBKEY");
     let root_bytes = STANDARD.decode(root_b64.trim()).unwrap_or_else(|e| {
@@ -166,6 +203,7 @@ async fn main() {
         if let Some(book) = &leases {
             frame = frame.with_leases(book.clone());
         }
+        let frame = frame.with_stop(stop.clone());
         let ln = bind(&listen, "runner").await;
         log::info!("pep: runner surface {listen} -> {dispatcher_addr}");
         handles.push(tokio::spawn(frame.serve(ln)));
@@ -186,7 +224,8 @@ async fn main() {
             Quota::new(max_req, max_bytes),
             now.clone(),
         )
-        .with_leases(book);
+        .with_leases(book)
+        .with_stop(stop.clone());
         let ln = bind(&listen, "cas").await;
         log::info!("pep: cas surface {listen} -> {cas_backend}");
         handles.push(tokio::spawn(cas.serve(ln)));
@@ -224,15 +263,27 @@ async fn main() {
             cfg,
             Quota::new(http_max_req, http_max_bytes),
             now.clone(),
-        );
+        )
+        .with_stop(stop.clone());
         let ln = bind(&listen, "http").await;
         log::info!("pep: http surface {listen} -> {backend}");
         handles.push(tokio::spawn(proxy.serve(ln)));
     }
 
-    for h in handles {
-        let _ = h.await;
+    stop_requested.await;
+    log::info!("pep: stopping; finishing the requests in flight");
+    stopper.send_replace(true);
+    let drained = tokio::time::timeout(DRAIN, async {
+        for h in handles {
+            let _ = h.await;
+        }
+    })
+    .await;
+    if drained.is_err() {
+        log::warn!("pep: requests still in flight after {DRAIN:?}; closing them");
     }
+    // Returning ends every connection still open and closes the nonce store, which records
+    // a clean shutdown, so the next start needs no repair.
 }
 
 #[cfg(test)]

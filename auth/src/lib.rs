@@ -15,6 +15,7 @@ pub mod nonce;
 pub mod pop;
 pub mod quota;
 pub mod revocation;
+pub mod shutdown;
 pub mod signer;
 
 pub use canonical::Op;

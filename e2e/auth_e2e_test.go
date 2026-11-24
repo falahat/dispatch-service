@@ -206,6 +206,11 @@ func runSigner(t *testing.T, signerBin, secrets string, args ...string) string {
 }
 
 func startDispatcher(t *testing.T) *dispatcher.Server {
+	return startDispatcherWaiting(t, 2)
+}
+
+// startDispatcherWaiting starts a dispatcher whose lease long-polls last up to maxWaitS.
+func startDispatcherWaiting(t *testing.T, maxWaitS int) *dispatcher.Server {
 	dir := t.TempDir()
 	store, err := dispatcher.OpenStore(filepath.Join(dir, "d.db"))
 	if err != nil {
@@ -216,7 +221,7 @@ func startDispatcher(t *testing.T) *dispatcher.Server {
 	cfg.RunnerListen = "127.0.0.1:0"
 	cfg.AppListen = "127.0.0.1:0"
 	cfg.AppSocket = ""
-	cfg.MaxWaitS = 2
+	cfg.MaxWaitS = maxWaitS
 	cfg.SweepIntervalS = 1
 	cfg.Lanes = map[string]dispatcher.LaneConfig{"embed": {Concurrency: 4, PersistingWatermark: 64}}
 	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)

@@ -41,8 +41,8 @@ bar is clean, elegant, readable code + utmost security and privacy.
 - Supply chain is gated automatically (`.github/workflows/`, fail-closed on push/PR + weekly):
   `osv-scanner` checks every committed lockfile (`Cargo.lock`, both `go.sum`,
   `client-web/package-lock.json`, `client/uv.lock`) against OSV; `cargo-deny` vets the auth
-  crate — advisories/bans/licenses/sources per `auth/deny.toml` (two ignores, both documented
-  and justified by unreachability); `govulncheck` covers both Go modules by reachability. Base
+  crate — advisories/bans/licenses/sources per `auth/deny.toml` (one documented ignore, an
+  unmaintained compile-time crate); `govulncheck` covers both Go modules by reachability. Base
   images are digest-pinned; Dependabot opens the upgrade PRs these gates re-check. Lockfiles
   are committed — installs are deterministic (`--locked` / `npm ci` / `uv sync --frozen`).
 - Secrets never enter git, logs, or command output. If a secret lands in a transcript,

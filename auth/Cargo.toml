@@ -23,15 +23,13 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 # RFC 9449 DPoP proof (JWT) verification for the HTTP surface — a maintained JOSE
 # parser/verifier so the browser-facing proof is library-produced/consumed, not a
 # hand-rolled canonical held equal across three languages by cross-impl tests.
-# `rust_crypto` is REQUIRED, not just an umbrella: jsonwebtoken 10.x installs its
-# CryptoProvider only when `rust_crypto` (pure Rust) or `aws_lc_rs` (a C toolchain we
-# reject — it breaks the pure-Rust build + local dev) is enabled; the per-algorithm
-# sub-features alone leave NO provider and panic at verify. `rust_crypto` unavoidably
-# links `rsa` (RUSTSEC-2023-0071, unfixed upstream) — but it is UNREACHABLE: verification
-# is pinned to `Algorithm::EdDSA` + OKP-only keys (dpop.rs), so no RSA op is ever invoked,
-# and the alg-confusion rejection test is the guard that keeps it so. The runner surfaces
-# (cas/v0, dispatch/v0) keep the bespoke PoP.
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+# `rust_crypto` is the pure-Rust CryptoProvider; without a provider jsonwebtoken panics at
+# verify, and the other one, `aws_lc_rs`, needs a C toolchain (it breaks the pure-Rust
+# build + local dev). The provider also links RSA, ECDSA and HMAC, which never run:
+# verification is pinned to `Algorithm::EdDSA` + OKP-only keys (dpop.rs), and the
+# alg-confusion rejection tests keep it so. The runner surfaces (cas/v0, dispatch/v0)
+# keep the bespoke PoP.
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 rand = "0.8"
 redb = "2"
 sha2 = "0.10"

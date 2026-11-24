@@ -4,7 +4,7 @@
 //! holder signs with the Ed25519 private key its Biscuit binds. Unlike the runner
 //! surfaces' bespoke canonical string (`crate::canonical`), the wire format here is
 //! a standard JWT — produced by maintained JOSE libraries on the clients (browser
-//! `jose`, Python `joserfc`) and parsed/verified by a maintained JWT crate here
+//! `jose`, Python `PyJWT`) and parsed/verified by a maintained JWT crate here
 //! (`jsonwebtoken`, EdDSA, pure Rust). Only the DPoP-specific binding checks below
 //! are ours; the JWS framing and signature are the library's.
 //!

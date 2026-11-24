@@ -9,23 +9,10 @@
 [advisories]
 version = 2
 yanked = "deny"
-# One documented exception, justified by UNREACHABILITY — and kept only because every
-# elimination path is verified WORSE. RUSTSEC-2023-0071 (the "Marvin" constant-time failure in
-# the `rsa` crate) has NO upstream fix. `rsa` is linked transitively by jsonwebtoken 10.4.0 (the
-# LATEST release): its CryptoProvider installs only when the `rust_crypto` (pure-Rust) or
-# `aws_lc_rs` feature is on — the per-algorithm sub-features alone leave no provider and PANIC at
-# verify (tested) — and `rust_crypto` unavoidably pulls rsa/p256/p384/hmac. The alternatives were
-# tried and rejected: `aws_lc_rs` needs a C toolchain (breaks the pure-Rust build + local dev);
-# hand-rolling the JWS verify / a custom provider replaces an audited verifier with bespoke
-# security-critical crypto — trading a proven-unreachable, unfixed advisory for the risk of a
-# REACHABLE hand-rolled bug, the wrong trade for the PEP. rsa is never invoked: verification is
-# pinned to `Algorithm::EdDSA` + OKP-only keys (dpop.rs), guarded by the alg-confusion tests
-# (`alg_confusion_rs256_is_401` / `_hs256` / `alg_none_proof_is_401` in tests/http_proxy.rs) —
-# admitting RS256 would make rsa reachable AND fail those tests. Revisit if jsonwebtoken ever
-# ships a provider without rsa. REACHABLE advisories are never ignored.
+# One documented exception: an unmaintained-status notice (not a vulnerability) for a
+# compile-time-only crate. Every vulnerability advisory fails the gate.
 ignore = [
-  { id = "RUSTSEC-2023-0071", reason = "rsa is linked via jsonwebtoken's required rust_crypto provider (no rsa-free provider exists on the latest release); the PEP is EdDSA-only + alg-confusion-guarded, so the RSA path is unreachable dead code. No upstream fix exists; every elimination path is worse (see comment)." },
-  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a COMPILE-TIME-only proc-macro helper of biscuit-quote (biscuit-auth 5's macro crate) — it is not linked into the shipped PEP/signer binary. This is an unmaintained-status advisory (not a vulnerability), transitive via our audited biscuit-auth, with no safe upgrade. Drops out when biscuit-auth moves biscuit-quote off it." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a COMPILE-TIME-only proc-macro helper of biscuit-quote 0.2 (biscuit-auth 5's macro crate) — it is not linked into the shipped PEP/signer binary. This is an unmaintained-status advisory (not a vulnerability) with no safe upgrade: biscuit-auth 6's biscuit-quote 0.3 moved to proc-macro-error2, which is unmaintained too (RUSTSEC-2026-0173), and only the 7.x line (alpha) drops both." },
 ]
 
 [bans]

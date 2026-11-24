@@ -13,7 +13,7 @@
 //! valid proofs but forged, alg-confused, and tampered ones — exactly the shapes
 //! a real attacker would try. `jsonwebtoken` (the PEP's verifier) and a real JOSE
 //! signer agree on this format by the JWS standard; the cross-language interop is
-//! proven separately in `cross_impl_py_mint.rs` (a `joserfc`-signed proof).
+//! proven separately in `cross_impl_py_mint.rs` (a `PyJWT`-signed proof).
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use biscuit_auth::KeyPair;
@@ -1007,10 +1007,8 @@ async fn alg_confusion_hs256_is_401() {
 #[tokio::test]
 async fn alg_confusion_rs256_is_401() {
     // alg=RS256 must be rejected by the EdDSA-only allowlist BEFORE any RSA code runs.
-    // This is the guard that keeps the linked-but-unused `rsa` crate unreachable
-    // (RUSTSEC-2023-0071, see auth/deny.toml): jsonwebtoken's `rust_crypto` provider
-    // unavoidably links `rsa`, so admitting RS256 to the allowlist would make that
-    // (unfixed-upstream) advisory reachable — and would fail this test.
+    // jsonwebtoken's `rust_crypto` provider links RSA, so admitting RS256 to the
+    // allowlist would put that code on the request path — and would fail this test.
     let backend = start_echo().await;
     let pep = start_pep(&backend, ROUTES, 1000, 1 << 30).await;
     let (sk, pk) = holder();

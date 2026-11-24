@@ -1,13 +1,13 @@
 //! Cross-implementation proof: a phone credential **minted by easy-podcast
 //! (biscuit-python)** AND a per-request **DPoP proof signed by easy-podcast
-//! (joserfc)** are both accepted by this Rust PEP — closing two version-skew risks
+//! (PyJWT)** are both accepted by this Rust PEP — closing two version-skew risks
 //! in one committed vector:
 //!
 //!  1. biscuit-python ↔ biscuit-auth: the Biscuit itself crosses the language
 //!     boundary and must parse + authorize under this `biscuit-auth` version.
-//!  2. joserfc ↔ jsonwebtoken: the DPoP proof JWT (EdDSA, embedded OKP jwk) the app
+//!  2. PyJWT ↔ jsonwebtoken: the DPoP proof JWT (EdDSA, embedded OKP jwk) the app
 //!     signs must verify under this `jsonwebtoken` version — the browser (`jose`) and
-//!     Python (`joserfc`) signers agree with the PEP by the JWS/JWK standard, and
+//!     Python (`PyJWT`) signers agree with the PEP by the JWS/JWK standard, and
 //!     this is the automated guard that the standard holds end to end.
 //!
 //! The fixture `tests/vectors/py_mint_dpop.json` is emitted by easy-podcast's
@@ -25,7 +25,7 @@ use dispatch_auth::revocation::RevocationStore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// The committed vector — easy-podcast's biscuit-python mint + joserfc DPoP proof.
+/// The committed vector — easy-podcast's biscuit-python mint + PyJWT DPoP proof.
 #[derive(Deserialize)]
 struct PyVector {
     issuer_public_hex: String,
@@ -77,7 +77,7 @@ fn stores() -> (tempfile::TempDir, NonceStore, RevocationStore) {
 
 #[test]
 fn python_minted_biscuit_and_dpop_proof_pass_the_rust_pep() {
-    // THE proof: a biscuit-python Biscuit + a joserfc DPoP proof pass the full Rust
+    // THE proof: a biscuit-python Biscuit + a PyJWT DPoP proof pass the full Rust
     // verify_http_dpop() — JWS signature (EdDSA/OKP jwk) + htm/htu/ath/content-digest
     // binding + Biscuit signature + `allow if right("sync")` + freshness.
     let v = load_vector();

@@ -2,7 +2,7 @@
 # cargo-deny's four gates per auth/deny.toml — advisories (RustSec vuln/yanked), bans (wildcard
 # reqs, duplicates), licenses (exact permissive allowlist), sources (crates.io only) —
 # fail-closed on every push/PR touching auth/ and weekly (an advisory can land after merge).
-# The two advisory ignores in deny.toml are documented and justified by unreachability.
+# The one advisory ignore in deny.toml (an unmaintained compile-time crate) is documented there.
 name: cargo-deny
 on:
   push:

@@ -880,6 +880,10 @@ async fn wrong_right_is_403() {
     )
     .await;
     assert_eq!(r.status, 403, "wrong right must be forbidden: {}", r.body);
+    assert_eq!(
+        r.body, r#"authorization denied: right "sync_write" not granted"#,
+        "refused for another reason"
+    );
 }
 
 // ---------- adversarial: DPoP proof integrity ----------

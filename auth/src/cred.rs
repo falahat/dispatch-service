@@ -22,7 +22,7 @@ use crate::revocation::RevocationStore;
 // the rule it lands in. (biscuit's compile-time macros are off: their proc-macro crate is
 // unmaintained.)
 use biscuit_auth::builder::{fact, int, string, BlockBuilder};
-use biscuit_auth::error::Token as BiscuitError;
+use biscuit_auth::error::{FailedCheck, Logic, Token as BiscuitError};
 use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 
 /// Wall-clock backstop for the Datalog authorize. biscuit measures `max_time` as `Instant`
@@ -130,6 +130,30 @@ pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<Str
 
 /// The PEP's own rule failed to go into an authorizer or block: a PEP bug, so it is denied
 /// as one, with nothing for the caller to read.
+/// Why the authorizer refused, precisely enough to tell one refusal from another: the rule
+/// of each check that failed, else the right no policy granted. biscuit's own message is
+/// "authorization failed" whatever failed, so neither the log nor a test could tell a
+/// refusal for one reason from a refusal for another.
+fn refusal(e: &BiscuitError, right: &str) -> String {
+    let checks = match e {
+        BiscuitError::FailedLogic(Logic::NoMatchingPolicy { checks }) if checks.is_empty() => {
+            return format!("right {right:?} not granted");
+        }
+        BiscuitError::FailedLogic(
+            Logic::Unauthorized { checks, .. } | Logic::NoMatchingPolicy { checks },
+        ) if !checks.is_empty() => checks,
+        other => return other.to_string(),
+    };
+    checks
+        .iter()
+        .map(|check| match check {
+            FailedCheck::Block(failed) => failed.rule.as_str(),
+            FailedCheck::Authorizer(failed) => failed.rule.as_str(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn internal(_: BiscuitError) -> AuthError {
     AuthError::Internal
 }
@@ -351,7 +375,7 @@ fn authorize_request(
     });
     authorizer
         .authorize()
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+        .map_err(|e| AuthError::Denied(refusal(&e, right)))?;
 
     // 3. Freshness (+ single-use, if required) — only after the request
     //    authenticates, so unauthenticated traffic can never pollute the store.

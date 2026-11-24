@@ -423,6 +423,10 @@ async fn get_right_cannot_put_403() {
     let hdrs = auth_headers(&cred, &pk, &nonce, NOW, &pop);
     let r = send(&pep.addr, "PUT", &path, &hdrs, b"x", Some("1")).await;
     assert_eq!(r.status, 403, "cas_get must not PUT: {}", r.body);
+    assert_eq!(
+        r.body,
+        r#"authorization denied: right "cas_put" not granted"#
+    );
 }
 
 #[tokio::test]
@@ -434,6 +438,10 @@ async fn put_right_cannot_get_403() {
     let (path, hdrs) = signed_get(&sk, &pk, &cred, ADDR);
     let r = send(&pep.addr, "GET", &path, &hdrs, b"", None).await;
     assert_eq!(r.status, 403, "cas_put must not GET: {}", r.body);
+    assert_eq!(
+        r.body,
+        r#"authorization denied: right "cas_get" not granted"#
+    );
 }
 
 #[tokio::test]

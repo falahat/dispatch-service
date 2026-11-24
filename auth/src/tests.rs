@@ -265,8 +265,8 @@ fn missing_right_is_denied() {
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
-        Err(AuthError::Denied(_)) => {}
-        other => panic!("expected Denied, got {other:?}"),
+        Err(AuthError::Denied(reason)) if reason == r#"right "cas_get" not granted"# => {}
+        other => panic!("expected Denied for the missing right, got {other:?}"),
     }
 }
 
@@ -290,7 +290,8 @@ fn presented_pubkey_must_match_credential() {
     let (_d, ns) = store("n.redb");
     let req = cas_get_req(&sk, &pk_hex, &cred, ADDR_A, NOW);
     match verify(&root.public(), &ns, &no_rev(), NOW, &req, true) {
-        Err(AuthError::Denied(_)) => {}
+        Err(AuthError::Denied(reason)) if reason == "check if pubkey($p), presented_pubkey($p)" => {
+        }
         other => panic!("expected Denied (pubkey mismatch), got {other:?}"),
     }
 }
@@ -341,7 +342,7 @@ fn lane_scope_enforced_on_lease() {
         &mk("transcribe", NOW + 1),
         true,
     ) {
-        Err(AuthError::Denied(_)) => {}
+        Err(AuthError::Denied(reason)) if reason == r#"check if lane("transcribe")"# => {}
         other => panic!("expected Denied for ungranted lane, got {other:?}"),
     }
 }
@@ -383,7 +384,8 @@ fn attenuated_token_scopes_get_to_closure() {
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_B, NOW + 1),
         true,
     ) {
-        Err(AuthError::Denied(_)) => {}
+        Err(AuthError::Denied(reason))
+            if reason == r#"check if operation("cas_get"), address($a), allowed_get($a)"# => {}
         other => panic!("expected Denied for out-of-closure address, got {other:?}"),
     }
 }
@@ -413,7 +415,8 @@ fn attenuated_token_expires() {
         &cas_get_req(&sk, &pk_hex, &scoped, ADDR_A, NOW),
         true,
     ) {
-        Err(AuthError::Denied(_)) => {}
+        Err(AuthError::Denied(reason))
+            if reason == format!("check if now($t), $t <= {}", NOW - 1) => {}
         other => panic!("expected Denied (expired), got {other:?}"),
     }
 }

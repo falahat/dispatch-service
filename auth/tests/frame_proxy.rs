@@ -240,6 +240,19 @@ fn assert_denied(frame: &Option<Vec<u8>>, want_code: &str) {
     assert_eq!(code, want_code, "wrong denial code");
 }
 
+/// A denial for one exact reason: the code and the message, so a frame refused by some
+/// other check, or by a fault of the PEP's own, cannot pass for this one.
+fn assert_refused(frame: &Option<Vec<u8>>, want_code: &str, want_message: &str) {
+    assert_denied(frame, want_code);
+    let v: serde_json::Value =
+        serde_json::from_slice(frame.as_ref().unwrap()).expect("reply is json");
+    assert_eq!(
+        v["body"]["message"].as_str(),
+        Some(want_message),
+        "refused for another reason"
+    );
+}
+
 // ---------- happy path ----------
 
 #[tokio::test]
@@ -399,7 +412,11 @@ async fn verb_the_credential_lacks_is_forbidden() {
     let cred = pep.mint(&pk, &["hello"], &[]);
     let inner = inner_verb("lease", "f1");
     let reply = exchange(&pep.addr, &signed_frame(&sk, &pk, &cred, "lease", &inner)).await;
-    assert_denied(&reply, "forbidden");
+    assert_refused(
+        &reply,
+        "forbidden",
+        r#"authorization denied: right "lease" not granted"#,
+    );
 }
 
 #[tokio::test]
@@ -412,7 +429,11 @@ async fn lease_for_an_ungranted_lane_is_forbidden() {
     let cred = pep.mint(&pk, &["lease"], &["cpu"]); // lease + cpu lane, but NOT gpu
     let inner = inner_lease("f1", &["gpu"]);
     let reply = exchange(&pep.addr, &signed_frame(&sk, &pk, &cred, "lease", &inner)).await;
-    assert_denied(&reply, "forbidden");
+    assert_refused(
+        &reply,
+        "forbidden",
+        r#"authorization denied: check if lane("gpu")"#,
+    );
 }
 
 #[tokio::test]
@@ -424,7 +445,7 @@ async fn revoked_credential_is_forbidden() {
     pep.revoke(&cred);
     let inner = inner_hello("f1", &pk);
     let reply = exchange(&pep.addr, &signed_frame(&sk, &pk, &cred, "hello", &inner)).await;
-    assert_denied(&reply, "forbidden");
+    assert_refused(&reply, "forbidden", "credential revoked");
 }
 
 #[tokio::test]
@@ -437,7 +458,11 @@ async fn hello_declaring_another_identity_is_forbidden() {
     let cred = pep.mint(&pk, &["hello"], &[]);
     let inner = inner_hello("f1", &"a".repeat(64)); // a DIFFERENT runner id
     let reply = exchange(&pep.addr, &signed_frame(&sk, &pk, &cred, "hello", &inner)).await;
-    assert_denied(&reply, "forbidden");
+    assert_refused(
+        &reply,
+        "forbidden",
+        "hello identity does not match credential",
+    );
 }
 
 // ---------- adversarial: frame-length bounds ----------

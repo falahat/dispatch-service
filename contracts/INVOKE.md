@@ -35,9 +35,10 @@ the AWS Lambda Runtime API.
    **One invoke in flight**: a second concurrent `POST /invoke` → `409`.
 
 2. **Exit non-zero on fatal.** A wedged context, unrecoverable CUDA state, or a
-   self-detected corrupt runtime → exit; the container runtime (`restart: unless-stopped`)
-   revives it with a fresh process. Per-job freshness (if an op wants it) = exit 0 after
-   every response; same contract, no second mode.
+   self-detected corrupt runtime → exit; the container runtime revives it with a fresh
+   process, whatever its exit status (the worker kit's compute unit: `Restart=always`).
+   Per-job freshness (if an op wants it) = exit 0 after every response; same contract,
+   no second mode.
 
 3. **Honor the deadline** (SHOULD): stop and return `error_class: timeout` by
    `deadline_ts`. The runner enforces it regardless (fails the job and marks the container

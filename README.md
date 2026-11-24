@@ -78,9 +78,10 @@ traffic goes through the same authenticated runner and CAS doors; SSH is setup o
 Tailworker resolves the approved machine and transfers images; the kit installs
 rootless Quadlet units pinned to their image IDs. The runner starts at boot and
 starts its compute; with MODEL_EGRESS=1, compute starts its smokescreen guard
-first. Each unit restarts after a failure, so one that fails at boot holds no
-other down, and a compute restart sends its runner back to its boot gate. A runner
-stopped at that gate exits cleanly. `NAME` isolates each application's containers, networks,
+first. Each unit restarts after a failure, and compute after any exit, so one that
+fails at boot holds no other down, and a compute restart sends its runner back to
+its boot gate. A runner stopped at that gate exits cleanly, and a running one takes
+no job while its compute is not ready. `NAME` isolates each application's containers, networks,
 volumes and credentials, so applications can share a machine.
 The worker creates its own seed. Only its public key and the application's signed
 capability cross SSH; compute never mounts the runner credential. Optional

@@ -100,9 +100,11 @@ sed -n '/^\[Install\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx '
 for dependency in Wants After PartOf; do
     sed -n '/^\[Unit\]$/,/^$/p' "$units/first-runner.container" | grep -Fx "$dependency=first-compute.service"
 done
-for role in runner compute smokescreen; do
+for role in runner smokescreen; do
     sed -n '/^\[Service\]$/,/^$/p' "$units/first-$role.container" | grep -Fx 'Restart=on-failure'
 done
+# A compute may exit 0 after each response for a fresh process (INVOKE.md).
+sed -n '/^\[Service\]$/,/^$/p' "$units/first-compute.container" | grep -Fx 'Restart=always'
 if grep -E '^(Requires|RequiredBy|BindsTo)=' "$units"/first-*.container; then exit 1; fi
 grep -Fx 'Exec="--public" "value"' "$units/first-compute.container"
 grep -Fx 'Internal=true' "$units/first-model.network"

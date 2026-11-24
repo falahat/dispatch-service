@@ -41,7 +41,8 @@ Installation starts nothing and refuses active application units. Enrollment
 creates a unique worker credential, signs only its public key through standard
 input, and starts that application's runner; unit dependencies start the rest,
 as at boot. The runner starts its compute, and with model egress compute starts
-its smokescreen guard first. Each restarts after a failure: they only want each
+its smokescreen guard first. Each restarts after a failure, and compute after any
+exit (INVOKE.md): they only want each
 other, since a requirement would leave the rest down for good when one fails at
 boot, and a compute restart takes its runner back to its boot gate.
 Existing credentials are refused;

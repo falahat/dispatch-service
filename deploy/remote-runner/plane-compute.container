@@ -22,5 +22,7 @@ Environment=INVOKE_ADDR=0.0.0.0:8080
 
 [Service]
 TimeoutStartSec=0
-Restart=on-failure
+# The runtime revives a compute whatever its exit: a fatal exit, or the exit 0 of a
+# compute that takes a fresh process after each response (INVOKE.md).
+Restart=always
 RestartSec=5s

@@ -220,10 +220,10 @@ func TestStrictDecodeRejectsUnknownField(t *testing.T) {
 func TestEnvelopeRejects(t *testing.T) {
 	cases := map[string]string{
 		"bad version": `{"v":"9.9","type":"ok","id":"x","body":{}}`,
-		"bad type":    `{"v":"0.8","type":"OK!","id":"x","body":{}}`,
-		"empty id":    `{"v":"0.8","type":"ok","id":"","body":{}}`,
-		"no body":     `{"v":"0.8","type":"ok","id":"x"}`,
-		"unknown key": `{"v":"0.8","type":"ok","id":"x","body":{},"extra":1}`,
+		"bad type":    `{"v":"0.9","type":"OK!","id":"x","body":{}}`,
+		"empty id":    `{"v":"0.9","type":"ok","id":"","body":{}}`,
+		"no body":     `{"v":"0.9","type":"ok","id":"x"}`,
+		"unknown key": `{"v":"0.9","type":"ok","id":"x","body":{},"extra":1}`,
 	}
 	for name, frame := range cases {
 		t.Run(name, func(t *testing.T) {

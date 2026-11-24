@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -109,8 +110,8 @@ type ErrBusy struct{}
 func (ErrBusy) Error() string { return "compute busy (409)" }
 
 // Invoke runs one computation. A non-nil *InvokeFailure means the compute
-// reported a classified failure; a plain error means a transport/protocol fault
-// (mapped to fatal by the caller).
+// reported a classified failure. A *url.Error means the connection failed before
+// the whole answer arrived; any other error is an answer that breaks the protocol.
 func (c *InvokeClient) Invoke(ctx context.Context, req InvokeRequest) (*InvokeResult, *InvokeFailure, error) {
 	body, _ := json.Marshal(req)
 	hreq, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/invoke", bytes.NewReader(body))
@@ -120,7 +121,14 @@ func (c *InvokeClient) Invoke(ctx context.Context, req InvokeRequest) (*InvokeRe
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusConflict {
+		return nil, nil, ErrBusy{}
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// An answer cut short is as lost as none: the compute died mid-answer.
+		return nil, nil, &url.Error{Op: "read", URL: hreq.URL.String(), Err: err}
+	}
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var out struct {
@@ -138,8 +146,6 @@ func (c *InvokeClient) Invoke(ctx context.Context, req InvokeRequest) (*InvokeRe
 			// Non-integer metrics are dropped (integer-only rule); not fatal.
 		}
 		return res, nil, nil
-	case http.StatusConflict:
-		return nil, nil, ErrBusy{}
 	case http.StatusInternalServerError:
 		var f InvokeFailure
 		if err := json.Unmarshal(raw, &f); err != nil || f.ErrClass == "" {

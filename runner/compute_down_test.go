@@ -131,10 +131,11 @@ func TestRunnerTakesNoWorkWhileItsComputeIsDown(t *testing.T) {
 	t.Fatalf("job never ran once its compute was back: %+v", jobView(t, app, jobID))
 }
 
-// A compute that goes down between the lease and the invoke leaves its job to the
-// lease: the invoke never reached the compute, so the job did not fail. Its lease
-// expires and it runs again. The runner used to fail it as fatal "invoke transport".
-func TestJobWhoseComputeIsGoneIsLeftToItsLease(t *testing.T) {
+// A compute that goes down between the lease and the invoke sends its job straight
+// back to the queue: the invoke never reached the compute, so the job did not fail,
+// and it is released as interrupted on the same attempt. The runner used to fail it
+// as fatal "invoke transport", then left it to its lease, which used up an attempt.
+func TestAJobWhoseComputeIsGoneGoesBackToTheQueue(t *testing.T) {
 	srv := startDispatcher(t)
 	cas := newStubCAS()
 	computeSrv := httptest.NewServer(echoComputeHandler())
@@ -154,15 +155,66 @@ func TestJobWhoseComputeIsGoneIsLeftToItsLease(t *testing.T) {
 
 	app := dialApp(t, srv.AppAddr())
 	jobID := enqueueEcho(t, app, cas, "gone-k")
-	said.waitFor(t, "compute unreachable; leaving the job to its lease")
 	view := jobView(t, app, jobID)
-	if view.State != "RUNNING" {
-		t.Fatalf("job is %s (%q) after its compute went away; want RUNNING until its lease expires", view.State, view.Reason)
-	}
-	for _, step := range view.Timeline {
-		if step.Outcome != "enqueue" && step.Outcome != "claimed" {
-			t.Fatalf("the runner reported %q for a job its compute never saw (%+v)", step.Outcome, view.Timeline)
+	for deadline := time.Now().Add(20 * time.Second); view.ReleaseCount == 0; view = jobView(t, app, jobID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the job was never released after its compute went away: %+v", view)
 		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if view.State != "QUEUED" || view.Attempt != 1 || view.ReleaseCount != 1 {
+		t.Fatalf("job is %s on attempt %d after %d releases; want QUEUED on attempt 1 after 1 (%+v)",
+			view.State, view.Attempt, view.ReleaseCount, view.Timeline)
+	}
+	if last := view.Timeline[len(view.Timeline)-1]; last.Outcome != "release" || last.Reason != "interrupted" {
+		t.Fatalf("the runner reported %q (%q) for a job its compute never saw; want a release as interrupted", last.Outcome, last.Reason)
 	}
 	said.waitFor(t, "compute not ready; taking no work until it is")
+}
+
+// A compute that takes an invoke and drops it, before answering or partway through
+// its answer, died or was restarted mid-job, perhaps because of the job. The job
+// fails as unknown and runs again within its max_attempts. It used to fail as
+// fatal, which ends a job for good.
+func TestAJobWhoseComputeDroppedItRunsAgain(t *testing.T) {
+	for name, answered := range map[string]string{
+		"before answering": "",
+		"mid-answer":       "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{\"outputs\":",
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := startDispatcher(t)
+			cas := newStubCAS()
+			casSrv := httptest.NewServer(cas.handler())
+			defer casSrv.Close()
+			echo := echoComputeHandler()
+			computeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/invoke" {
+					echo.ServeHTTP(w, r)
+					return
+				}
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					_, _ = conn.Write([]byte(answered))
+					conn.Close()
+				}
+			}))
+			defer computeSrv.Close()
+			startEchoRunner(t, srv.RunnerAddr(), casSrv.URL, computeSrv.URL)
+
+			app := dialApp(t, srv.AppAddr())
+			jobID := enqueueEcho(t, app, cas, "dropped-k")
+			for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+				view := jobView(t, app, jobID)
+				for _, step := range view.Timeline {
+					if step.Outcome != "fail" {
+						continue
+					}
+					if step.ErrorClass != "unknown" || view.State == "FAILED" {
+						t.Fatalf("a dropped invoke failed its job as %q and left it %s; want unknown, to run again", step.ErrorClass, view.State)
+					}
+					return
+				}
+			}
+			t.Fatalf("the job never failed its dropped invoke: %+v", jobView(t, app, jobID))
+		})
+	}
 }

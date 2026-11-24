@@ -12,7 +12,7 @@
     "ts":       { "type": "integer", "minimum": 0, "$comment": "ms epoch, server-stamped" },
     "attempt":  { "type": "integer", "minimum": 1 },
     "error_class": { "enum": ["oom", "timeout", "rate_limit", "network", "bad_input", "integrity", "fatal", "unknown"] },
-    "release_reason": { "enum": ["cas_unreachable", "cas_miss", "integrity", "wrong_hardware", "shipping"] },
+    "release_reason": { "enum": ["cas_unreachable", "cas_miss", "integrity", "wrong_hardware", "shipping", "interrupted"] },
     "error_code": { "enum": ["unauthenticated", "forbidden", "version_mismatch", "invalid", "not_leaseholder", "gone", "conflict", "budget", "backpressure", "rate_limited", "internal"] },
     "gpu_index": { "type": "integer", "minimum": 0, "maximum": 63, "$comment": "the host's device index" },
     "gpu_uuid": { "type": "string", "pattern": "^(GPU|MIG)-[0-9A-Fa-f-]{8,64}$" },
@@ -24,7 +24,7 @@
       "additionalProperties": false,
       "required": ["v", "type", "id", "body"],
       "properties": {
-        "v": { "const": "0.8" },
+        "v": { "const": "0.9" },
         "type": { "type": "string", "pattern": "^[a-z_]{1,32}$" },
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
         "body": { "type": "object" }
@@ -67,7 +67,7 @@
       "additionalProperties": false,
       "required": ["contract", "runner"],
       "properties": {
-        "contract": { "const": "0.8" },
+        "contract": { "const": "0.9" },
         "runner": {
           "type": "object",
           "additionalProperties": false,

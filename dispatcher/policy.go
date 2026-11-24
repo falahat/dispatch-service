@@ -78,6 +78,7 @@ func ResolvePolicy(p *wire.Policy) ResolvedPolicy {
 var transientRelease = map[wire.ReleaseReason]bool{
 	wire.ReleaseCASUnreachable: true,  // CAS/auth plane down or busy — clears on its own
 	wire.ReleaseShipping:       true,  // output upload blip — the compute is already done
+	wire.ReleaseInterrupted:    true,  // the runner stopped, or its compute was down
 	wire.ReleaseCASMiss:        false, // input genuinely evicted; needs re-staging
 	wire.ReleaseIntegrity:      false, // the bytes are wrong
 	wire.ReleaseWrongHardware:  false, // this runner cannot serve it

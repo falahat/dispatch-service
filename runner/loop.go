@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -130,15 +131,26 @@ func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 	return dc, err
 }
 
+// stopReportTimeout bounds how long a stopping runner waits for the dispatcher to
+// take a report: the container runtime kills it 10 s after asking it to stop.
+const stopReportTimeout = 5 * time.Second
+
 // send sends a job's result, failure or release, and sends it again over a new
 // connection if the work connection died while the job ran. A PEP or dispatcher
 // restart drops every runner connection, but the lease lives on in the dispatcher
 // under this runner's identity. Lost with the old connection, the report left the
-// job to wait out its lease and run again on a new attempt.
+// job to wait out its lease and run again on a new attempt. A stopping runner tries
+// once, for at most stopReportTimeout; a report that does not arrive leaves the job
+// to its lease.
 func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body any) (wire.Envelope, error) {
+	if ctx.Err() != nil {
+		dc.setReadTimeout(stopReportTimeout)
+		defer dc.setReadTimeout(0)
+		return dc.call(typ, body)
+	}
 	env, err := dc.call(typ, body)
-	if err == nil || ctx.Err() != nil {
-		return env, err
+	if err == nil {
+		return env, nil
 	}
 	fresh, derr := r.redial(ctx)
 	if derr != nil {
@@ -297,7 +309,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	if g.Job.GPU != nil && r.cfg.GPULock != "" {
 		unlock, err := takeGPULock(jobCtx, r.cfg.GPULock)
 		if err != nil {
-			if r.stoppedOrAbandoned(ctx, jobCtx, g.Job.JobID) {
+			if r.cutShort(ctx, jobCtx, dc, g) {
 				return
 			}
 			r.release(ctx, dc, g, wire.ReleaseWrongHardware, "gpu lock: "+err.Error())
@@ -327,9 +339,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		GPU:        g.Job.GPU,
 	})
 	if ierr != nil {
-		// Transport/protocol fault, unless the invoke was cut short because the job
-		// was abandoned or the runner is stopping.
-		if r.stoppedOrAbandoned(ctx, jobCtx, g.Job.JobID) {
+		if r.cutShort(ctx, jobCtx, dc, g) {
 			return
 		}
 		if errors.Is(ierr, context.DeadlineExceeded) {
@@ -337,18 +347,27 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 			return
 		}
 		if unreachedCompute(ierr) {
-			// The compute went down after this job was leased. That says nothing about
-			// the job: its lease expires and it runs again, and the loop takes no new
-			// job until the compute answers ready.
-			r.log.Warn("compute unreachable; leaving the job to its lease", "job", g.Job.JobID, "err", ierr)
+			// The compute went down after this job was leased, before the invoke reached
+			// it. That says nothing about the job, so it goes straight back to the queue,
+			// and the loop takes no new job until the compute answers ready.
+			r.release(ctx, dc, g, wire.ReleaseInterrupted, "compute unreachable: "+ierr.Error())
 			return
 		}
-		r.fail(ctx, dc, g, wire.ClassFatal, "invoke transport: "+ierr.Error())
+		if droppedByCompute(ierr) {
+			// The compute took the invoke and dropped it before answering in full: it
+			// died or was restarted mid-job, perhaps by this job, so the job runs again
+			// within its max_attempts.
+			r.fail(ctx, dc, g, wire.ClassUnknown, "compute dropped the invoke: "+ierr.Error())
+			return
+		}
+		r.fail(ctx, dc, g, wire.ClassFatal, ierr.Error()) // the compute broke the protocol
 		return
 	}
 	if failure != nil {
 		if ctx.Err() != nil {
-			return // a command stopped with the runner says nothing about its job
+			// A command stopped with the runner says nothing about its job.
+			r.release(ctx, dc, g, wire.ReleaseInterrupted, "the runner is stopping")
+			return
 		}
 		// A command's log tail is usually why it failed: ship it before the failure,
 		// on the runner's live context, as a result's log is shipped before it.
@@ -507,14 +526,21 @@ func (r *Runner) wasAbandoned(jobID string) bool {
 	return r.current != nil && r.current.jobID == jobID && r.current.abandoned
 }
 
-// stoppedOrAbandoned reports whether the job's context ended because the job was
-// abandoned or because the runner itself is stopping. Neither is the job failing,
-// so the runner reports nothing: an abandoned job was settled by the dispatcher,
-// and a stopping runner leaves its lease to expire, after which the job runs
-// again as it would after a crash. Reporting the cut-short invoke as a failure
-// used to fail every job running at a reboot or a compute restart as fatal.
-func (r *Runner) stoppedOrAbandoned(ctx, jobCtx context.Context, jobID string) bool {
-	return jobCtx.Err() != nil && (ctx.Err() != nil || r.wasAbandoned(jobID))
+// cutShort settles a job whose wait or invoke ended because the job was abandoned
+// or the runner is stopping, and reports whether it did. Neither is the job
+// failing. An abandoned job was settled by the dispatcher, so nothing is sent. A
+// stopping runner releases its job as interrupted, so the job runs again at once
+// on the same attempt; left to its lease, it waited out the TTL and used up an
+// attempt, and on its last one failed as lease_expired.
+func (r *Runner) cutShort(ctx, jobCtx context.Context, dc *dispatcherConn, g *wire.Grant) bool {
+	if jobCtx.Err() == nil {
+		return false
+	}
+	if ctx.Err() != nil {
+		r.release(ctx, dc, g, wire.ReleaseInterrupted, "the runner is stopping")
+		return true
+	}
+	return r.wasAbandoned(g.Job.JobID)
 }
 
 // computeReady probes the compute once, briefly: one that does not answer in time
@@ -532,6 +558,14 @@ func (r *Runner) computeReady(ctx context.Context) bool {
 func unreachedCompute(err error) bool {
 	var dial *net.OpError
 	return errors.As(err, &dial) && dial.Op == "dial"
+}
+
+// droppedByCompute reports whether the connection broke before the compute's whole
+// answer arrived (Invoke's *url.Error); a compute that answers in full but breaks
+// the protocol did not drop the invoke.
+func droppedByCompute(err error) bool {
+	var transport *url.Error
+	return errors.As(err, &transport)
 }
 
 func (r *Runner) throttleWait() time.Duration {

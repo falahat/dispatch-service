@@ -76,11 +76,12 @@ const (
 	ReleaseIntegrity      ReleaseReason = "integrity"
 	ReleaseWrongHardware  ReleaseReason = "wrong_hardware"
 	ReleaseShipping       ReleaseReason = "shipping"
+	ReleaseInterrupted    ReleaseReason = "interrupted"
 )
 
 var ValidReleaseReasons = map[ReleaseReason]bool{
 	ReleaseCASUnreachable: true, ReleaseCASMiss: true, ReleaseIntegrity: true,
-	ReleaseWrongHardware: true, ReleaseShipping: true,
+	ReleaseWrongHardware: true, ReleaseShipping: true, ReleaseInterrupted: true,
 }
 
 // ErrorCode is the closed enum of protocol error codes.

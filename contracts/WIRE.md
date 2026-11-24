@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.8", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.9", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -66,12 +66,12 @@ repeat of one that already landed changes nothing.
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.8", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `hello` | `{contract:"0.9", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
 | `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement) and that is pinned to no other node than this runner's (`policy.node`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, log_offset?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`; `log_offset` is where this attempt's command log continues (see below). |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |
 | `fail` | `{lease_id, job_id, attempt, error_class, message ≤ 4 KiB}` → `ok` | compute failed. Attempt burned; the job's declared policy maps `error_class` → retriable (backoff) or terminal. A job whose cancellation was requested is terminal whatever the class (D15). Idempotent per `(job_id, attempt)`. |
-| `release` | `{lease_id, job_id, reason: cas_unreachable \| cas_miss \| integrity \| wrong_hardware \| shipping}` → `ok` | "could not start / could not ship" — back to `QUEUED`, **attempt unchanged**, `release_count+1`; the cap depends on the reason's class: `cas_unreachable`/`shipping` are INFRASTRUCTURE (bounded generously, so a self-clearing outage cannot dead-letter healthy work), while `integrity`/`wrong_hardware`/`cas_miss` use `policy.release_cap`. At the cap → `FAILED`, carrying the reason: `input_evicted` for `cas_miss` (the app re-stages the blob and re-enqueues), else `unstartable:<reason>`. `integrity` additionally raises a loud telemetry event. Rate-limited and quarantine-scored. |
+| `release` | `{lease_id, job_id, reason: cas_unreachable \| cas_miss \| integrity \| wrong_hardware \| shipping \| interrupted}` → `ok` | "could not start / could not ship" — back to `QUEUED`, **attempt unchanged**, `release_count+1`; the cap depends on the reason's class: `cas_unreachable`/`shipping`/`interrupted` are INFRASTRUCTURE (bounded generously, so a self-clearing outage cannot dead-letter healthy work), while `integrity`/`wrong_hardware`/`cas_miss` use `policy.release_cap`. At the cap → `FAILED`, carrying the reason: `input_evicted` for `cas_miss` (the app re-stages the blob and re-enqueues), else `unstartable:<reason>`. `integrity` additionally raises a loud telemetry event. Rate-limited and quarantine-scored. |
 
 ## App surface (UDS)
 

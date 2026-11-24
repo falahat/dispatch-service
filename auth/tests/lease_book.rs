@@ -94,11 +94,11 @@ fn invocation() -> (Vec<u8>, String) {
 /// A runner's lease frame and the dispatcher's grant of the job whose invocation is `hex`.
 fn grant(hex: &str) -> (Vec<u8>, Vec<u8>) {
     let lease = serde_json::json!({
-        "v": "0.8", "type": "lease", "id": "r1",
+        "v": "0.9", "type": "lease", "id": "r1",
         "body": { "lanes": ["embed"], "wait_s": 30 }
     });
     let granted = serde_json::json!({
-        "v": "0.8", "type": "grant", "id": "r1",
+        "v": "0.9", "type": "grant", "id": "r1",
         "body": {
             "lease": { "lease_id": "l1", "ttl_s": 300 },
             "job": { "job_id": "j1", "invocation_address": format!("sha256:{hex}") }

@@ -352,27 +352,32 @@ func TestReleaseCapTerminalReason(t *testing.T) {
 // THE regression: during the 2026-07 brownout the auth plane briefly denied CAS
 // reads, and because every release shared one tiny cap the 1s..32s pacing exhausted
 // it in well under a minute — permanently failing healthy jobs over a self-clearing
-// outage.
+// outage. A runner stopping mid-job, or finding its compute down, is the same kind
+// of noise.
 func TestTransientReleaseDoesNotBurnThePoisonBudget(t *testing.T) {
-	d, clk := newTestDispatcher(t)
-	inv := invAddr("j")
-	cap := 3
-	id := enqueueOne(t, d, "k", "embed", inv, &wire.Policy{ReleaseCap: &cap})
-	hello(t, d, "R1", "embed")
-	for i := 0; i < 6; i++ { // twice the terminal cap
-		g, e := leaseOne(t, d, "R1", "embed")
-		if g == nil {
-			t.Fatalf("release round %d: no grant (%+v)", i, e)
-		}
-		if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: wire.ReleaseCASUnreachable}); werr != nil {
-			t.Fatalf("release: %v", werr)
-		}
-		job, _ := d.GetJob(id)
-		if job.State != "QUEUED" {
-			t.Fatalf("round %d: a transient CAS outage must not dead-letter a healthy job: state=%s reason=%s",
-				i, job.State, job.Reason)
-		}
-		clk.Set(job.NextAttemptAt + 1)
+	for _, reason := range []wire.ReleaseReason{wire.ReleaseCASUnreachable, wire.ReleaseShipping, wire.ReleaseInterrupted} {
+		t.Run(string(reason), func(t *testing.T) {
+			d, clk := newTestDispatcher(t)
+			inv := invAddr("j")
+			cap := 3
+			id := enqueueOne(t, d, "k", "embed", inv, &wire.Policy{ReleaseCap: &cap})
+			hello(t, d, "R1", "embed")
+			for i := 0; i < 6; i++ { // twice the terminal cap
+				g, e := leaseOne(t, d, "R1", "embed")
+				if g == nil {
+					t.Fatalf("release round %d: no grant (%+v)", i, e)
+				}
+				if werr := d.Release("R1", wire.Release{LeaseID: g.Lease.LeaseID, JobID: id, Reason: reason}); werr != nil {
+					t.Fatalf("release: %v", werr)
+				}
+				job, _ := d.GetJob(id)
+				if job.State != "QUEUED" || job.Attempt != 1 {
+					t.Fatalf("round %d: a transient release must not dead-letter a healthy job or spend its attempts: state=%s attempt=%d reason=%s",
+						i, job.State, job.Attempt, job.Reason)
+				}
+				clk.Set(job.NextAttemptAt + 1)
+			}
+		})
 	}
 }
 

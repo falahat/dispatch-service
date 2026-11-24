@@ -59,14 +59,18 @@ the AWS Lambda Runtime API.
 
 Lay out `workdir/inputs/` (fetched + verified) and create `workdir/outputs/` before
 `POST /invoke`; read outputs only through that folder, uploading each named file, or each
-file of a named folder and then its manifest; treat connection drop or container exit
-mid-invoke as `error_class: fatal`; map the response to `complete`/`fail` on the control
+file of a named folder and then its manifest; treat a connection the compute drops
+mid-invoke, as when its container exits, as `error_class: unknown`, which the job's
+policy retries; map the response to `complete`/`fail` on the control
 plane; delete the workdir after `complete`/`fail`/`release`;
 run the **fixture invocation** (`GET /healthz`, then one `POST /invoke` with the image's
 declared fixture) at boot before its first lease — on failure, never join the fleet.
-Take no lease while `/healthz` is not ready, asking again each second (D17). An invoke
-that never connected, because the compute is down, and one cut short because the runner
-itself is stopping, report nothing: the lease expires and the job runs again.
+Take no lease while `/healthz` is not ready, asking again each second (D17). Release the
+job as `interrupted` when its invoke never connected, because the compute is down, or
+when the runner itself is stopping, so the job is queued again at once, on the same
+attempt (D18). A stopping runner waits at most 5 s for that release; a release it cannot
+send leaves the job to its lease, which expires, and the job runs again on its next
+attempt.
 
 ## Conformance
 

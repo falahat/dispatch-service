@@ -10,12 +10,13 @@ import (
 	"github.com/falahat/dispatch-service/runner"
 )
 
-// TestStoppingRunnerLeavesItsJobLeased stops a runner (its SIGTERM: a reboot, or a
-// compute restart that stops the runner with it) while its job is inside the invoke.
-// The cut-short invoke says nothing about the job, so the runner reports nothing: the
-// job stays RUNNING on its lease, which expires, and the job runs again. Reporting it
-// as fail{fatal} used to dead-letter every job a reboot interrupted.
-func TestStoppingRunnerLeavesItsJobLeased(t *testing.T) {
+// TestAStoppingRunnerGivesItsJobBack stops a runner (its SIGTERM: a reboot or a
+// release) while its job is inside the invoke. The cut-short invoke says nothing
+// about the job, so the runner releases it as interrupted, and the job is queued
+// again at once on the same attempt. Left to its lease, it waited out the TTL and
+// used up an attempt, and on its last one failed as lease_expired; reported as
+// fail{fatal}, it was dead-lettered.
+func TestAStoppingRunnerGivesItsJobBack(t *testing.T) {
 	srv := startDispatcher(t)
 	cas := newStubCAS()
 	casSrv := httptest.NewServer(cas.handler())
@@ -55,12 +56,11 @@ func TestStoppingRunnerLeavesItsJobLeased(t *testing.T) {
 	}
 
 	view := jobView(t, app, jobID)
-	if view.State != "RUNNING" {
-		t.Fatalf("job is %s after its runner stopped; want RUNNING until its lease expires (reason %q)", view.State, view.Reason)
+	if view.State != "QUEUED" || view.Attempt != 1 || view.ReleaseCount != 1 {
+		t.Fatalf("job is %s on attempt %d after %d releases once its runner stopped; want QUEUED on attempt 1 after 1 (%+v)",
+			view.State, view.Attempt, view.ReleaseCount, view.Timeline)
 	}
-	for _, step := range view.Timeline {
-		if step.Outcome != "enqueue" && step.Outcome != "claimed" {
-			t.Fatalf("the stopping runner reported %q for its job (%+v)", step.Outcome, view.Timeline)
-		}
+	if last := view.Timeline[len(view.Timeline)-1]; last.Outcome != "release" || last.Reason != "interrupted" {
+		t.Fatalf("the stopping runner reported %q (%q); want a release as interrupted", last.Outcome, last.Reason)
 	}
 }

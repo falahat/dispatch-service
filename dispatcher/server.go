@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/falahat/dispatch-service/internal/wire"
 )
@@ -252,7 +253,13 @@ func (s *Server) serveRunnerFrame(conn net.Conn, runnerID string, env wire.Envel
 		if err != nil {
 			return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: err.Error()})
 		}
-		grant, empty, werr := s.d.Lease(s.ctx, runnerID, req)
+		ctx, watched := s.untilClosed(conn)
+		grant, empty, werr := s.d.Lease(ctx, runnerID, req)
+		if err := watched(); err != nil {
+			// The runner has gone, so there is no one to reply to. A grant claimed in the
+			// instant before it went is left to the lease sweep.
+			return err
+		}
 		if werr != nil {
 			return replyErr(conn, env.ID, werr)
 		}
@@ -278,6 +285,33 @@ func (s *Server) serveRunnerFrame(conn net.Conn, runnerID string, env wire.Envel
 		})
 	default:
 		return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: "unknown runner verb " + env.Type})
+	}
+}
+
+// untilClosed returns a context that ends when the runner's connection closes, so a
+// long-poll never grants a job to a runner that has gone, and a func that ends the watch.
+// A runner sends nothing while it awaits a reply, so the watch can only read EOF, an
+// error, or a protocol violation. The func returns that, or nil if the connection is
+// still open.
+func (s *Server) untilClosed(conn net.Conn) (context.Context, func() error) {
+	ctx, cancel := context.WithCancel(s.ctx)
+	closed := make(chan error, 1)
+	go func() {
+		defer cancel()
+		_, err := conn.Read(make([]byte, 1))
+		if err == nil {
+			err = errors.New("runner sent a frame before its reply")
+		}
+		closed <- err
+	}()
+	return ctx, func() error {
+		_ = conn.SetReadDeadline(time.Now()) // ends the watch's read
+		err := <-closed
+		_ = conn.SetReadDeadline(time.Time{})
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil
+		}
+		return err
 	}
 }
 

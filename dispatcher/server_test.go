@@ -51,13 +51,17 @@ func (f *framedConn) read() wire.Envelope {
 
 func startTestServer(t *testing.T) *Server {
 	t.Helper()
+	return startTestServerWith(t, testConfig())
+}
+
+func startTestServerWith(t *testing.T, cfg Config) *Server {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, "d.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	cfg := testConfig()
 	cfg.RunnerListen = "127.0.0.1:0"
 	cfg.AppSocket = ""
 	cfg.AppListen = "127.0.0.1:0"
@@ -168,6 +172,43 @@ func TestSubscriptionTakeover(t *testing.T) {
 	env := sub1.read()
 	if env.Type != wire.TypeTakeover {
 		t.Fatalf("expected takeover on sub1, got %s", env.Type)
+	}
+}
+
+// TestALeaseWaitEndsWithItsConnection: a runner that leaves mid long-poll (stopped, or its
+// PEP was) is granted nothing, so a job enqueued after it left stays queued for a runner
+// that is there.
+func TestALeaseWaitEndsWithItsConnection(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxWaitS = 30
+	srv := startTestServerWith(t, cfg)
+	run := dial(t, srv.RunnerAddr())
+	hello := run.call("h1", wire.TypeHello, wire.Hello{Contract: wire.ContractVersion, Runner: wire.RunnerIdent{ID: "RGONE", Version: "t", Node: "n", Lanes: []string{"embed"}, Capacity: 1}})
+	if hello.Type != wire.TypeHelloOK {
+		t.Fatalf("hello reply %s", hello.Type)
+	}
+	if err := wire.WriteMessage(run.conn, "l1", wire.TypeLease, wire.Lease{Lanes: []string{"embed"}, WaitS: 30}); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // the lease waits: nothing is queued
+	run.conn.Close()
+
+	open := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.conns)
+	}
+	for deadline := time.Now().Add(2 * time.Second); open() > 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	jobID := enqueueOne(t, srv.d, "gone-k", "embed", invAddr("gone"), nil)
+	time.Sleep(2 * pollInterval) // a lease still waiting would have claimed it by now
+	job, err := srv.d.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("job: %v", err)
+	}
+	if job.State != "QUEUED" {
+		t.Fatalf("job is %s: it went to a runner that had left", job.State)
 	}
 }
 

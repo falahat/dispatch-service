@@ -142,7 +142,10 @@ it matched says so.
 - Matched an authed route, auth fails → `401` (malformed / stale / replay / bad DPoP
   proof — signature, `htm`/`htu`/`ath`/`content-digest` mismatch, tampered body — or bad
   biscuit) or `403` (valid identity, missing right) — the same status policy the CAS
-  surface uses.
+  surface uses. A fault in the PEP itself (its nonce store, or its own Datalog failing
+  to bind) → `500`, saying only `internal error` for the latter. The PEP parses its
+  Datalog once and refuses to boot if a rule does not parse or bind
+  (`auth/src/policy.rs`).
 - Per-identity rate exceeded → `429`.
 - Matched a route, auth passes (or passthrough) → forwarded to `backend` with application
   parameters preserved, the true buffered length set, and auth + hop-by-hop fields removed.

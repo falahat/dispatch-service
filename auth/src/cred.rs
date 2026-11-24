@@ -13,13 +13,15 @@ use std::time::Duration;
 use crate::canonical::Op;
 use crate::error::{AuthError, Result};
 use crate::nonce::NonceStore;
+use crate::policy;
 use crate::pop;
 use crate::revocation::RevocationStore;
-// Facts are built from typed terms; checks, policies and the query are biscuit's own
-// Datalog text, parsed at runtime with every `{param}` bound by `set` to a typed term. A
-// bound value is never spliced into the text, so a caller's string cannot change the rule
-// it lands in. (biscuit's compile-time macros are off: their proc-macro crate is unmaintained.)
-use biscuit_auth::builder::{fact, int, string, BlockBuilder, Check, Policy};
+// Facts are built from typed terms; the checks, policy and query come from crate::policy,
+// biscuit's own Datalog text parsed once, with every `{param}` bound by `set` to a typed
+// term. A bound value is never spliced into the text, so a caller's string cannot change
+// the rule it lands in. (biscuit's compile-time macros are off: their proc-macro crate is
+// unmaintained.)
+use biscuit_auth::builder::{fact, int, string, BlockBuilder};
 use biscuit_auth::error::Token as BiscuitError;
 use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 
@@ -99,12 +101,10 @@ pub fn attenuate_for_lease(
             .map_err(malformed)?;
     }
     // A cas_get is only permitted for an allowed address.
-    bb.add_check("check if operation(\"cas_get\"), address($a), allowed_get($a)")
-        .map_err(malformed)?;
+    bb.add_check(policy::lease_gets()?).map_err(internal)?;
     // The lease token expires with the lease.
-    let mut expiry = Check::try_from("check if now($t), $t <= {exp}").map_err(malformed)?;
-    expiry.set("exp", expire_ts_ms).map_err(malformed)?;
-    bb.add_check(expiry).map_err(malformed)?;
+    bb.add_check(policy::expiry(expire_ts_ms)?)
+        .map_err(internal)?;
     let attenuated = biscuit.append(bb).map_err(malformed)?;
     attenuated.to_base64().map_err(malformed)
 }
@@ -117,7 +117,7 @@ pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<Str
     let mut authorizer = biscuit.authorizer().ok()?;
     let rights: Vec<(String,)> = authorizer
         .query_with_limits(
-            "granted($r) <- right($r)",
+            policy::rights_query().ok()?,
             AuthorizerLimits {
                 max_time: AUTHZ_MAX_TIME,
                 max_facts: AUTHZ_MAX_FACTS,
@@ -126,6 +126,12 @@ pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<Str
         )
         .ok()?;
     Some(rights.into_iter().map(|(right,)| right).collect())
+}
+
+/// The PEP's own rule failed to go into an authorizer or block: a PEP bug, so it is denied
+/// as one, with nothing for the caller to read.
+fn internal(_: BiscuitError) -> AuthError {
+    AuthError::Internal
 }
 
 /// A verified identity: the holder's pubkey (hex), which doubles as the runner
@@ -319,18 +325,18 @@ fn authorize_request(
     }
     // The presented pubkey must equal the one bound in the credential.
     authorizer
-        .add_check("check if pubkey($p), presented_pubkey($p)")
-        .map_err(denied)?;
+        .add_check(policy::pubkey_bound()?)
+        .map_err(internal)?;
     // Each required lane must be granted by the credential.
     for lane in required_lanes {
-        let mut granted = Check::try_from("check if lane({l})").map_err(denied)?;
-        granted.set("l", lane.as_str()).map_err(denied)?;
-        authorizer.add_check(granted).map_err(denied)?;
+        authorizer
+            .add_check(policy::lane_granted(lane)?)
+            .map_err(internal)?;
     }
     // The credential must grant the required right.
-    let mut allow = Policy::try_from("allow if right({o})").map_err(denied)?;
-    allow.set("o", right).map_err(denied)?;
-    authorizer.add_policy(allow).map_err(denied)?;
+    authorizer
+        .add_policy(policy::right_granted(right)?)
+        .map_err(internal)?;
     // The DoS guard is DETERMINISTIC (facts/iterations), never the clock. A real credential is
     // tiny — a pubkey fact, a few rights and lanes, and the checks added above — so these
     // ceilings sit far above anything legitimate and far below what a fact-generating

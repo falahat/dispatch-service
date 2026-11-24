@@ -10,6 +10,7 @@
 //! Replies are plain wire frames streamed straight back.
 
 use crate::cred::{verify, AuthedRequest};
+use crate::error::AuthError;
 use crate::lease_book::LeaseBook;
 use crate::nonce::NonceStore;
 use crate::revocation::RevocationStore;
@@ -167,8 +168,16 @@ impl FrameProxy {
                 Ok(id) => id,
                 Err(e) => {
                     let code = match e {
-                        crate::AuthError::Denied(_) | crate::AuthError::Revoked => "forbidden",
-                        _ => "unauthenticated",
+                        AuthError::Denied(_) | AuthError::Revoked => "forbidden",
+                        AuthError::Store(_) | AuthError::Io(_) | AuthError::Internal => "internal",
+                        AuthError::Freshness
+                        | AuthError::Replay
+                        | AuthError::Malformed(_)
+                        | AuthError::BiscuitSignature
+                        | AuthError::PopFailed
+                        | AuthError::DpopFailed(_)
+                        | AuthError::MissingPubkey
+                        | AuthError::MissingIdentity => "unauthenticated",
                     };
                     log::warn!("frame: {} denied: {}", verb, e);
                     write_error(&mut runner, &id, code, &format!("{e}")).await?;

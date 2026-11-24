@@ -12,6 +12,7 @@ pub mod frame_proxy;
 pub mod http_proxy;
 pub mod lease_book;
 pub mod nonce;
+pub mod policy;
 pub mod pop;
 pub mod quota;
 pub mod revocation;

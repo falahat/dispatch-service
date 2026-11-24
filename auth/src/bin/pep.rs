@@ -127,6 +127,12 @@ async fn main() {
     let stop_requested = stop_signal();
     let (stopper, stop) = shutdown::channel();
 
+    // A broken rule in the PEP's own Datalog stops it here, instead of failing every request.
+    if let Err(e) = dispatch_auth::policy::check() {
+        eprintln!("pep: {e}");
+        std::process::exit(2);
+    }
+
     let root_b64 = env_req("PEP_ROOT_PUBKEY");
     let root_bytes = STANDARD.decode(root_b64.trim()).unwrap_or_else(|e| {
         eprintln!("pep: PEP_ROOT_PUBKEY not base64: {e}");

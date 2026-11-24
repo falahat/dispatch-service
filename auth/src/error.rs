@@ -29,6 +29,11 @@ pub enum AuthError {
     Store(String),
     #[error("io: {0}")]
     Io(String),
+    /// The PEP's own Datalog failed to bind: a PEP bug, never the caller's fault. It says
+    /// nothing more, so no parser detail reaches a client; [`crate::policy::check`] catches
+    /// such a bug at boot.
+    #[error("internal error")]
+    Internal,
 }
 
 pub type Result<T> = std::result::Result<T, AuthError>;

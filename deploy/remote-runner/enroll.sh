@@ -36,10 +36,7 @@ if [[ $action == keygen ]]; then [[ ! -e $disk ]]; exec "${runner[@]}" keygen --
 if [[ $action == seal ]]; then "${runner[@]}" seal --cred "$file" --biscuit-file -
 else [[ $action == start && -f $disk && ! -L $disk ]]; fi
 if [[ ${config[0]} == command ]]; then systemctl --user enable --now "$unit"
-else
-    [[ ! -f $HOME/.config/containers/systemd/$name-smokescreen.container ]] || systemctl --user start "$name-smokescreen.service"
-    systemctl --user start "$unit"
-fi'
+else systemctl --user start "$unit"; fi'
 for ((i=1; i<=profile[0]; i++)); do
     if [[ $reuse == 1 ]]; then
         remote "$worker" bash -c "$invoke" _ "$name" "$i" start

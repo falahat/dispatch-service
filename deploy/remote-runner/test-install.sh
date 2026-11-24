@@ -89,14 +89,16 @@ grep -Fx 'ReadOnly=true' "$units/first-compute.container"
 grep -Fx 'Tmpfs=/run:rw,nosuid,nodev,noexec,mode=0755' "$units/first-compute.container"
 grep -Fx 'Volume=/var/lib/tailworker/locks:/var/lib/tailworker/locks:ro' "$units/first-compute.container"
 grep -Fx 'Environment=SMOKESCREEN_ROLE_NETS=172.30.0.0/24=model' "$units/first-smokescreen.container"
+# Quadlet applies [Install] when it generates units, so compute requires its guard at boot.
+sed -n '/^\[Unit\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'Before=first-compute.service'
+sed -n '/^\[Install\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'RequiredBy=first-compute.service'
 grep -Fx 'Exec="--public" "value"' "$units/first-compute.container"
 grep -Fx 'Internal=true' "$units/first-model.network"
 test -f "$HOME/.config/plane-runners/first/smokescreen/allowlist.yaml"
 test -f "$HOME/.config/plane-runners/first/smokescreen/config.yaml"
 cmp "$temporary/second.saved" "$units/second-runner.container"
 bash "$here/enroll.sh" --name first --machine owned --signer 'printf signed-fixture' --lanes embed --note fixture
-grep -Fx first-runner.service "$HOME/started"
-grep -Fx first-smokescreen.service "$HOME/started"
+test "$(<"$HOME/started")" = first-runner.service
 sed -i 's/GPU=1/GPU=0/; s/MODEL_EGRESS=1/MODEL_EGRESS=0/' "$temporary/runner.env"
 bash "$here/install.sh" --env "$temporary/runner.env" --machine owned
 test ! -e "$units/first-smokescreen.container"

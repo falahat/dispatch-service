@@ -1,5 +1,8 @@
 [Unit]
 Description=Model-download egress guard
+# Compute reaches the model hosts only through this guard, so compute requires
+# it (RequiredBy below) and starts after it, at boot as at enrollment.
+Before=@NAME@-compute.service
 
 [Container]
 Image=@SMOKESCREEN_IMAGE@
@@ -21,3 +24,6 @@ Exec=--config-file=/etc/smokescreen/config.yaml --listen-ip=0.0.0.0 --listen-por
 
 [Service]
 TimeoutStartSec=0
+
+[Install]
+RequiredBy=@NAME@-compute.service

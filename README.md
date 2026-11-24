@@ -76,8 +76,10 @@ ROOTS (`NAME=/folder` pairs separated by commas); see [GPUs](contracts/COMMAND.m
 traffic goes through the same authenticated runner and CAS doors; SSH is setup only.
 
 Tailworker resolves the approved machine and transfers images; the kit installs
-rootless Quadlet units pinned to their image IDs. `NAME` isolates each application's
-containers, networks, volumes and credentials, so applications can share a machine.
+rootless Quadlet units pinned to their image IDs. The runner starts at boot and
+requires its compute; with MODEL_EGRESS=1, compute requires its smokescreen guard
+and starts after it. `NAME` isolates each application's containers, networks,
+volumes and credentials, so applications can share a machine.
 The worker creates its own seed. Only its public key and the application's signed
 capability cross SSH; compute never mounts the runner credential. Optional
 `--secret NAME FILE` copies an owned mode-0600 provider secret into a namespaced

@@ -39,7 +39,9 @@ installs an owned mode-0600 provider secret only for HTTP compute.
 
 Installation starts nothing and refuses active application units. Enrollment
 creates a unique worker credential, signs only its public key through standard
-input, and starts that application's units. Existing credentials are refused;
+input, and starts that application's runner; unit dependencies start the rest,
+as at boot. The runner requires its compute, and with model egress compute
+requires its smokescreen guard. Existing credentials are refused;
 inspect partial setup before repeating it. Key revocation remains with the
 application signer. No cloud API, network-policy change or machine creation is
 part of this kit. `test-install.sh` tests both adapters without real credentials

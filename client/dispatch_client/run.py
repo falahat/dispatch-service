@@ -191,7 +191,11 @@ def submit(
             **extra,
             "argv": list(argv),
             "outputs": list(outputs),
-            **({"keep": {n: {"root": p.root, "path": p.path} for n, p in kept.items()}} if kept else {}),
+            **(
+                {"keep": {n: {"root": p.root, "path": p.path} for n, p in kept.items()}}
+                if kept
+                else {}
+            ),
         },
         "inputs": {
             **upload_inputs(cas, inputs or {}),

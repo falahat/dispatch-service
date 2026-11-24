@@ -1,8 +1,12 @@
 package dispatcher
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,6 +213,43 @@ func TestALeaseWaitEndsWithItsConnection(t *testing.T) {
 	}
 	if job.State != "QUEUED" {
 		t.Fatalf("job is %s: it went to a runner that had left", job.State)
+	}
+}
+
+// failingListener fails every accept, as a listener does while its process is out of
+// file descriptors.
+type failingListener struct {
+	net.Listener
+	accepts atomic.Int64
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.accepts.Add(1)
+	return nil, errors.New("accept: too many open files")
+}
+
+// TestAFailingAcceptPausesBeforeTryingAgain: out of file descriptors, every accept fails at
+// once until a connection closes. A surface that tried again at once would spin and log
+// every failure; it must pause between tries, and still stop when the server does.
+func TestAFailingAcceptPausesBeforeTryingAgain(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	s := &Server{ctx: ctx, log: slog.New(slog.DiscardHandler)}
+	ln := &failingListener{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.accept(ln, nil)
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	tries := ln.accepts.Load()
+	stop()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the accept loop did not stop with its server")
+	}
+	if tries > 3 {
+		t.Fatalf("%d accepts in 1.5 s while every accept fails, want at most 3", tries)
 	}
 }
 

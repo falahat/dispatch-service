@@ -141,20 +141,25 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// acceptRetry is how long a surface waits to accept again after an accept fails. Out of
+// file descriptors, every accept fails at once until a connection closes, so trying again
+// at once would spin and log a warning per try.
+const acceptRetry = time.Second
+
 func (s *Server) accept(ln net.Listener, handle func(net.Conn)) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if s.ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			s.log.Warn("accept error", "err", err)
 			select {
 			case <-s.ctx.Done():
 				return
-			default:
-				if errors.Is(err, net.ErrClosed) {
-					return
-				}
-				s.log.Warn("accept error", "err", err)
-				continue
+			case <-time.After(acceptRetry):
 			}
+			continue
 		}
 		s.track(conn)
 		s.wg.Add(1)

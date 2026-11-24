@@ -261,15 +261,21 @@ func (s *Server) serveRunnerFrame(conn net.Conn, runnerID string, env wire.Envel
 		ctx, watched := s.untilClosed(conn)
 		grant, empty, werr := s.d.Lease(ctx, runnerID, req)
 		if err := watched(); err != nil {
-			// The runner has gone, so there is no one to reply to. A grant claimed in the
-			// instant before it went is left to the lease sweep.
+			// The runner has gone, so there is no one to reply to.
+			if grant != nil {
+				s.unclaim(*grant)
+			}
 			return err
 		}
 		if werr != nil {
 			return replyErr(conn, env.ID, werr)
 		}
 		if grant != nil {
-			return reply(conn, env.ID, wire.TypeGrant, grant)
+			if err := reply(conn, env.ID, wire.TypeGrant, grant); err != nil {
+				s.unclaim(*grant)
+				return err
+			}
+			return nil
 		}
 		return reply(conn, env.ID, wire.TypeEmpty, empty)
 	case wire.TypeHeartbeat:
@@ -290,6 +296,14 @@ func (s *Server) serveRunnerFrame(conn net.Conn, runnerID string, env wire.Envel
 		})
 	default:
 		return replyErr(conn, env.ID, &wire.Error{Code: wire.CodeInvalid, Message: "unknown runner verb " + env.Type})
+	}
+}
+
+// unclaim queues again a job whose grant never reached its runner. If that fails, the job
+// waits out its lease instead.
+func (s *Server) unclaim(g wire.Grant) {
+	if err := s.d.Unclaim(g); err != nil {
+		s.log.Warn("undelivered grant left to its lease", "job", g.Job.JobID, "err", err)
 	}
 }
 

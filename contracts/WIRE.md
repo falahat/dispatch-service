@@ -7,7 +7,7 @@ result): [`ARTIFACTS.md`](ARTIFACTS.md). MUST/SHOULD per RFC 2119.
 ## Framing, versioning, strictness
 
 - Transport: length-prefixed JSON frames (`trust_core.wire`), UTF-8, one JSON object per
-  frame: `{"v": "0.9", "type": "<message>", "id": "<request-id>", "body": {...}}`.
+  frame: `{"v": "0.10", "type": "<message>", "id": "<request-id>", "body": {...}}`.
   Responses echo `id`. `id` is a client-chosen unique string per in-flight request.
 - **Connection preamble:** first frame MUST be `hello`; the server replies `hello_ok`, or
   `error{version_mismatch}` and closes. All components are co-deployed, so a version
@@ -62,11 +62,18 @@ A lease outlives the connection it was granted on. A runner whose connection dro
 or dispatcher restart) sends its `complete`, `fail` or `release` again over a new one; a
 repeat of one that already landed changes nothing.
 
+A grant that never left the dispatcher is undone (`undelivered`, D19): when the runner's
+connection closed, or the reply could not be written, before the grant was sent, the job is
+`QUEUED` again on the same attempt and release count, and its timeline keeps no row for the
+claim. A job whose cancellation was requested meanwhile keeps its lease, whose expiry ends
+it (D15). A long-poll whose connection has closed claims nothing more. A grant the
+dispatcher did send belongs to its runner, read or not: its lease runs out as usual.
+
 ## Runner surface
 
 | Verb | Body → Reply | Semantics |
 |---|---|---|
-| `hello` | `{contract:"0.9", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
+| `hello` | `{contract:"0.10", runner:{id, version, node, lanes[], capacity}}` → `hello_ok {server_ts, heartbeat_interval_s, min_wait_s, max_wait_s}` | introduces the runner (fleet row upsert); `runner.id` = its public-key fingerprint. |
 | `lease` | `{lanes[], wait_s, gpus[]?}` → `grant {job, lease}` \| `empty {reason?: backpressure\|drained, retry_after_s?}` | **long-poll**: blocks up to `wait_s` (clamped to server bounds; at most 5 s when `gpus` is present) until a job is runnable. Atomic claim: oldest runnable job in a requested lane (`next_attempt_at ≤ now`) that the offered GPUs admit (see GPU placement) and that is pinned to no other node than this runner's (`policy.node`), selecting the lane by round-robin over the runner's open lanes so one lane's backlog can't starve another, lane concurrency cap ok, runner not quarantined, per-runner rate cap ok, lane not in inbox backpressure. `gpus[] = {index, uuid, total_mb, free_mb, processes}`. `job = {job_id, job_key, lane, invocation_address, attempt, expected_wall_s?, log_offset?, hints{batch_scale?, ...}, gpu?{index, uuid, memory_mb, mode}}`; `log_offset` is where this attempt's command log continues (see below). |
 | `heartbeat` | `{status:{node, lanes[], capacity, gpu?, vram_free_mb?, current_job_id?}, lease_id?}` → `beat_ok {directives[]}` | renews the named lease; the reply is the **only steering channel**: directives are `abandon {job_id}` (stop work now; job was cancelled or you are quarantined), `drain` (finish, take no more leases, exit), `throttle {lease_after_ts}`. |
 | `complete` | `{lease_id, job_id, attempt, action_result}` → `ok` | compute + `cas.put` done → `PERSISTING`; pushes to the app subscription. Idempotent per `(job_id, attempt)`: exact replay → `ok`; divergent replay → `error{conflict}`. |

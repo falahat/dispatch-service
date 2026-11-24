@@ -310,7 +310,7 @@ fn refusal(e: &AuthError) -> (&'static str, String) {
 
 async fn write_error(s: &mut TcpStream, id: &str, code: &str, msg: &str) -> std::io::Result<()> {
     let frame = serde_json::json!({
-        "v": "0.9",
+        "v": "0.10",
         "type": "error",
         "id": if id.is_empty() { "0" } else { id },
         "body": { "code": code, "message": msg, "retryable": false }

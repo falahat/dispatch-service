@@ -186,25 +186,14 @@ func TestALeaseWaitEndsWithItsConnection(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxWaitS = 30
 	srv := startTestServerWith(t, cfg)
-	run := dial(t, srv.RunnerAddr())
-	hello := run.call("h1", wire.TypeHello, wire.Hello{Contract: wire.ContractVersion, Runner: wire.RunnerIdent{ID: "RGONE", Version: "t", Node: "n", Lanes: []string{"embed"}, Capacity: 1}})
-	if hello.Type != wire.TypeHelloOK {
-		t.Fatalf("hello reply %s", hello.Type)
-	}
+	run := runnerHello(t, srv, "RGONE")
 	if err := wire.WriteMessage(run.conn, "l1", wire.TypeLease, wire.Lease{Lanes: []string{"embed"}, WaitS: 30}); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond) // the lease waits: nothing is queued
 	run.conn.Close()
+	waitUntilClosed(t, srv)
 
-	open := func() int {
-		srv.mu.Lock()
-		defer srv.mu.Unlock()
-		return len(srv.conns)
-	}
-	for deadline := time.Now().Add(2 * time.Second); open() > 0 && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond)
-	}
 	jobID := enqueueOne(t, srv.d, "gone-k", "embed", invAddr("gone"), nil)
 	time.Sleep(2 * pollInterval) // a lease still waiting would have claimed it by now
 	job, err := srv.d.GetJob(jobID)
@@ -213,6 +202,54 @@ func TestALeaseWaitEndsWithItsConnection(t *testing.T) {
 	}
 	if job.State != "QUEUED" {
 		t.Fatalf("job is %s: it went to a runner that had left", job.State)
+	}
+}
+
+// TestAGrantItsRunnerNeverReceivedIsUndone: a runner asks for a lease while work is queued
+// and leaves at once, before the grant can reach it. The dispatcher claims the job as the
+// runner goes, or sees it go first. Either way the job must be QUEUED again on the same
+// attempt and release count, with no attempt row for a claim that reached no one, and the
+// next runner must get it at once rather than after the lease TTL.
+func TestAGrantItsRunnerNeverReceivedIsUndone(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxWaitS = 30
+	srv := startTestServerWith(t, cfg)
+	jobID := enqueueOne(t, srv.d, "gone-k", "embed", invAddr("gone"), nil)
+	before, err := srv.d.GetJob(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gone := runnerHello(t, srv, "RGONE")
+	if err := wire.WriteMessage(gone.conn, "l1", wire.TypeLease, wire.Lease{Lanes: []string{"embed"}, WaitS: 30}); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	gone.conn.Close()
+	waitUntilClosed(t, srv)
+
+	job, err := srv.d.GetJob(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != "QUEUED" || job.Attempt != before.Attempt || job.ReleaseCount != before.ReleaseCount || job.LeaseID != "" {
+		t.Fatalf("after its runner left: %s, attempt %d, %d releases, lease %q; want QUEUED, attempt %d, %d releases, no lease",
+			job.State, job.Attempt, job.ReleaseCount, job.LeaseID, before.Attempt, before.ReleaseCount)
+	}
+	timeline, err := srv.d.timeline(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range timeline {
+		if a.Outcome == "claimed" {
+			t.Fatalf("the timeline keeps a claim that reached no one: %+v", timeline)
+		}
+	}
+
+	next := runnerHello(t, srv, "RNEXT")
+	env := next.call("l2", wire.TypeLease, wire.Lease{Lanes: []string{"embed"}, WaitS: 0})
+	grant, err := wire.DecodeBody[wire.Grant](env)
+	if env.Type != wire.TypeGrant || err != nil || grant.Job.JobID != jobID || grant.Job.Attempt != before.Attempt {
+		t.Fatalf("the next runner's lease: %s %s; want the job on attempt %d", env.Type, env.Body, before.Attempt)
 	}
 }
 
@@ -250,6 +287,33 @@ func TestAFailingAcceptPausesBeforeTryingAgain(t *testing.T) {
 	}
 	if tries > 3 {
 		t.Fatalf("%d accepts in 1.5 s while every accept fails, want at most 3", tries)
+	}
+}
+
+// runnerHello connects to the runner surface and says hello as runner id.
+func runnerHello(t *testing.T, srv *Server, id string) *framedConn {
+	t.Helper()
+	run := dial(t, srv.RunnerAddr())
+	env := run.call("h-"+id, wire.TypeHello, wire.Hello{Contract: wire.ContractVersion, Runner: wire.RunnerIdent{ID: id, Version: "t", Node: "n", Lanes: []string{"embed"}, Capacity: 1}})
+	if env.Type != wire.TypeHelloOK {
+		t.Fatalf("hello %s: %s %s", id, env.Type, env.Body)
+	}
+	return run
+}
+
+// waitUntilClosed waits up to 2 s for the server to finish with every connection.
+func waitUntilClosed(t *testing.T, srv *Server) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		srv.mu.Lock()
+		open := len(srv.conns)
+		srv.mu.Unlock()
+		if open == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server still holds %d connections", open)
+		}
 	}
 }
 

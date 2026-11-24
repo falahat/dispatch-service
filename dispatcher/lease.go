@@ -36,7 +36,8 @@ type claimResult struct {
 
 // Lease is the runner's long-poll: it blocks up to the clamped wait for a job
 // runnable in one of the requested lanes, returning a grant or an empty reason.
-// ctx cancellation (server shutdown / client disconnect) unblocks it promptly.
+// ctx cancellation (server shutdown / client disconnect) unblocks it promptly, and
+// once ctx is done it claims nothing more.
 func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease) (*wire.Grant, *wire.Empty, *wire.Error) {
 	if len(req.Lanes) == 0 || len(req.Lanes) > 32 {
 		return nil, nil, &wire.Error{Code: wire.CodeInvalid, Message: "lease: 1..32 lanes required"}
@@ -57,6 +58,9 @@ func (d *Dispatcher) Lease(ctx context.Context, runnerID string, req wire.Lease)
 	deadline := time.Now().Add(wait)
 	for {
 		wake := d.leaseWake.wait() // grab before claim to avoid a missed signal
+		if ctx.Err() != nil {
+			return nil, &wire.Empty{}, nil
+		}
 		res, werr := d.tryClaim(runnerID, req.Lanes, req.GPUs)
 		if werr != nil {
 			return nil, nil, werr
@@ -299,6 +303,34 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 		return claimResult{}, &wire.Error{Code: wire.CodeInternal, Message: "lease: " + err.Error()}
 	}
 	return result, nil
+}
+
+// Unclaim undoes a grant its runner never received: the runner's connection closed, or
+// the reply could not be written, before the grant went out. The job is QUEUED again as
+// if never claimed, on the same attempt and release count, and the claim's attempt row is
+// dropped, since no attempt began. A job whose cancellation was requested meanwhile stays
+// RUNNING, so its lost lease ends it (D15).
+func (d *Dispatcher) Unclaim(g wire.Grant) error {
+	undone := false
+	err := d.store.writeTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`UPDATE jobs SET state='QUEUED', lease_id=NULL, lease_deadline_ts=NULL, lease_runner_id=NULL, updated_ts=?
+			 WHERE job_id=? AND state='RUNNING' AND lease_id=? AND cancel_requested=0`,
+			d.now(), g.Job.JobID, g.Lease.LeaseID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return err
+		}
+		undone = true
+		_, err = tx.Exec(`DELETE FROM attempts WHERE job_id=? AND lease_id=? AND outcome='claimed'`, g.Job.JobID, g.Lease.LeaseID)
+		return err
+	})
+	if err == nil && undone {
+		d.wakeLeases()
+	}
+	return err
 }
 
 // selectClaimableInLane returns the oldest runnable QUEUED job in ONE lane that a

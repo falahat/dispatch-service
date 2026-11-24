@@ -40,6 +40,7 @@ func TestLegalTransitions(t *testing.T) {
 		{"RUNNING", "fail", []string{"FAILED", "QUEUED"}},
 		{"RUNNING", "release", []string{"FAILED", "QUEUED"}},
 		{"RUNNING", "lease_expired", []string{"FAILED", "QUEUED"}},
+		{"RUNNING", "undelivered", []string{"QUEUED"}},
 		{"PERSISTING", "ack", []string{"CANCELLED", "FAILED", "SUCCEEDED"}},
 		{"QUEUED", "cancel", []string{"CANCELLED"}},
 		{"RUNNING", "cancel", []string{"CANCELLED", "RUNNING"}},

@@ -17,7 +17,7 @@ const MaxFrameBytes = 4 << 20 // 4 MiB
 
 // ContractVersion is the frozen wire version. A mismatch at hello is a hard
 // error (a misconfiguration), never a negotiated mixed-version state.
-const ContractVersion = "0.9"
+const ContractVersion = "0.10"
 
 // ReadFrame reads one length-prefixed frame: a 4-byte big-endian length, then
 // that many payload bytes. It returns ErrFrameTooLarge if the prefix exceeds

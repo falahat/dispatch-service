@@ -61,9 +61,10 @@ func TestSingleAttemptIncludesInfrastructureAndLeaseLoss(t *testing.T) {
 }
 
 // A job whose cancellation was requested never runs again: not after a
-// retriable failure, a release or a lost lease, however many attempts remain.
+// retriable failure, a release, a lost lease or a grant its runner never
+// received, however many attempts remain.
 func TestCancelRequestedJobNeverRunsAgain(t *testing.T) {
-	for _, outcome := range []string{"fail", "release", "lease_loss"} {
+	for _, outcome := range []string{"fail", "release", "lease_loss", "undelivered"} {
 		t.Run(outcome, func(t *testing.T) {
 			d, clock := newTestDispatcher(t)
 			d.cfg.WaitForExecutor = true
@@ -84,6 +85,14 @@ func TestCancelRequestedJobNeverRunsAgain(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "lease_loss":
+				clock.Set(grant.Lease.DeadlineTS + 1)
+				if _, err := d.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			case "undelivered": // not queued again: its lost lease ends it
+				if err := d.Unclaim(*grant); err != nil {
+					t.Fatal(err)
+				}
 				clock.Set(grant.Lease.DeadlineTS + 1)
 				if _, err := d.Sweep(); err != nil {
 					t.Fatal(err)

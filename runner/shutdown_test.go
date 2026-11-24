@@ -2,14 +2,11 @@ package runner_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/falahat/dispatch-service/internal/artifact"
-	"github.com/falahat/dispatch-service/internal/wire"
 	"github.com/falahat/dispatch-service/runner"
 )
 
@@ -29,19 +26,8 @@ func TestStoppingRunnerLeavesItsJobLeased(t *testing.T) {
 	defer computeSrv.Close()
 	defer close(release) // before the compute server closes: its invoke handler waits on it
 
-	inv := artifact.Invocation{Kind: artifact.InvocationKind, Op: "echo", OpVersion: 1, Params: json.RawMessage(`{}`)}
-	invBytes, _ := json.Marshal(inv)
-	invAddr := cas.put(invBytes)
 	app := dialApp(t, srv.AppAddr())
-	env := app.call("e1", wire.TypeEnqueue, wire.Enqueue{Jobs: []wire.EnqueueJob{
-		{JobKey: "stop-k", Lane: "embed", InvocationAddress: invAddr},
-	}})
-	enqueued, err := wire.DecodeBody[wire.EnqueueResult](env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jobID := enqueued.Results[0].JobID
-
+	jobID := enqueueEcho(t, app, cas, "stop-k")
 	rn := runner.New(runner.Config{
 		RunnerID: "Rstop", Node: "n1", Version: "runner/test",
 		DispatcherAddr: srv.RunnerAddr(), CASBaseURL: casSrv.URL,
@@ -68,10 +54,7 @@ func TestStoppingRunnerLeavesItsJobLeased(t *testing.T) {
 		t.Fatal("the runner did not stop")
 	}
 
-	view, err := wire.DecodeBody[wire.JobView](app.call("j1", "job", map[string]string{"job_id": jobID}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	view := jobView(t, app, jobID)
 	if view.State != "RUNNING" {
 		t.Fatalf("job is %s after its runner stopped; want RUNNING until its lease expires (reason %q)", view.State, view.Reason)
 	}

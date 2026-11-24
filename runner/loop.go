@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,11 +14,11 @@ import (
 	"github.com/falahat/dispatch-service/internal/wire"
 )
 
-// Run drives the runner: boot readiness gate, then lease -> fetch -> invoke ->
-// put -> complete, with a concurrent heartbeat/directive channel. It returns
-// on drain, and nil once ctx is cancelled wherever it waits: a runner stopped
-// at its boot gate or while dialing was stopped, not failed, so its unit must
-// not read failed.
+// Run drives the runner: boot readiness gate, then, while the compute stays ready,
+// lease -> fetch -> invoke -> put -> complete, with a concurrent heartbeat/directive
+// channel. It returns on drain, and nil once ctx is cancelled wherever it waits: a
+// runner stopped at its boot gate or while dialing was stopped, not failed, so its
+// unit must not read failed.
 func (r *Runner) Run(ctx context.Context) error {
 	err := r.run(ctx)
 	if ctx.Err() != nil {
@@ -58,6 +59,7 @@ func (r *Runner) run(ctx context.Context) error {
 	go r.heartbeatLoop(hbCtx, hb, time.Duration(interval)*time.Second)
 
 	r.log.Info("runner up", "node", r.cfg.Node, "lanes", r.cfg.Lanes)
+	computeDown := false
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -73,6 +75,24 @@ func (r *Runner) run(ctx context.Context) error {
 			case <-time.After(wait):
 			}
 			continue
+		}
+		// A compute that is down or still warming up takes no job: one leased now would
+		// only fail. Ask again each second, hearing drain and shutdown in between.
+		if !r.computeReady(ctx) {
+			if !computeDown {
+				r.log.Warn("compute not ready; taking no work until it is")
+			}
+			computeDown = true
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		if computeDown {
+			r.log.Info("compute ready; taking work again")
+			computeDown = false
 		}
 
 		grant, err := r.lease(ctx, work)
@@ -297,6 +317,13 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 			r.fail(dc, g, wire.ClassTimeout, "invoke deadline exceeded")
 			return
 		}
+		if unreachedCompute(ierr) {
+			// The compute went down after this job was leased. That says nothing about
+			// the job: its lease expires and it runs again, and the loop takes no new
+			// job until the compute answers ready.
+			r.log.Warn("compute unreachable; leaving the job to its lease", "job", g.Job.JobID, "err", ierr)
+			return
+		}
 		r.fail(dc, g, wire.ClassFatal, "invoke transport: "+ierr.Error())
 		return
 	}
@@ -469,6 +496,23 @@ func (r *Runner) wasAbandoned(jobID string) bool {
 // used to fail every job running at a reboot or a compute restart as fatal.
 func (r *Runner) stoppedOrAbandoned(ctx, jobCtx context.Context, jobID string) bool {
 	return jobCtx.Err() != nil && (ctx.Err() != nil || r.wasAbandoned(jobID))
+}
+
+// computeReady probes the compute once, briefly: one that does not answer in time
+// reads as not ready rather than stalling the loop.
+func (r *Runner) computeReady(ctx context.Context) bool {
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	health, err := r.invoke.Healthz(probe)
+	return err == nil && health.Ready
+}
+
+// unreachedCompute reports whether an invoke failed to connect to the compute at
+// all, so the request never reached it. A connection the compute dropped mid-invoke
+// is not this: that stays fatal (INVOKE.md).
+func unreachedCompute(err error) bool {
+	var dial *net.OpError
+	return errors.As(err, &dial) && dial.Op == "dial"
 }
 
 func (r *Runner) throttleWait() time.Duration {

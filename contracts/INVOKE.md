@@ -12,7 +12,7 @@ the AWS Lambda Runtime API.
 
    **`GET /healthz`** → `200 {"ready": true, "op": "transcribe", "op_version": 2}`
    once models/resources are loaded. Anything else = not ready. This is the container's
-   readiness probe AND what the runner polls at boot.
+   readiness probe AND what the runner polls at boot and before each lease.
 
    **`POST /invoke`** — request:
    ```jsonc
@@ -63,6 +63,9 @@ mid-invoke as `error_class: fatal`; map the response to `complete`/`fail` on the
 plane; delete the workdir after `complete`/`fail`/`release`;
 run the **fixture invocation** (`GET /healthz`, then one `POST /invoke` with the image's
 declared fixture) at boot before its first lease — on failure, never join the fleet.
+Take no lease while `/healthz` is not ready, asking again each second (D17). An invoke
+that never connected, because the compute is down, and one cut short because the runner
+itself is stopping, report nothing: the lease expires and the job runs again.
 
 ## Conformance
 

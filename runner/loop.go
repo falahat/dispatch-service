@@ -130,6 +130,25 @@ func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 	return dc, err
 }
 
+// send sends a job's result, failure or release, and sends it again over a new
+// connection if the work connection died while the job ran. A PEP or dispatcher
+// restart drops every runner connection, but the lease lives on in the dispatcher
+// under this runner's identity. Lost with the old connection, the report left the
+// job to wait out its lease and run again on a new attempt.
+func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body any) (wire.Envelope, error) {
+	env, err := dc.call(typ, body)
+	if err == nil || ctx.Err() != nil {
+		return env, err
+	}
+	fresh, derr := r.redial(ctx)
+	if derr != nil {
+		return env, err
+	}
+	r.log.Warn("work connection lost; reporting over a new one", "frame", typ, "err", err)
+	dc.renew(fresh)
+	return dc.call(typ, body)
+}
+
 // lease long-polls for a job. A nil grant with nil error means "no work".
 func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, error) {
 	gpus := r.offerGPUs(ctx) // before the wait starts: a slow reading must not use up the long-poll's time
@@ -223,29 +242,29 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 
 	outputsPath := filepath.Join(workdir, outputsDir)
 	if err := os.MkdirAll(outputsPath, 0o755); err != nil {
-		r.release(dc, g, wire.ReleaseShipping, "mkdir workdir: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseShipping, "mkdir workdir: "+err.Error())
 		return
 	}
 	defer os.RemoveAll(workdir)
 	madeOutputs, err := os.Lstat(outputsPath)
 	if err != nil {
-		r.release(dc, g, wire.ReleaseShipping, "stat outputs: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseShipping, "stat outputs: "+err.Error())
 		return
 	}
 
 	// 1. Fetch + verify the invocation (its address is the computation identity).
 	invBytes, err := r.cas.GetBytes(jobCtx, g.Job.InvocationAddress)
 	if err != nil {
-		r.releaseForCAS(dc, g, err)
+		r.releaseForCAS(ctx, dc, g, err)
 		return
 	}
 	var inv artifact.Invocation
 	if err := json.Unmarshal(invBytes, &inv); err != nil {
-		r.release(dc, g, wire.ReleaseIntegrity, "invocation parse: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseIntegrity, "invocation parse: "+err.Error())
 		return
 	}
 	if err := inv.Validate(); err != nil {
-		r.release(dc, g, wire.ReleaseIntegrity, "invocation invalid: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseIntegrity, "invocation invalid: "+err.Error())
 		return
 	}
 
@@ -255,15 +274,15 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	local, err := r.localInputs(&inv)
 	var elsewhere *wrongNode
 	if errors.As(err, &elsewhere) {
-		r.release(dc, g, wire.ReleaseWrongHardware, err.Error())
+		r.release(ctx, dc, g, wire.ReleaseWrongHardware, err.Error())
 		return
 	}
 	if err != nil {
-		r.fail(dc, g, wire.ClassBadInput, err.Error())
+		r.fail(ctx, dc, g, wire.ClassBadInput, err.Error())
 		return
 	}
 	if err := r.cas.LayoutInputs(jobCtx, workdir, &inv); err != nil {
-		r.releaseForCAS(dc, g, err)
+		r.releaseForCAS(ctx, dc, g, err)
 		return
 	}
 
@@ -272,7 +291,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	// hold this lease and wait rather than failing — see invokeWaitingForFreeCompute.
 	// A GPU job first takes the machine's GPU lock, when one is configured.
 	if g.Job.GPU != nil && !r.wasOffered(g.Job.GPU) {
-		r.release(dc, g, wire.ReleaseWrongHardware, "granted a GPU this runner did not offer")
+		r.release(ctx, dc, g, wire.ReleaseWrongHardware, "granted a GPU this runner did not offer")
 		return
 	}
 	if g.Job.GPU != nil && r.cfg.GPULock != "" {
@@ -281,7 +300,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 			if r.stoppedOrAbandoned(ctx, jobCtx, g.Job.JobID) {
 				return
 			}
-			r.release(dc, g, wire.ReleaseWrongHardware, "gpu lock: "+err.Error())
+			r.release(ctx, dc, g, wire.ReleaseWrongHardware, "gpu lock: "+err.Error())
 			return
 		}
 		defer unlock()
@@ -314,7 +333,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 			return
 		}
 		if errors.Is(ierr, context.DeadlineExceeded) {
-			r.fail(dc, g, wire.ClassTimeout, "invoke deadline exceeded")
+			r.fail(ctx, dc, g, wire.ClassTimeout, "invoke deadline exceeded")
 			return
 		}
 		if unreachedCompute(ierr) {
@@ -324,7 +343,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 			r.log.Warn("compute unreachable; leaving the job to its lease", "job", g.Job.JobID, "err", ierr)
 			return
 		}
-		r.fail(dc, g, wire.ClassFatal, "invoke transport: "+ierr.Error())
+		r.fail(ctx, dc, g, wire.ClassFatal, "invoke transport: "+ierr.Error())
 		return
 	}
 	if failure != nil {
@@ -336,7 +355,7 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		if err := r.flushLog(ctx, dc); err != nil {
 			r.log.Warn("command log before its failure", "job", g.Job.JobID, "err", err)
 		}
-		r.fail(dc, g, mapErrorClass(failure.ErrClass), failure.Message)
+		r.fail(ctx, dc, g, mapErrorClass(failure.ErrClass), failure.Message)
 		return
 	}
 
@@ -347,17 +366,17 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 		jobCtx = ctx
 	}
 	if err := r.flushLog(jobCtx, dc); err != nil {
-		r.release(dc, g, wire.ReleaseShipping, "command log: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseShipping, "command log: "+err.Error())
 		return
 	}
 	outputs, err := r.publishOutputs(jobCtx, outputsPath, madeOutputs, res.Outputs)
 	var broken *outputViolation
 	if errors.As(err, &broken) {
-		r.fail(dc, g, wire.ClassFatal, broken.Error())
+		r.fail(ctx, dc, g, wire.ClassFatal, broken.Error())
 		return
 	}
 	if err != nil {
-		r.release(dc, g, wire.ReleaseShipping, "upload outputs: "+err.Error())
+		r.release(ctx, dc, g, wire.ReleaseShipping, "upload outputs: "+err.Error())
 		return
 	}
 	ar := artifact.ActionResult{
@@ -373,10 +392,10 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	// A result the dispatcher would refuse (bad names, too many outputs) is the
 	// compute's fault; failing it now beats leaving the lease to expire.
 	if err := ar.Validate(); err != nil {
-		r.fail(dc, g, wire.ClassFatal, "action result: "+err.Error())
+		r.fail(ctx, dc, g, wire.ClassFatal, "action result: "+err.Error())
 		return
 	}
-	r.complete(dc, g, ar)
+	r.complete(ctx, dc, g, ar)
 }
 
 // ComputeBusyRetryInterval is how long the runner waits before retrying an invoke
@@ -414,8 +433,8 @@ func (r *Runner) invokeWaitingForFreeCompute(
 
 // --- terminal verb senders ---
 
-func (r *Runner) complete(dc *dispatcherConn, g *wire.Grant, ar artifact.ActionResult) {
-	env, err := dc.call(wire.TypeComplete, wire.Complete{
+func (r *Runner) complete(ctx context.Context, dc *dispatcherConn, g *wire.Grant, ar artifact.ActionResult) {
+	env, err := r.send(ctx, dc, wire.TypeComplete, wire.Complete{
 		LeaseID: g.Lease.LeaseID, JobID: g.Job.JobID, Attempt: g.Job.Attempt, ActionResult: ar,
 	})
 	if err != nil {
@@ -429,8 +448,8 @@ func (r *Runner) complete(dc *dispatcherConn, g *wire.Grant, ar artifact.ActionR
 	}
 }
 
-func (r *Runner) fail(dc *dispatcherConn, g *wire.Grant, class wire.ErrorClass, msg string) {
-	env, err := dc.call(wire.TypeFail, wire.Fail{
+func (r *Runner) fail(ctx context.Context, dc *dispatcherConn, g *wire.Grant, class wire.ErrorClass, msg string) {
+	env, err := r.send(ctx, dc, wire.TypeFail, wire.Fail{
 		LeaseID: g.Lease.LeaseID, JobID: g.Job.JobID, Attempt: g.Job.Attempt, ErrorClass: class, Message: truncate(msg, 4096),
 	})
 	if err != nil {
@@ -442,9 +461,9 @@ func (r *Runner) fail(dc *dispatcherConn, g *wire.Grant, class wire.ErrorClass, 
 	}
 }
 
-func (r *Runner) release(dc *dispatcherConn, g *wire.Grant, reason wire.ReleaseReason, msg string) {
+func (r *Runner) release(ctx context.Context, dc *dispatcherConn, g *wire.Grant, reason wire.ReleaseReason, msg string) {
 	r.log.Info("release", "job", g.Job.JobID, "reason", reason, "detail", msg)
-	env, err := dc.call(wire.TypeRelease, wire.Release{LeaseID: g.Lease.LeaseID, JobID: g.Job.JobID, Reason: reason})
+	env, err := r.send(ctx, dc, wire.TypeRelease, wire.Release{LeaseID: g.Lease.LeaseID, JobID: g.Job.JobID, Reason: reason})
 	if err != nil {
 		r.log.Warn("release send failed", "job", g.Job.JobID, "err", err)
 		return
@@ -454,7 +473,7 @@ func (r *Runner) release(dc *dispatcherConn, g *wire.Grant, reason wire.ReleaseR
 	}
 }
 
-func (r *Runner) releaseForCAS(dc *dispatcherConn, g *wire.Grant, err error) {
+func (r *Runner) releaseForCAS(ctx context.Context, dc *dispatcherConn, g *wire.Grant, err error) {
 	var ce *casError
 	reason := wire.ReleaseCASUnreachable
 	if errors.As(err, &ce) {
@@ -469,7 +488,7 @@ func (r *Runner) releaseForCAS(dc *dispatcherConn, g *wire.Grant, err error) {
 			reason = wire.ReleaseCASUnreachable
 		}
 	}
-	r.release(dc, g, reason, err.Error())
+	r.release(ctx, dc, g, reason, err.Error())
 }
 
 // mapErrorClass maps a compute-reported error_class string onto the wire enum,

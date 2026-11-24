@@ -62,6 +62,15 @@ func dialDispatcher(ctx context.Context, addr string, ident wire.RunnerIdent, wr
 
 func (dc *dispatcherConn) close() { dc.conn.Close() }
 
+// renew swaps fresh's connection in for dc's dead one, so every holder of dc
+// carries on over the live connection.
+func (dc *dispatcherConn) renew(fresh *dispatcherConn) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	dc.conn.Close()
+	dc.conn = fresh.conn
+}
+
 // call sends one framed request and reads its reply. It serializes access to the
 // connection.
 func (dc *dispatcherConn) call(typ string, body any) (wire.Envelope, error) {

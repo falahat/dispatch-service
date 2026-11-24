@@ -58,6 +58,10 @@ and **no state change** — stale leaseholders are fenced by token, not by ident
 `attempt+1` (a silent death is presumed a crash — this is what catches crash-loops via the
 poison cap) unless `attempt ≥ policy.max_attempts` → `FAILED(fatal)`.
 
+A lease outlives the connection it was granted on. A runner whose connection dropped (a PEP
+or dispatcher restart) sends its `complete`, `fail` or `release` again over a new one; a
+repeat of one that already landed changes nothing.
+
 ## Runner surface
 
 | Verb | Body → Reply | Semantics |

@@ -37,7 +37,10 @@ it. The body may then take as long as it needs.
   manifests from the store for at most 5 s; past that the lease covers only the invocation,
   and the runner, refused the rest, releases the job. The lease ends at the runner's
   `complete`, `fail` or `release`, and one that heartbeats do not renew expires after its
-  `ttl_s` (a heartbeat reply that tells the runner to abandon the job stops renewal). An
+  `ttl_s` (a heartbeat reply that tells the runner to abandon the job stops renewal). The
+  book is held in memory: after a PEP restart a running job is refused until it is granted
+  again, so its runner releases it (`cas_unreachable` or `shipping`) and it runs again on the
+  same attempt. An
   application credential (`cas_get`/`cas_put` without `lease`) is not narrowed. A PEP that
   serves the CAS surface without the runner surface gives runner credentials no CAS access.
   This bounds a leaked worker credential to the jobs that worker is running and closes the

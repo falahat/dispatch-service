@@ -188,9 +188,29 @@ func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, er
 		if empty.Reason == "drained" {
 			r.setDraining()
 		}
+		waitToLeaseAgain(ctx, empty)
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("lease: unexpected reply %s", env.Type)
+	}
+}
+
+// maxRetryAfter bounds how long an empty lease's retry_after_s keeps the runner from
+// asking again.
+const maxRetryAfter = time.Minute
+
+// waitToLeaseAgain waits as long as an empty lease asks before the next lease. The
+// dispatcher answers at once, without waiting for work, while the runner's lanes are in
+// backpressure or it is over its rate cap, so asking again at once would spin: every ask
+// is a frame through the PEP, which verifies it and stores its nonce.
+func waitToLeaseAgain(ctx context.Context, empty wire.Empty) {
+	if empty.RetryAfterS == nil || *empty.RetryAfterS <= 0 {
+		return
+	}
+	wait := time.Duration(min(*empty.RetryAfterS, int(maxRetryAfter/time.Second))) * time.Second
+	select {
+	case <-ctx.Done():
+	case <-time.After(wait):
 	}
 }
 

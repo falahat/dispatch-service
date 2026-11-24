@@ -4,7 +4,8 @@
 # folder stays) over several connections, its GPU grant goes along, its output and result come back and its remote
 # folder is deleted; a command's failure comes back in place of its result. A file the remote cache holds, an earlier
 # input or output, is read-only there and is not sent again; a pruned cache is refilled; a command that rewrites an
-# input in place leaves the next job's copy as it was sent; a stopped job's remote command receives SIGTERM.
+# input in place leaves the next job's copy as it was sent; a process a command leaves running that writes an output
+# after the job leaves the cached copy as it was kept; a stopped job's remote command receives SIGTERM.
 set -euo pipefail
 kit=$(cd "$(dirname "$0")" && pwd)
 t=$(mktemp -d); trap 'rm -rf -- "$t"' EXIT
@@ -26,6 +27,11 @@ trap 'echo stopped > $t/mark; exit 143' TERM
 echo "remote log line"
 if [ "\${PWD##*/}" = j_stop ]; then touch $t/started; while :; do sleep 0.1; done; fi
 if [ "\${PWD##*/}" = j_fail ]; then echo '{"error_class": "fatal", "message": "own"}' > invoke-failure.json; exit 0; fi
+if [ "\${PWD##*/}" = j_linger ]; then
+  mkdir -p outputs/out; echo early > outputs/out/late.txt; exec 3>> outputs/out/late.txt
+  (while [ -e "\$PWD/outputs/out/late.txt" ]; do sleep 0.05; done; echo late >&3; touch $t/late) > /dev/null 2>&1 &
+  exec 3>&-
+fi
 mkdir -p outputs/out; echo "\${DISPATCH_GPU_MEMORY_MB:-}" > outputs/out/grant.txt
 echo '{"outputs": {"out": "outputs/out"}, "metrics": {"exit": 0}}' > invoke-result.json
 EOF
@@ -57,6 +63,14 @@ drive j_3 > /dev/null
 rm -r outputs/out invoke-result.json
 drive j_rewrite > /dev/null; rm -r outputs/out invoke-result.json
 drive j_4 > /dev/null || fail "a command that rewrote its input in place changed the next job's input"
+rm -r outputs/out invoke-result.json
+drive j_linger > /dev/null
+for _ in $(seq 100); do [ ! -e "$t/late" ] || break; sleep 0.1; done
+[ -e "$t/late" ] || fail "the process the command left running never wrote"
+for kept in "$t/remote/.cache"/*; do
+  [ "$(sha256sum < "$kept" | cut -d' ' -f1)" = "${kept##*/}" ] ||
+    fail "a process the command left running changed a kept output in the cache"
+done
 rm -r outputs/out invoke-result.json
 
 drive j_fail > /dev/null

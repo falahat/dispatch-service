@@ -18,8 +18,9 @@
 # (drive's first step) asks HOST which of ./inputs it lacks and sends only those, spread over SSH_EXEC_STREAMS
 # (default 8) separate connections, since one connection to a far machine carries far less than the link (to the pose
 # VM, 2026-11-20: 0.33 MB/s on one, 0.8 MB/s on 4, 1.4-1.5 MB/s on 8 of a 1.75 MB/s uplink); then HOST copies the
-# job's files from its cache, so a command that rewrites an input changes only its own copy. drop keeps the cache under
-# SSH_EXEC_CACHE_MB (default 10240), least recently used first.
+# job's files from its cache, so a command that rewrites an input changes only its own copy. Its outputs join the cache
+# as copies too, so a process the command leaves running that writes one later changes only the job's file. drop keeps
+# the cache under SSH_EXEC_CACHE_MB (default 10240), least recently used first.
 set -euo pipefail
 streams=${SSH_EXEC_STREAMS:-8}
 [[ $streams =~ ^[1-9][0-9]?$ ]] || { echo "ssh-exec: SSH_EXEC_STREAMS must be 1 to 99" >&2; exit 2; }
@@ -30,7 +31,7 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as archive:
             sys.exit("ssh-exec: refusing %s, not a regular file or folder" % member.name)
         archive.extract(member, sys.argv[1], filter="data")'
 blobs=$(cat << 'EOF'
-import hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, threading, time
+import hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile, threading, time
 verb, args = sys.argv[1], sys.argv[2:]
 
 
@@ -46,6 +47,19 @@ def blob(cache, digest):
     if not re.fullmatch("[0-9a-f]{64}", digest):
         sys.exit("ssh-exec: bad blob name")
     return os.path.join(cache, digest)
+
+
+# Copy a stream into a new read-only file in the cache, returning its path and the sha256 of what was copied: a file
+# joins the cache under the hash of the bytes stored, whatever its source does meanwhile.
+def take(cache, source):
+    fd, part = tempfile.mkstemp(prefix=".in-", dir=cache)
+    h = hashlib.sha256()
+    with os.fdopen(fd, "wb") as out:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            h.update(chunk)
+            out.write(chunk)
+    os.chmod(part, 0o444)
+    return part, h.hexdigest()
 
 
 def pack(pipe, files):
@@ -111,17 +125,10 @@ elif verb == "put":  # a tar of files named by their sha256 on stdin: each joins
             final = blob(cache, member.name)
             if not member.isreg():
                 sys.exit("ssh-exec: refusing %s, not a regular file" % member.name)
-            part = os.path.join(cache, ".in-%d-%s" % (os.getpid(), member.name))
-            h = hashlib.sha256()
-            source = archive.extractfile(member)
-            with open(part, "xb") as out:
-                for chunk in iter(lambda: source.read(1 << 20), b""):
-                    h.update(chunk)
-                    out.write(chunk)
-            if h.hexdigest() != member.name:
+            part, digest = take(cache, archive.extractfile(member))
+            if digest != member.name:
                 os.unlink(part)
                 sys.exit("ssh-exec: %s does not hash to its name" % member.name)
-            os.chmod(part, 0o444)
             os.replace(part, final)
 elif verb == "link":  # the index on stdin: build the job folder anew from copies of the cache's files. A hard link
     # would let a command that writes an input in place (as root, or after a chmod) change it under every later job.
@@ -141,18 +148,17 @@ elif verb == "link":  # the index on stdin: build the job folder anew from copie
         os.makedirs(os.path.dirname(path), exist_ok=True)
         shutil.copyfile(blob(cache, entry["sha256"]), path)
         os.chmod(path, 0o700 if entry.get("exec") else 0o600)  # the owner's, as the runner lays out inputs itself
-elif verb == "keep":  # the job's regular output files join the cache too, so a next step's inputs need not cross
+elif verb == "keep":  # the job's regular output files join the cache too, so a next step's inputs need not cross. Each
+    # is copied in: a hard link would let a process the command left running write the file later, changing the cached
+    # file under its old name for every later job.
     cache, job = args
     for root, _, names in os.walk(os.path.join(job, "outputs")):
         for name in names:
             path = os.path.join(root, name)
-            st = os.lstat(path)
-            if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
-                os.chmod(path, 0o444)  # read-only like every cached file
-                try:
-                    os.link(path, blob(cache, sha256(path)), follow_symlinks=False)
-                except FileExistsError:
-                    pass
+            if stat.S_ISREG(os.lstat(path).st_mode):
+                with open(path, "rb") as source:
+                    part, digest = take(cache, source)
+                os.replace(part, blob(cache, digest))
 elif verb == "prune":  # least recently used first, until the cache holds at most LIMIT MB; stale partial files go
     cache, limit = args
     held, now = [], time.time()

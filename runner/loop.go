@@ -15,8 +15,18 @@ import (
 
 // Run drives the runner: boot readiness gate, then lease -> fetch -> invoke ->
 // put -> complete, with a concurrent heartbeat/directive channel. It returns
-// when ctx is cancelled or on drain.
+// on drain, and nil once ctx is cancelled wherever it waits: a runner stopped
+// at its boot gate or while dialing was stopped, not failed, so its unit must
+// not read failed.
 func (r *Runner) Run(ctx context.Context) error {
+	err := r.run(ctx)
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+func (r *Runner) run(ctx context.Context) error {
 	// Boot gate: the compute must be ready and serving the expected op before
 	// this runner joins the fleet (INVOKE.md).
 	if _, err := r.invoke.WaitReady(ctx); err != nil {

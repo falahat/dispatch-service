@@ -91,9 +91,19 @@ grep -Fx 'ReadOnly=true' "$units/first-compute.container"
 grep -Fx 'Tmpfs=/run:rw,nosuid,nodev,noexec,mode=0755' "$units/first-compute.container"
 grep -Fx 'Volume=/var/lib/tailworker/locks:/var/lib/tailworker/locks:ro' "$units/first-compute.container"
 grep -Fx 'Environment=SMOKESCREEN_ROLE_NETS=172.30.0.0/24=model' "$units/first-smokescreen.container"
-# Quadlet applies [Install] when it generates units, so compute requires its guard at boot.
+# Quadlet applies [Install] when it generates units, so compute starts its guard at boot.
+# Units only want each other and restart on failure: a requirement would fail its
+# dependents for good when a unit fails at boot. A compute restart takes its runner
+# back to the boot gate.
 sed -n '/^\[Unit\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'Before=first-compute.service'
-sed -n '/^\[Install\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'RequiredBy=first-compute.service'
+sed -n '/^\[Install\]$/,/^$/p' "$units/first-smokescreen.container" | grep -Fx 'WantedBy=first-compute.service'
+for dependency in Wants After PartOf; do
+    sed -n '/^\[Unit\]$/,/^$/p' "$units/first-runner.container" | grep -Fx "$dependency=first-compute.service"
+done
+for role in runner compute smokescreen; do
+    sed -n '/^\[Service\]$/,/^$/p' "$units/first-$role.container" | grep -Fx 'Restart=on-failure'
+done
+if grep -E '^(Requires|RequiredBy|BindsTo)=' "$units"/first-*.container; then exit 1; fi
 grep -Fx 'Exec="--public" "value"' "$units/first-compute.container"
 grep -Fx 'Internal=true' "$units/first-model.network"
 test -f "$HOME/.config/plane-runners/first/smokescreen/allowlist.yaml"

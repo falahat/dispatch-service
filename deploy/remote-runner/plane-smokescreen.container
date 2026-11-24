@@ -1,7 +1,9 @@
 [Unit]
 Description=Model-download egress guard
-# Compute reaches the model hosts only through this guard, so compute requires
-# it (RequiredBy below) and starts after it, at boot as at enrollment.
+# Compute reaches the model hosts only through this guard, so compute wants it
+# (WantedBy below) and starts after it, at boot as at enrollment. Only wants:
+# a guard that fails to start restarts on its own, where a requirement would
+# leave compute unstarted for good.
 Before=@NAME@-compute.service
 
 [Container]
@@ -24,6 +26,8 @@ Exec=--config-file=/etc/smokescreen/config.yaml --listen-ip=0.0.0.0 --listen-por
 
 [Service]
 TimeoutStartSec=0
+Restart=on-failure
+RestartSec=5s
 
 [Install]
-RequiredBy=@NAME@-compute.service
+WantedBy=@NAME@-compute.service

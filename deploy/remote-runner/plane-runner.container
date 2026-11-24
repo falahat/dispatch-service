@@ -1,7 +1,13 @@
 [Unit]
 Description=Authenticated application-plane runner
-Requires=@NAME@-compute.service
+# The runner waits at its boot gate until compute is ready, so it only wants
+# compute: a compute that fails to start at boot restarts on its own, where a
+# requirement would leave this runner failed for good. A compute restart also
+# restarts this runner (PartOf), back to its gate, so it never takes work
+# while compute is down.
+Wants=@NAME@-compute.service
 After=@NAME@-compute.service
+PartOf=@NAME@-compute.service
 
 [Container]
 Image=@RUNNER_IMAGE@
@@ -29,6 +35,8 @@ Environment=RUNNER_NODE=@RUNNER_NODE@
 
 [Service]
 TimeoutStartSec=0
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=default.target

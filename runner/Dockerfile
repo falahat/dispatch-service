@@ -1,7 +1,7 @@
 # Runner image — static, cgo-free Go binary. Drives a paired compute container
 # over the invoke protocol; holds a credential but no domain logic.
 # Build context is the repo root.
-FROM golang:1.26@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
+FROM golang:1.26@sha256:6ef03c9474cb3b3ba3f18e31aa2938ee419e58f164ce5e012b28e61c039b1aa6 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

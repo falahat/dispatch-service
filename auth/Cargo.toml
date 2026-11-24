@@ -18,7 +18,10 @@ name = "signer"
 path = "src/bin/signer.rs"
 
 [dependencies]
-biscuit-auth = "5"
+# Without `datalog-macro`: its proc-macro crate (biscuit-quote) pulls the unmaintained
+# proc-macro-error. cred.rs builds facts from typed terms and parses its Datalog text at
+# runtime instead.
+biscuit-auth = { version = "5", default-features = false, features = ["regex-full"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 # RFC 9449 DPoP proof (JWT) verification for the HTTP surface — a maintained JOSE
 # parser/verifier so the browser-facing proof is library-produced/consumed, not a
@@ -45,7 +48,9 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "client-legacy", 
 http-body-util = "0.1"
 bytes = "1"
 log = "0.4"
-env_logger = "0.11"
+# Without `humantime`: its jiff dependency drags defmt and the unmaintained
+# proc-macro-error2 into Cargo.lock. The container log driver stamps every line anyway.
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "regex"] }
 
 [dev-dependencies]
 tempfile = "3"

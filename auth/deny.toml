@@ -9,11 +9,7 @@
 [advisories]
 version = 2
 yanked = "deny"
-# One documented exception: an unmaintained-status notice (not a vulnerability) for a
-# compile-time-only crate. Every vulnerability advisory fails the gate.
-ignore = [
-  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a COMPILE-TIME-only proc-macro helper of biscuit-quote 0.2 (biscuit-auth 5's macro crate) — it is not linked into the shipped PEP/signer binary. This is an unmaintained-status advisory (not a vulnerability) with no safe upgrade: biscuit-auth 6's biscuit-quote 0.3 moved to proc-macro-error2, which is unmaintained too (RUSTSEC-2026-0173), and only the 7.x line (alpha) drops both." },
-]
+# No exceptions: every advisory, unmaintained notices included, fails the gate.
 
 [bans]
 multiple-versions = "warn" # duplicate transitive versions: surface, don't hard-fail

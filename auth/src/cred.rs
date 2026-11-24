@@ -15,8 +15,12 @@ use crate::error::{AuthError, Result};
 use crate::nonce::NonceStore;
 use crate::pop;
 use crate::revocation::RevocationStore;
-use biscuit_auth::builder::BlockBuilder;
-use biscuit_auth::macros::{check, fact, policy, rule};
+// Facts are built from typed terms; checks, policies and the query are biscuit's own
+// Datalog text, parsed at runtime with every `{param}` bound by `set` to a typed term. A
+// bound value is never spliced into the text, so a caller's string cannot change the rule
+// it lands in. (biscuit's compile-time macros are off: their proc-macro crate is unmaintained.)
+use biscuit_auth::builder::{fact, int, string, BlockBuilder, Check, Policy};
+use biscuit_auth::error::Token as BiscuitError;
 use biscuit_auth::{AuthorizerLimits, Biscuit, KeyPair, PublicKey};
 
 /// Wall-clock backstop for the Datalog authorize. biscuit measures `max_time` as `Instant`
@@ -63,23 +67,18 @@ pub struct MintParams {
 
 /// Mint a base credential signed by the root key. Returns the base64 token.
 pub fn mint(root: &KeyPair, p: &MintParams) -> Result<String> {
+    let malformed = |e: BiscuitError| AuthError::Malformed(e.to_string());
     let mut b = Biscuit::builder();
-    b.add_fact(fact!("pubkey({pk})", pk = p.pubkey_hex.clone()))
-        .map_err(|e| AuthError::Malformed(e.to_string()))?;
+    b.add_fact(fact("pubkey", &[string(&p.pubkey_hex)]))
+        .map_err(malformed)?;
     for r in &p.rights {
-        b.add_fact(fact!("right({r})", r = r.clone()))
-            .map_err(|e| AuthError::Malformed(e.to_string()))?;
+        b.add_fact(fact("right", &[string(r)])).map_err(malformed)?;
     }
     for l in &p.lanes {
-        b.add_fact(fact!("lane({l})", l = l.clone()))
-            .map_err(|e| AuthError::Malformed(e.to_string()))?;
+        b.add_fact(fact("lane", &[string(l)])).map_err(malformed)?;
     }
-    let biscuit = b
-        .build(root)
-        .map_err(|e| AuthError::Malformed(e.to_string()))?;
-    biscuit
-        .to_base64()
-        .map_err(|e| AuthError::Malformed(e.to_string()))
+    let biscuit = b.build(root).map_err(malformed)?;
+    biscuit.to_base64().map_err(malformed)
 }
 
 /// Attenuate a credential for one lease: scope `cas_get` to a closure of
@@ -92,27 +91,22 @@ pub fn attenuate_for_lease(
     allowed_get_hex: &[String],
     expire_ts_ms: i64,
 ) -> Result<String> {
-    let biscuit = Biscuit::from_base64(token_b64, *root_pub)
-        .map_err(|e| AuthError::Malformed(e.to_string()))?;
+    let malformed = |e: BiscuitError| AuthError::Malformed(e.to_string());
+    let biscuit = Biscuit::from_base64(token_b64, *root_pub).map_err(malformed)?;
     let mut bb = BlockBuilder::new();
     for a in allowed_get_hex {
-        bb.add_fact(fact!("allowed_get({a})", a = a.clone()))
-            .map_err(|e| AuthError::Malformed(e.to_string()))?;
+        bb.add_fact(fact("allowed_get", &[string(a)]))
+            .map_err(malformed)?;
     }
     // A cas_get is only permitted for an allowed address.
-    bb.add_check(check!(
-        "check if operation(\"cas_get\"), address($a), allowed_get($a)"
-    ))
-    .map_err(|e| AuthError::Malformed(e.to_string()))?;
+    bb.add_check("check if operation(\"cas_get\"), address($a), allowed_get($a)")
+        .map_err(malformed)?;
     // The lease token expires with the lease.
-    bb.add_check(check!("check if now($t), $t <= {exp}", exp = expire_ts_ms))
-        .map_err(|e| AuthError::Malformed(e.to_string()))?;
-    let attenuated = biscuit
-        .append(bb)
-        .map_err(|e| AuthError::Malformed(e.to_string()))?;
-    attenuated
-        .to_base64()
-        .map_err(|e| AuthError::Malformed(e.to_string()))
+    let mut expiry = Check::try_from("check if now($t), $t <= {exp}").map_err(malformed)?;
+    expiry.set("exp", expire_ts_ms).map_err(malformed)?;
+    bb.add_check(expiry).map_err(malformed)?;
+    let attenuated = biscuit.append(bb).map_err(malformed)?;
+    attenuated.to_base64().map_err(malformed)
 }
 
 /// The rights a credential's authority block grants, or None when they cannot be read. It
@@ -123,7 +117,7 @@ pub fn authority_rights(token_b64: &str, root_pub: &PublicKey) -> Option<Vec<Str
     let mut authorizer = biscuit.authorizer().ok()?;
     let rights: Vec<(String,)> = authorizer
         .query_with_limits(
-            rule!("granted($r) <- right($r)"),
+            "granted($r) <- right($r)",
             AuthorizerLimits {
                 max_time: AUTHZ_MAX_TIME,
                 max_facts: AUTHZ_MAX_FACTS,
@@ -307,40 +301,36 @@ fn authorize_request(
 
     // 2. Authorize: bind the presented pubkey, the operation, address, and time;
     //    require the right and the pubkey match (and any required lanes).
-    let mut authorizer = biscuit
-        .authorizer()
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+    let denied = |e: BiscuitError| AuthError::Denied(e.to_string());
+    let mut authorizer = biscuit.authorizer().map_err(denied)?;
     authorizer
-        .add_fact(fact!(
-            "presented_pubkey({p})",
-            p = proven.pubkey_hex.clone()
-        ))
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+        .add_fact(fact("presented_pubkey", &[string(&proven.pubkey_hex)]))
+        .map_err(denied)?;
     authorizer
-        .add_fact(fact!("operation({o})", o = right.to_string()))
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+        .add_fact(fact("operation", &[string(right)]))
+        .map_err(denied)?;
     authorizer
-        .add_fact(fact!("now({t})", t = now_ms))
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+        .add_fact(fact("now", &[int(now_ms)]))
+        .map_err(denied)?;
     if let Some(addr) = address_hex {
         authorizer
-            .add_fact(fact!("address({a})", a = addr.to_string()))
-            .map_err(|e| AuthError::Denied(e.to_string()))?;
+            .add_fact(fact("address", &[string(addr)]))
+            .map_err(denied)?;
     }
     // The presented pubkey must equal the one bound in the credential.
     authorizer
-        .add_check(check!("check if pubkey($p), presented_pubkey($p)"))
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+        .add_check("check if pubkey($p), presented_pubkey($p)")
+        .map_err(denied)?;
     // Each required lane must be granted by the credential.
     for lane in required_lanes {
-        authorizer
-            .add_check(check!("check if lane({l})", l = lane.clone()))
-            .map_err(|e| AuthError::Denied(e.to_string()))?;
+        let mut granted = Check::try_from("check if lane({l})").map_err(denied)?;
+        granted.set("l", lane.as_str()).map_err(denied)?;
+        authorizer.add_check(granted).map_err(denied)?;
     }
     // The credential must grant the required right.
-    authorizer
-        .add_policy(policy!("allow if right({o})", o = right.to_string()))
-        .map_err(|e| AuthError::Denied(e.to_string()))?;
+    let mut allow = Policy::try_from("allow if right({o})").map_err(denied)?;
+    allow.set("o", right).map_err(denied)?;
+    authorizer.add_policy(allow).map_err(denied)?;
     // The DoS guard is DETERMINISTIC (facts/iterations), never the clock. A real credential is
     // tiny — a pubkey fact, a few rights and lanes, and the checks added above — so these
     // ceilings sit far above anything legitimate and far below what a fact-generating

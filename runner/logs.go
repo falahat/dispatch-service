@@ -69,11 +69,14 @@ func (r *Runner) logChunk(ctx context.Context) (*wire.LogChunk, error) {
 
 // flushLog ships the rest of the command's log ahead of its job's result or
 // failure. Each beat must move the acknowledged end forward: one the dispatcher
-// refused ends the flush with an error instead of sending the chunk again at once.
+// refused ends the flush with an error instead of sending the chunk again at once. A
+// beat that failed, its reply late or its connection dead, goes once more over a new
+// connection: the dispatcher takes the same chunk at the same offset again.
 func (r *Runner) flushLog(ctx context.Context, dc *dispatcherConn) error {
 	if len(r.cfg.Command) == 0 {
 		return nil
 	}
+	resent := false
 	for {
 		r.mu.Lock()
 		job := *r.current
@@ -83,8 +86,13 @@ func (r *Runner) flushLog(ctx context.Context, dc *dispatcherConn) error {
 			return err
 		}
 		if err := r.beat(ctx, dc); err != nil {
-			return err
+			if resent || r.reconnect(ctx, dc) != nil {
+				return err
+			}
+			resent = true
+			continue
 		}
+		resent = false
 		r.mu.Lock()
 		advanced := r.current.logOffset > job.logOffset
 		r.mu.Unlock()

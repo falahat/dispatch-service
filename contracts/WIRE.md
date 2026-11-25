@@ -183,8 +183,10 @@ resends a chunk whose `beat_ok` it never received exactly as it sent it. `beat_o
 returns `log_offset`, the acknowledged byte end. A job keeps one log across its
 attempts: the grant's `log_offset` is where its earlier attempts' log ends, and the
 new attempt's first chunk starts there (D16). The runner flushes all chunks before
-`complete`, and before the `fail` a command reports. Result node/version come from
-the authenticated fleet row.
+`complete`, and before the `fail` a command reports, sending a chunk whose `beat_ok`
+did not come once more over a new connection. A log it still cannot ship does not
+hold back the result: the job completes or fails without the rest of its log rather
+than running again. Result node/version come from the authenticated fleet row.
 
 With `wait_for_executor=true`, running cancellation sets `cancel_requested` and
 retains the lease while the executor receives `abandon`, cleans up, and completes.

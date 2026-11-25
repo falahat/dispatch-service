@@ -151,13 +151,21 @@ func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body 
 	if err == nil {
 		return env, nil
 	}
-	fresh, derr := r.redial(ctx)
-	if derr != nil {
+	if r.reconnect(ctx, dc) != nil {
 		return env, err
 	}
 	r.log.Warn("work connection lost; reporting over a new one", "frame", typ, "err", err)
-	dc.renew(fresh)
 	return dc.call(typ, body, replyTimeout)
+}
+
+// reconnect gives dc a new connection in place of its dead one.
+func (r *Runner) reconnect(ctx context.Context, dc *dispatcherConn) error {
+	fresh, err := r.redial(ctx)
+	if err != nil {
+		return err
+	}
+	dc.renew(fresh)
+	return nil
 }
 
 // lease long-polls for a job. A nil grant with nil error means "no work".
@@ -402,9 +410,10 @@ func (r *Runner) processJob(ctx context.Context, dc *dispatcherConn, g *wire.Gra
 	if len(r.cfg.Command) != 0 {
 		jobCtx = ctx
 	}
+	// The log goes ahead of the result, but a log that cannot be shipped does not cost
+	// the job its result: released, the finished job would run again.
 	if err := r.flushLog(jobCtx, dc); err != nil {
-		r.release(ctx, dc, g, wire.ReleaseShipping, "command log: "+err.Error())
-		return
+		r.log.Warn("command log before its result", "job", g.Job.JobID, "err", err)
 	}
 	outputs, err := r.publishOutputs(jobCtx, outputsPath, madeOutputs, res.Outputs)
 	var broken *outputViolation

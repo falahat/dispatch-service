@@ -30,13 +30,15 @@ type dispatcherConn struct {
 	seq     atomic.Uint64
 }
 
-// replyTimeout bounds a connect to the dispatcher and the wait for the reply to a hello
-// or a heartbeat. The dispatcher answers both at once, so a reply that has not come by
-// then is not coming, and the connection is taken for dead; a connect that a relay drops
-// without a word would otherwise wait out the kernel's retries, about 127 s on Linux. The
-// heartbeat is the runner's sign of life (D20): a heartbeat connection stuck on a connect
-// or a reply would leave a runner that is still there unheard, and granted nothing, for
-// as long as it stayed stuck: minutes on a dead path, for good where a relay holds it open.
+// replyTimeout bounds a connect to the dispatcher and the wait for the reply to anything
+// but a lease: a hello, a heartbeat, and a job's complete, fail or release. The dispatcher
+// answers each at once, so a reply that has not come by then is not coming, and the
+// connection is taken for dead; a connect that a relay drops without a word would
+// otherwise wait out the kernel's retries, about 127 s on Linux. The heartbeat is the
+// runner's sign of life (D20): a heartbeat connection stuck on a connect or a reply would
+// leave a runner that is still there unheard, and granted nothing, for as long as it stayed
+// stuck: minutes on a dead path, for good where a relay holds it open. A work connection
+// stuck on a report would stall the runner's work for as long.
 const replyTimeout = 10 * time.Second
 
 // dialDispatcher connects and performs the hello handshake, returning the
@@ -52,9 +54,7 @@ func dialDispatcher(ctx context.Context, addr string, ident wire.RunnerIdent, wr
 		return nil, wire.HelloOK{}, fmt.Errorf("dial dispatcher %s: %w", addr, err)
 	}
 	dc := &dispatcherConn{conn: conn, wrapper: wrapper}
-	dc.setReadTimeout(replyTimeout)
-	env, err := dc.call(wire.TypeHello, wire.Hello{Contract: wire.ContractVersion, Runner: ident})
-	dc.setReadTimeout(0)
+	env, err := dc.call(wire.TypeHello, wire.Hello{Contract: wire.ContractVersion, Runner: ident}, replyTimeout)
 	if err != nil {
 		conn.Close()
 		return nil, wire.HelloOK{}, fmt.Errorf("hello: %w", err)
@@ -82,9 +82,10 @@ func (dc *dispatcherConn) renew(fresh *dispatcherConn) {
 	dc.conn = fresh.conn
 }
 
-// call sends one framed request and reads its reply. It serializes access to the
-// connection.
-func (dc *dispatcherConn) call(typ string, body any) (wire.Envelope, error) {
+// call sends one framed request and waits at most within for its reply. A call that
+// fails closes its connection: a reply still owed on it, one that came too late, would
+// otherwise answer the next request sent there. It serializes access to the connection.
+func (dc *dispatcherConn) call(typ string, body any, within time.Duration) (wire.Envelope, error) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 	id := "r" + strconv.FormatUint(dc.seq.Add(1), 10)
@@ -99,11 +100,14 @@ func (dc *dispatcherConn) call(typ string, body any) (wire.Envelope, error) {
 			return wire.Envelope{}, err
 		}
 	}
+	dc.conn.SetDeadline(time.Now().Add(within))
 	if err := wire.WriteFrame(dc.conn, out); err != nil {
+		dc.conn.Close()
 		return wire.Envelope{}, err
 	}
 	env, err := wire.ReadMessage(dc.conn)
 	if err != nil {
+		dc.conn.Close()
 		return wire.Envelope{}, err
 	}
 	return env, nil
@@ -119,14 +123,4 @@ func asError(env wire.Envelope) *wire.Error {
 		return &wire.Error{Code: wire.CodeInternal, Message: "undecodable error frame"}
 	}
 	return &e
-}
-
-// setReadTimeout applies a read deadline for a single blocking call (e.g. a
-// long-poll lease uses waitS + slack).
-func (dc *dispatcherConn) setReadTimeout(d time.Duration) {
-	if d <= 0 {
-		dc.conn.SetReadDeadline(time.Time{})
-		return
-	}
-	dc.conn.SetReadDeadline(time.Now().Add(d))
 }

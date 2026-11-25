@@ -136,19 +136,18 @@ func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 const stopReportTimeout = 5 * time.Second
 
 // send sends a job's result, failure or release, and sends it again over a new
-// connection if the work connection died while the job ran. A PEP or dispatcher
-// restart drops every runner connection, but the lease lives on in the dispatcher
-// under this runner's identity. Lost with the old connection, the report left the
-// job to wait out its lease and run again on a new attempt. A stopping runner tries
-// once, for at most stopReportTimeout; a report that does not arrive leaves the job
-// to its lease.
+// connection if the work connection died while the job ran or the reply did not come
+// within replyTimeout. A PEP or dispatcher restart drops every runner connection, but
+// the lease lives on in the dispatcher under this runner's identity. Lost with the old
+// connection, the report left the job to wait out its lease and run again on a new
+// attempt. A report the dispatcher already took, its reply lost, is an exact replay it
+// answers as before, so sending one twice is safe. A stopping runner tries once, for at
+// most stopReportTimeout; a report that does not arrive leaves the job to its lease.
 func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body any) (wire.Envelope, error) {
 	if ctx.Err() != nil {
-		dc.setReadTimeout(stopReportTimeout)
-		defer dc.setReadTimeout(0)
-		return dc.call(typ, body)
+		return dc.call(typ, body, stopReportTimeout)
 	}
-	env, err := dc.call(typ, body)
+	env, err := dc.call(typ, body, replyTimeout)
 	if err == nil {
 		return env, nil
 	}
@@ -158,15 +157,14 @@ func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body 
 	}
 	r.log.Warn("work connection lost; reporting over a new one", "frame", typ, "err", err)
 	dc.renew(fresh)
-	return dc.call(typ, body)
+	return dc.call(typ, body, replyTimeout)
 }
 
 // lease long-polls for a job. A nil grant with nil error means "no work".
 func (r *Runner) lease(ctx context.Context, dc *dispatcherConn) (*wire.Grant, error) {
 	gpus := r.offerGPUs(ctx) // before the wait starts: a slow reading must not use up the long-poll's time
-	dc.setReadTimeout(time.Duration(r.cfg.LeaseWaitS+15) * time.Second)
-	defer dc.setReadTimeout(0)
-	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS, GPUs: gpus})
+	wait := time.Duration(r.cfg.LeaseWaitS+15) * time.Second
+	env, err := dc.call(wire.TypeLease, wire.Lease{Lanes: r.cfg.Lanes, WaitS: r.cfg.LeaseWaitS, GPUs: gpus}, wait)
 	if err != nil {
 		return nil, err
 	}

@@ -61,9 +61,7 @@ func (r *Runner) beat(ctx context.Context, dc *dispatcherConn) error {
 	status, lease := r.currentStatus()
 	chunk, logErr := r.logChunk(ctx)
 	progress, progressErr := r.commandProgress(status.CurrentJobID)
-	dc.setReadTimeout(replyTimeout)
-	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk, Progress: progress})
-	dc.setReadTimeout(0)
+	env, err := dc.call(wire.TypeHeartbeat, wire.Heartbeat{Status: status, LeaseID: lease, Log: chunk, Progress: progress}, replyTimeout)
 	if err != nil {
 		return err // dead connection -> caller reconnects so lease renewal resumes
 	}

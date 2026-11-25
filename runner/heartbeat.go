@@ -20,11 +20,11 @@ import (
 // heal its connection the same way the work loop already does. A reply that does not
 // come within replyTimeout fails the beat or the redial's hello like a dead connection,
 // so a connection held open with no one answering is replaced too.
-func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval time.Duration) {
-	if interval <= 0 {
-		interval = 15 * time.Second
-	}
-	t := time.NewTicker(interval)
+//
+// It beats as often as the hello on its current connection said: a dispatcher restarted
+// with a shorter interval takes a runner unheard for two of them for silent (D20).
+func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, hello wire.HelloOK) {
+	t := time.NewTicker(beatEvery(hello))
 	defer t.Stop()
 	defer func() { dc.close() }() // close whichever connection we currently hold
 	for {
@@ -35,7 +35,7 @@ func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval
 			if err := r.beat(ctx, dc); err != nil {
 				r.log.Warn("heartbeat send failed; reconnecting", "err", err)
 				dc.close()
-				nd, derr := r.redial(ctx)
+				nd, ok, derr := r.dial(ctx)
 				if derr != nil {
 					if ctx.Err() != nil {
 						return
@@ -44,9 +44,18 @@ func (r *Runner) heartbeatLoop(ctx context.Context, dc *dispatcherConn, interval
 					continue
 				}
 				dc = nd
+				t.Reset(beatEvery(ok))
 			}
 		}
 	}
+}
+
+// beatEvery is how often to beat on a connection whose hello said ok.
+func beatEvery(ok wire.HelloOK) time.Duration {
+	if ok.HeartbeatIntervalS <= 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(ok.HeartbeatIntervalS) * time.Second
 }
 
 // beat sends one heartbeat and applies the returned directives. A non-nil error

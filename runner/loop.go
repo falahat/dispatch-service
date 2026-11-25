@@ -35,7 +35,7 @@ func (r *Runner) run(ctx context.Context) error {
 		return fmt.Errorf("runner: compute not ready: %w", err)
 	}
 
-	work, workOK, err := dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)
+	work, _, err := r.dial(ctx)
 	if err != nil {
 		return err
 	}
@@ -45,19 +45,15 @@ func (r *Runner) run(ctx context.Context) error {
 		}
 	}()
 
-	hb, _, err := dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)
+	hb, hello, err := r.dial(ctx)
 	if err != nil {
 		return err
 	}
 	defer hb.close()
 
-	interval := workOK.HeartbeatIntervalS
-	if interval <= 0 {
-		interval = 15
-	}
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
-	go r.heartbeatLoop(hbCtx, hb, time.Duration(interval)*time.Second)
+	go r.heartbeatLoop(hbCtx, hb, hello)
 
 	r.log.Info("runner up", "node", r.cfg.Node, "lanes", r.cfg.Lanes)
 	computeDown := false
@@ -111,7 +107,7 @@ func (r *Runner) run(ctx context.Context) error {
 				case <-time.After(leaseRetry):
 				}
 				leaseRetry = min(2*leaseRetry, maxLeaseRetry)
-				if work, err = r.redial(ctx); err == nil {
+				if work, _, err = r.dial(ctx); err == nil {
 					break
 				}
 			}
@@ -136,9 +132,9 @@ const (
 	maxLeaseRetry   = 30 * time.Second
 )
 
-func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
-	dc, _, err := dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)
-	return dc, err
+// dial connects to the dispatcher as this runner and says hello.
+func (r *Runner) dial(ctx context.Context) (*dispatcherConn, wire.HelloOK, error) {
+	return dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)
 }
 
 // stopReportTimeout bounds how long a stopping runner waits for the dispatcher to
@@ -170,7 +166,7 @@ func (r *Runner) send(ctx context.Context, dc *dispatcherConn, typ string, body 
 
 // reconnect gives dc a new connection in place of its dead one.
 func (r *Runner) reconnect(ctx context.Context, dc *dispatcherConn) error {
-	fresh, err := r.redial(ctx)
+	fresh, _, err := r.dial(ctx)
 	if err != nil {
 		return err
 	}

@@ -93,9 +93,10 @@ Compute keeps its root read-only; ephemeral `/run` supplies secret mountpoints.
 Apply validates settings, drains admission without cancelling current work, waits
 for clean runner exit, installs reviewed units and requires a fresh healthy heartbeat.
 A runner hears its drain only through the dispatcher, so apply waits only while the
-dispatcher counts it online; one it has not heard from within two heartbeat
-intervals, such as a runner held at its boot gate, stops apply with the drain left
-in place.
+dispatcher hears from it: one the fleet has shown offline for `--reconnect-grace`
+(60 s) in a row, such as a runner held at its boot gate, stops apply with the drain
+left in place. A runner reconnecting after the coordinator restarts is heard well
+within that, and `status` waits as long before it reports a running worker not ready.
 An update preserves existing credentials only with unchanged coordinator and lane scope.
 HTTP compute declares explicit MEMORY and CPUS limits. Runner admission waits for
 model warmup until cancelled, without a startup deadline. Private tailnet access and the app's

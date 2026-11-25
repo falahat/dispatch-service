@@ -56,8 +56,10 @@ or services; the hand-written auth/egress tests remain unchanged.
 draining, waits for the runners to exit cleanly, replaces only this profile's
 units, preserves credentials with unchanged coordinator/lane scope, then resumes
 admission and requires a fresh healthy fleet heartbeat. A runner hears its drain
-only through the dispatcher: one the dispatcher has not heard from within two
-heartbeat intervals stops apply, with the drain left in place. First enrollment still
+only through the dispatcher: one the fleet has shown offline for `--reconnect-grace`
+(60 s) in a row stops apply, with the drain left in place, and `status` waits as long
+for a running worker to be ready, so a runner reconnecting after the coordinator
+restarts is not taken for gone. First enrollment still
 creates unique credentials. `--client` is the application's fixed private
 `dispatchctl` command prefix; the kit appends fleet/drain/resume arguments.
 HTTP profiles declare explicit `MEMORY` and `CPUS` limits. Images transfer only

@@ -178,18 +178,31 @@ with (home / 'operations').open('a') as log:
     log.write(operation + '\n')
 # A drained runner hears its drain and stops. An unheard runner never does; the
 # dispatcher's last contact with it stays recent for the number of fleet reads
-# written in $HOME/unheard.
+# written in $HOME/unheard. A reconnecting runner reads offline for the number of
+# fleet reads written in $HOME/reconnecting, and hears a drain sent meanwhile only
+# once it is heard again.
 unheard = home / 'unheard'
+reconnecting = home / 'reconnecting'
 online = True
 if operation == 'fleet' and unheard.exists():
     reads = int(unheard.read_text())
     unheard.write_text(str(reads - 1))
     online = reads > 0
+if operation == 'fleet' and reconnecting.exists():
+    reads = int(reconnecting.read_text())
+    online = reads == 0
+    if online:
+        reconnecting.unlink()
+        for drained in home.glob('*.service.drained'):
+            drained.rename(drained.with_suffix('.stopping'))
+    else:
+        reconnecting.write_text(str(reads - 1))
 rows = []
 for path in sorted((home / '.config/plane-runners/command/cred').glob('*.json')):
     identity = json.loads(path.read_text())['pubkey_hex']
     if operation == 'drain' and identity == sys.argv[2] and not unheard.exists():
-        (home / ('command-runner@' + path.stem + '.service.stopping')).touch()
+        heard = '.drained' if reconnecting.exists() else '.stopping'
+        (home / ('command-runner@' + path.stem + '.service' + heard)).touch()
     rows.append(dict(runner_id=identity, online=online, draining=False,
                      quarantined=False, last_seen_ts=time.time_ns() // 1000000))
 print(json.dumps(dict(runners=rows) if operation == 'fleet' else {}))
@@ -208,24 +221,37 @@ value = json.load(open(sys.argv[1]))
 assert value['ready'] and len(value['runners']) == 2
 assert 'seed_b64' not in open(sys.argv[1]).read()
 PY
+# A runner reconnecting after the coordinator restarts reads offline until it is heard
+# again: apply waits for it to hear its drain and stop, and status waits for it to be
+# heard, rather than taking it for gone.
+printf '6\n' >"$HOME/reconnecting"
+bash "$here/worker.sh" apply --env "$temporary/command.env" --machine owned \
+    --runner "$temporary/runner" --client "$client" --signer 'exit 99' --note reconnect >"$temporary/status.json"
+test ! -e "$HOME/reconnecting"
+printf '4\n' >"$HOME/reconnecting"
+bash "$here/worker.sh" status --name command --machine owned --client "$client" >"$temporary/status.json"
+test ! -e "$HOME/reconnecting"
 sed 's/LANES=build/LANES=other/' "$temporary/command.env" >"$temporary/changed.env"
 cp "$HOME/operations" "$temporary/operations.saved"
 if bash "$here/worker.sh" apply --env "$temporary/changed.env" --machine owned \
     --runner "$temporary/runner" --client "$client" --signer 'exit 99' --note invalid; then exit 1; fi
 test "$(grep -c drain "$HOME/operations")" = "$(grep -c drain "$temporary/operations.saved")"
-# A runner still at its boot gate never hears its drain: once the dispatcher's
-# last contact with it ages out, apply stops with the drain in place, replacing
-# and resuming nothing.
+# A runner still at its boot gate never hears its drain: once the fleet has shown
+# it offline for the reconnect grace (1 s here), apply stops with the drain in
+# place, replacing and resuming nothing.
 printf '1\n' >"$HOME/unheard"
 cp "$HOME/operations" "$temporary/operations.saved"
 cp "$HOME/started" "$temporary/started.saved"
 status=0
 timeout 60 bash "$here/worker.sh" apply --env "$temporary/command.env" --machine owned \
     --runner "$temporary/runner" --client "$client" --signer 'exit 99' --note unheard \
-    2>"$temporary/unheard.err" || status=$?
+    --reconnect-grace 1 2>"$temporary/unheard.err" || status=$?
 test "$status" = 1
-grep -F 'worker: command-runner@1.service is running, but the dispatcher has not heard from it' "$temporary/unheard.err"
+grep -F 'worker: command-runner@1.service is running, but the dispatcher has not heard from it for over 1 s' "$temporary/unheard.err"
 tail -n +"$(($(wc -l <"$temporary/operations.saved") + 1))" "$HOME/operations" >"$temporary/unheard.operations"
-printf '%s\n' drain drain fleet fleet | cmp - "$temporary/unheard.operations"
+# The drains, then fleet reads only: one while it was heard, then those of the grace.
+head -n 2 "$temporary/unheard.operations" | cmp - <(printf '%s\n' drain drain)
+test "$(tail -n +3 "$temporary/unheard.operations" | sort -u)" = fleet
+test "$(tail -n +3 "$temporary/unheard.operations" | wc -l)" -ge 3
 cmp "$temporary/started.saved" "$HOME/started"
 echo 'remote-runner unit rendering: green'

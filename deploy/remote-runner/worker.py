@@ -132,6 +132,10 @@ def main():
     parser.add_argument("--note")
     parser.add_argument("--runner")
     parser.add_argument("--secret", nargs=2, action="append", default=[])
+    # Seconds a runner the fleet shows offline may still be reconnecting, as it is after
+    # the coordinator restarts: its heartbeat redials at its next beat (15 s), and a
+    # dial and its hello each give up after 10 s.
+    parser.add_argument("--reconnect-grace", type=float, default=60.0)
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     sys.path.insert(0, str(here))
@@ -222,7 +226,10 @@ def main():
                     control("drain", runner["runner_id"])
                 # A runner hears its drain only through the dispatcher, so wait
                 # for one only while the dispatcher still hears from it; a runner
-                # still at its boot gate never would.
+                # still at its boot gate never would. One the fleet shows offline
+                # may be reconnecting, so it counts as unheard only once it has
+                # stayed offline for the reconnect grace.
+                offline_since = {}
                 while True:
                     running = [
                         runner
@@ -232,15 +239,22 @@ def main():
                     if not running:
                         break
                     heard = fleet()
+                    now = time.monotonic()
                     for runner in running:
-                        if not heard.get(runner["runner_id"], {}).get("online"):
+                        identity = runner["runner_id"]
+                        if heard.get(identity, {}).get("online"):
+                            offline_since.pop(identity, None)
+                        elif (
+                            now - offline_since.setdefault(identity, now)
+                            > args.reconnect_grace
+                        ):
                             raise ValueError(
                                 runner["unit"]
                                 + " is running, but the dispatcher has not heard"
-                                " from it within two heartbeat intervals, so it"
-                                " cannot hear its drain (a runner joins only once"
-                                " its compute is ready); inspect it, then apply"
-                                " again"
+                                f" from it for over {args.reconnect_grace:g} s, so"
+                                " it cannot hear its drain (a runner joins only"
+                                " once its compute is ready); inspect it, then"
+                                " apply again"
                             )
                     time.sleep(0.25)
                 state("settle")
@@ -275,6 +289,7 @@ def main():
             command(enroll)
         else:
             previous = {}
+        give_up = time.monotonic() + args.reconnect_grace
         while True:
             current = state("inspect")
             rows = fleet()
@@ -299,14 +314,17 @@ def main():
                     for role in ("runner", "compute", "smokescreen")
                     if role.upper() + "_IMAGE" in current["profile"]
                 )
-            if (
-                args.operation == "status"
-                or ready
-                and all(
-                    runner["last_seen_ts"]
-                    > previous.get(runner["runner_id"], {}).get("last_seen_ts", 0)
-                    for runner in runners
-                )
+            if ready and all(
+                runner["last_seen_ts"]
+                > previous.get(runner["runner_id"], {}).get("last_seen_ts", 0)
+                for runner in runners
+            ):
+                break
+            # Status reports a running worker that is not ready only once the
+            # reconnect grace has passed, so a runner reconnecting is not reported
+            # as one that is gone.
+            if args.operation == "status" and (
+                not (current and current["active"]) or time.monotonic() > give_up
             ):
                 break
             if current and not current["active"]:

@@ -61,6 +61,7 @@ func (r *Runner) run(ctx context.Context) error {
 
 	r.log.Info("runner up", "node", r.cfg.Node, "lanes", r.cfg.Lanes)
 	computeDown := false
+	leaseRetry := firstLeaseRetry
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -101,30 +102,39 @@ func (r *Runner) run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			r.log.Warn("lease error; reconnecting", "err", err)
+			r.log.Warn("lease error; reconnecting", "err", err, "after", leaseRetry)
 			work.close()
 			for {
-				work, err = r.redial(ctx)
-				if err == nil {
-					break
-				}
-				if ctx.Err() != nil {
-					return nil
-				}
 				select {
 				case <-ctx.Done():
 					return nil
-				case <-time.After(time.Second):
+				case <-time.After(leaseRetry):
+				}
+				leaseRetry = min(2*leaseRetry, maxLeaseRetry)
+				if work, err = r.redial(ctx); err == nil {
+					break
 				}
 			}
 			continue
 		}
+		leaseRetry = firstLeaseRetry
 		if grant == nil {
 			continue // empty long-poll; loop again
 		}
 		r.processJob(ctx, work, grant)
 	}
 }
+
+// A lease that fails, its reply an error or its connection lost, waits before the runner
+// reconnects to ask again, and so does a reconnect that fails: firstLeaseRetry at first,
+// twice as long after each failure in a row, up to maxLeaseRetry. The PEP verifies each
+// hello and lease and stores its nonce, and an error that does not clear, such as lanes
+// the runner's credential does not grant, kept the runner asking as fast as the
+// refusals came.
+const (
+	firstLeaseRetry = time.Second
+	maxLeaseRetry   = 30 * time.Second
+)
 
 func (r *Runner) redial(ctx context.Context) (*dispatcherConn, error) {
 	dc, _, err := dialDispatcher(ctx, r.cfg.DispatcherAddr, r.ident(), r.wrapper)

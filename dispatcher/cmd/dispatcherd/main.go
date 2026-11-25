@@ -33,7 +33,7 @@ func main() {
 	}
 	defer store.Close()
 
-	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
+	d, err := dispatcher.New(store, cfg, dispatcher.RealClock, log)
 	if err != nil {
 		log.Error("dispatcher", "err", err)
 		os.Exit(1)

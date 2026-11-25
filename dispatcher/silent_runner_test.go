@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,14 @@ import (
 // silence is how long a runner may go unheard and still be granted work.
 func silence(d *Dispatcher) int64 {
 	return int64(silentAfterBeats*d.cfg.HeartbeatIntervalS) * 1000
+}
+
+// beat sends the runner's heartbeat, as the runner hello named did.
+func beat(t *testing.T, d *Dispatcher, runner string) {
+	t.Helper()
+	if _, werr := d.Heartbeat(runner, wire.Heartbeat{Status: wire.HeartbeatStatus{Node: runner, Lanes: []string{"embed"}, Capacity: 1}}); werr != nil {
+		t.Fatalf("heartbeat: %v", werr)
+	}
 }
 
 // queuedUnleased fails the test unless the job is QUEUED with no lease.
@@ -40,9 +50,7 @@ func TestASilentRunnerIsGrantedNothing(t *testing.T) {
 	}
 	queuedUnleased(t, d, jobID, "after a silent runner's lease")
 
-	if _, werr := d.Heartbeat("R1", wire.Heartbeat{Status: wire.HeartbeatStatus{Node: "R1", Lanes: []string{"embed"}, Capacity: 1}}); werr != nil {
-		t.Fatalf("heartbeat: %v", werr)
-	}
+	beat(t, d, "R1")
 	if g, _ := leaseOne(t, d, "R1", "embed"); g == nil || g.Job.JobID != jobID {
 		t.Fatalf("a runner heard again was not granted the job: %+v", g)
 	}
@@ -98,4 +106,56 @@ func TestASilentRunnersWaitingLeaseEndsWithoutAGrant(t *testing.T) {
 		t.Fatalf("the lease ended after %v, before its %d s wait", waited, d.cfg.MaxWaitS)
 	}
 	queuedUnleased(t, d, jobID, "after a silent runner's waiting lease")
+}
+
+// TestTheFleetShowsASilentRunnerOffline: the fleet counts a runner online by the test
+// that grants it work, so a runner granted nothing for its silence shows offline rather
+// than online for the rest of a lease TTL, and online again once it is heard.
+func TestTheFleetShowsASilentRunnerOffline(t *testing.T) {
+	d, clk := newTestDispatcher(t)
+	hello(t, d, "R1", "embed")
+	online := func() bool {
+		t.Helper()
+		fleet, err := d.Fleet()
+		if err != nil || len(fleet) != 1 {
+			t.Fatalf("fleet: %+v, %v", fleet, err)
+		}
+		return fleet[0].Online
+	}
+
+	clk.Advance(silence(d))
+	if !online() {
+		t.Fatalf("a runner heard %d ms ago, so granted work, shows offline", silence(d))
+	}
+	clk.Advance(1)
+	if online() {
+		t.Fatalf("a runner unheard for %d ms, so granted nothing, shows online", silence(d)+1)
+	}
+	beat(t, d, "R1")
+	if !online() {
+		t.Fatal("a runner heard again shows offline")
+	}
+}
+
+// TestASilentSpellIsLoggedOnce: a silent runner's waiting lease is refused again every
+// pollInterval, so the dispatcher logs the first refusal of each silent spell, and the
+// spell's end once the runner is heard, rather than every refusal.
+func TestASilentSpellIsLoggedOnce(t *testing.T) {
+	d, clk := newTestDispatcher(t)
+	var said strings.Builder
+	d.log = slog.New(slog.NewTextHandler(&said, nil))
+	hello(t, d, "R1", "embed")
+
+	for range 2 {
+		clk.Advance(silence(d) + 1)
+		for range 3 {
+			leaseOne(t, d, "R1", "embed")
+		}
+		beat(t, d, "R1")
+		leaseOne(t, d, "R1", "embed")
+	}
+	silent, heard := strings.Count(said.String(), "runner silent"), strings.Count(said.String(), "heard again after a silent spell")
+	if silent != 2 || heard != 2 {
+		t.Fatalf("two silent spells of 3 refusals each logged %d refusals and %d ends, want 2 of each:\n%s", silent, heard, said.String())
+	}
 }

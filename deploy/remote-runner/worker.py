@@ -237,9 +237,10 @@ def main():
                             raise ValueError(
                                 runner["unit"]
                                 + " is running, but the dispatcher has not heard"
-                                " from it within a lease, so it cannot hear its"
-                                " drain (a runner joins only once its compute is"
-                                " ready); inspect it, then apply again"
+                                " from it within two heartbeat intervals, so it"
+                                " cannot hear its drain (a runner joins only once"
+                                " its compute is ready); inspect it, then apply"
+                                " again"
                             )
                     time.sleep(0.25)
                 state("settle")

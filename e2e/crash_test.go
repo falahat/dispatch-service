@@ -82,7 +82,7 @@ func startDispatcherShortLease(t *testing.T) *dispatcher.Server {
 	cfg.SweepIntervalS = 1
 	cfg.MaxWaitS = 2
 	cfg.Lanes = map[string]dispatcher.LaneConfig{"embed": {Concurrency: 4, PersistingWatermark: 64}}
-	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
+	d, err := dispatcher.New(store, cfg, dispatcher.RealClock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -224,7 +224,7 @@ func startDispatcherWaiting(t *testing.T, maxWaitS int) *dispatcher.Server {
 	cfg.MaxWaitS = maxWaitS
 	cfg.SweepIntervalS = 1
 	cfg.Lanes = map[string]dispatcher.LaneConfig{"embed": {Concurrency: 4, PersistingWatermark: 64}}
-	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
+	d, err := dispatcher.New(store, cfg, dispatcher.RealClock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

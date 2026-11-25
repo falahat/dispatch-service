@@ -179,7 +179,7 @@ func startDispatcher(t *testing.T, opts ...func(*dispatcher.Config)) *dispatcher
 	for _, o := range opts {
 		o(&cfg)
 	}
-	d, err := dispatcher.New(store, cfg, dispatcher.RealClock)
+	d, err := dispatcher.New(store, cfg, dispatcher.RealClock, nil)
 	if err != nil {
 		t.Fatalf("dispatcher: %v", err)
 	}

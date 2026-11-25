@@ -6,6 +6,7 @@
 package dispatcher
 
 import (
+	"log/slog"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ type Dispatcher struct {
 	cfg   Config
 	clock Clock
 	ids   *IDGen
+	log   *slog.Logger
 
 	rng   *rand.Rand
 	rngMu sync.Mutex
@@ -37,15 +39,23 @@ type Dispatcher struct {
 	// request it answers.
 	gpuMu     sync.Mutex
 	gpuOffers map[string]gpuOffer
+
+	// silent holds the runners whose lease was refused for their silence (D20) and that
+	// have not been heard since, so each silent spell is logged once.
+	silentMu sync.Mutex
+	silent   map[string]bool
 }
 
-// New builds a Dispatcher over an open store and config.
-func New(store *Store, cfg Config, clock Clock) (*Dispatcher, error) {
+// New builds a Dispatcher over an open store and config. A nil log logs to slog's default.
+func New(store *Store, cfg Config, clock Clock, log *slog.Logger) (*Dispatcher, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	if clock == nil {
 		clock = RealClock
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 	if err := store.SetBudgetCap(cfg.Budget.CapUSD); err != nil {
 		return nil, err
@@ -55,12 +65,14 @@ func New(store *Store, cfg Config, clock Clock) (*Dispatcher, error) {
 		cfg:       cfg,
 		clock:     clock,
 		ids:       NewIDGen(),
+		log:       log,
 		rng:       rand.New(rand.NewSource(clock.NowMS())),
 		leaseWake: newBroadcaster(),
 		subs:      newSubMgr(),
 		rl:        newRateLimiter(cfg.RunnerRatePerMin),
 
 		gpuOffers: map[string]gpuOffer{},
+		silent:    map[string]bool{},
 	}
 	if err := d.renewRunningLeases(); err != nil {
 		return nil, err

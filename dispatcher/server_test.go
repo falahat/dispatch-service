@@ -69,7 +69,7 @@ func startTestServerWith(t *testing.T, cfg Config) *Server {
 	cfg.RunnerListen = "127.0.0.1:0"
 	cfg.AppSocket = ""
 	cfg.AppListen = "127.0.0.1:0"
-	d, err := New(store, cfg, RealClock)
+	d, err := New(store, cfg, RealClock, nil)
 	if err != nil {
 		t.Fatalf("dispatcher: %v", err)
 	}

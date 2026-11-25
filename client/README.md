@@ -150,7 +150,8 @@ Python runtime. The application environment owns the operator client.
 `drain RUNNER_ID` closes admission and blocks until its current job settles;
 it never cancels that job. The runner exits cleanly after finishing. `resume
 RUNNER_ID` reopens admission before the shared installer starts it again. Fleet
-`online` uses the coordinator's lease TTL and clock, not a client-side guess.
+`online` is the coordinator's own test for granting work, the runner heard within two
+heartbeat intervals on its clock (D20), not a client-side guess.
 
 `hold NODE [--reason TEXT]` stops every runner of that machine (the `--node` it runs with)
 taking new work and blocks until the machine's running jobs have ended; it never cancels

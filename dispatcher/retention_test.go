@@ -20,7 +20,7 @@ func retentionDispatcher(t *testing.T, days int) (*Dispatcher, *ManualClock) {
 	clk := NewManualClock(1_000_000)
 	cfg := testConfig()
 	cfg.JobRetentionDays = days
-	d, err := New(store, cfg, clk)
+	d, err := New(store, cfg, clk, nil)
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}

@@ -34,7 +34,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *ManualClock) {
 	}
 	t.Cleanup(func() { store.Close() })
 	clk := NewManualClock(1_000_000)
-	d, err := New(store, testConfig(), clk)
+	d, err := New(store, testConfig(), clk, nil)
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestClaimRoundRobinsLanesSoNeitherStarves(t *testing.T) {
 		"embed":      {Concurrency: 0, PersistingWatermark: 0},
 	}
 	clk := NewManualClock(1_000_000)
-	d, err := New(store, cfg, clk)
+	d, err := New(store, cfg, clk, nil)
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}

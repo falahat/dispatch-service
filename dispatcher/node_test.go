@@ -84,7 +84,7 @@ func TestRestartRenewsRunningLeases(t *testing.T) {
 	}
 	clk.Advance(int64(d.cfg.LeaseTTLS)*1000*3 + 1)
 
-	restarted, err := New(d.store, d.cfg, clk)
+	restarted, err := New(d.store, d.cfg, clk, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

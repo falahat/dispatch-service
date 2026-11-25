@@ -124,6 +124,7 @@ func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	since := d.heardSince(d.now())
 	var out []wire.RunnerView
 	for rows.Next() {
 		var rv wire.RunnerView
@@ -137,7 +138,7 @@ func (d *Dispatcher) Fleet() ([]wire.RunnerView, error) {
 		rv.Node, rv.Version, rv.GPU, rv.QuarantineReason = node.String, version.String, gpu.String, qreason.String
 		rv.Capacity, rv.VRAMFreeMB = int(capacity.Int64), int(vram.Int64)
 		rv.Quarantined, rv.Draining = quarantined != 0, draining != 0
-		rv.Online = rv.LastSeenTS > 0 && d.now()-rv.LastSeenTS < int64(d.cfg.LeaseTTLS)*1000
+		rv.Online = rv.LastSeenTS >= since
 		if lanesJSON.String != "" {
 			_ = json.Unmarshal([]byte(lanesJSON.String), &rv.Lanes)
 		}

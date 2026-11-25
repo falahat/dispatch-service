@@ -29,13 +29,6 @@ const (
 	claimSilent
 )
 
-// silentAfterBeats is how many heartbeat intervals a runner may go unheard (no hello, no
-// heartbeat) before it is granted nothing: it may have gone without a close. Its
-// connections can outlive it, since a relay in front of the PEP (Tailscale Serve) holds
-// them open and answers TCP keepalive for it, so the heartbeat, sent on its own
-// connection even while idle, is the dispatcher's one sign that it is still there.
-const silentAfterBeats = 2
-
 type claimResult struct {
 	outcome     claimOutcome
 	grant       wire.Grant
@@ -146,12 +139,11 @@ func (d *Dispatcher) tryClaim(runnerID string, lanes []string, gpus []wire.GPURe
 			result.outcome = claimHeld
 			return nil
 		}
-		silentSince := now - int64(silentAfterBeats*d.cfg.HeartbeatIntervalS)*1000
-		heard, err := runnerHeardSince(tx, runnerID, silentSince)
+		lastSeen, err := runnerLastSeen(tx, runnerID)
 		if err != nil {
 			return err
 		}
-		if !heard {
+		if !d.heard(runnerID, lastSeen, now) {
 			result.outcome = claimSilent
 			return nil
 		}

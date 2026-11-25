@@ -30,18 +30,19 @@ type dispatcherConn struct {
 	seq     atomic.Uint64
 }
 
-// replyTimeout bounds the wait for the reply to a hello or a heartbeat. The dispatcher
-// answers both at once, so a reply that has not come by then is not coming, and the
-// connection is taken for dead. The heartbeat is the runner's sign of life (D20): a
-// heartbeat connection stuck on a reply would leave a runner that is still there unheard,
-// and granted nothing, for as long as the connection stayed open: minutes on a dead path,
-// for good where a relay holds it open.
+// replyTimeout bounds a connect to the dispatcher and the wait for the reply to a hello
+// or a heartbeat. The dispatcher answers both at once, so a reply that has not come by
+// then is not coming, and the connection is taken for dead; a connect that a relay drops
+// without a word would otherwise wait out the kernel's retries, about 127 s on Linux. The
+// heartbeat is the runner's sign of life (D20): a heartbeat connection stuck on a connect
+// or a reply would leave a runner that is still there unheard, and granted nothing, for
+// as long as it stayed stuck: minutes on a dead path, for good where a relay holds it open.
 const replyTimeout = 10 * time.Second
 
 // dialDispatcher connects and performs the hello handshake, returning the
 // server parameters (heartbeat interval, wait bounds).
 func dialDispatcher(ctx context.Context, addr string, ident wire.RunnerIdent, wrapper FrameWrapper) (*dispatcherConn, wire.HelloOK, error) {
-	d := net.Dialer{}
+	d := net.Dialer{Timeout: replyTimeout}
 	network := "tcp"
 	if strings.HasPrefix(addr, "unix:") {
 		network, addr = "unix", strings.TrimPrefix(addr, "unix:")

@@ -36,7 +36,7 @@ func failsWithinTheReplyTimeout(t *testing.T, what string, call func() error) {
 			t.Fatalf("%s gave up after %v, before its %v", what, waited, replyTimeout)
 		}
 	case <-time.After(replyTimeout + 5*time.Second):
-		t.Fatalf("%s still waits for its reply after %v", what, replyTimeout+5*time.Second)
+		t.Fatalf("%s still waits after %v", what, replyTimeout+5*time.Second)
 	}
 }
 
